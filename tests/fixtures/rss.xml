@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture Feed</title>
+    <link>https://example.test/</link>
+    <description>Fixture items</description>
+    <item>
+      <guid>fresh-1</guid>
+      <title>Fresh semiconductor announcement</title>
+      <link>https://example.test/news/chip?utm_source=feed</link>
+      <description>A new packaging announcement.</description>
+      <pubDate>Sat, 06 Sep 2026 09:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>duplicate-canonical-url</guid>
+      <title>Same story reposted</title>
+      <link>https://example.test/news/chip</link>
+      <description>A new packaging announcement from another feed entry.</description>
+      <pubDate>Sat, 06 Sep 2026 10:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>stale-1</guid>
+      <title>Old retained item</title>
+      <link>https://example.test/news/old</link>
+      <description>This must not reach downstream processing.</description>
+      <pubDate>Tue, 01 Sep 2026 09:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>future-1</guid>
+      <title>Future-dated item</title>
+      <link>https://example.test/news/future</link>
+      <description>This must be quarantined.</description>
+      <pubDate>Sun, 06 Sep 2026 20:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,44 @@
+openrouter:
+  base_url: "https://openrouter.ai/api/v1"
+
+roles:
+  gatekeeper:
+    model: "REPLACE_WITH_CHEAP_STRUCTURED_OUTPUT_MODEL"
+    fallbacks: []
+    require_structured_outputs: true
+    temperature: 0.0
+    max_output_tokens: 600
+
+  extractor:
+    model: "REPLACE_WITH_CHEAP_OR_MID_STRUCTURED_OUTPUT_MODEL"
+    fallbacks: []
+    require_structured_outputs: true
+    temperature: 0.0
+    max_output_tokens: 1800
+
+  reasoner:
+    model: "REPLACE_WITH_STRONG_REASONING_MODEL"
+    fallbacks: []
+    require_structured_outputs: true
+    temperature: 0.1
+    max_output_tokens: 2200
+
+  editor:
+    model: "REPLACE_WITH_STRONG_EDITOR_MODEL"
+    fallbacks: []
+    require_structured_outputs: false
+    temperature: 0.2
+    max_output_tokens: 3000
+
+  embedding:
+    model: "REPLACE_WITH_EMBEDDING_MODEL"
+    dimensions: null
+
+budgets:
+  daily_soft_usd: 0.50
+  daily_hard_usd: 2.00
+  reserve_email_action_usd: 0.10
+
+catalog:
+  auto_switch_models: false
+  allow_advisory_refresh: true

@@ -1,0 +1,45 @@
+defaults:
+  timezone: "Europe/Istanbul"
+  news_freshness_hours: 48
+  world_freshness_hours: 48
+  youtube_freshness_hours: 72
+  future_tolerance_hours: 6
+
+rss:
+  # Seed examples only. Verify exact current feed URLs before enabling.
+  - name: "Ars Technica"
+    url: "REPLACE_WITH_CURRENT_ARS_FEED_URL"
+    stream: "tech"
+    enabled: false
+    source_tier: "major_publication"
+
+  - name: "TechCrunch"
+    url: "https://techcrunch.com/feed/"
+    stream: "tech"
+    enabled: false
+    source_tier: "major_publication"
+
+  - name: "BBC Technology"
+    url: "https://feeds.bbci.co.uk/news/technology/rss.xml"
+    stream: "tech"
+    enabled: false
+    source_tier: "major_publication"
+
+  - name: "BBC World"
+    url: "REPLACE_WITH_CURRENT_BBC_WORLD_FEED_URL"
+    stream: "world"
+    enabled: false
+    source_tier: "major_publication"
+
+youtube:
+  # Prefer channel IDs over display names once configured.
+  - name: "Example Tech Channel"
+    channel_id: "REPLACE_ME"
+    enabled: false
+    freshness_hours: 72
+
+gmail:
+  - account_label: "primary"
+    enabled: false
+  - account_label: "secondary"
+    enabled: false
