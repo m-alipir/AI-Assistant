@@ -1,0 +1,58 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: intelligence
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # Keep a local PostgreSQL instance untouched; override in .env if 5433 is also occupied.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      APP_ENV: development
+      APP_TIMEZONE: Europe/Istanbul
+      LOG_LEVEL: INFO
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
+      SCHEDULER_DAILY_TIME: ${SCHEDULER_DAILY_TIME:-08:00}
+      GMAIL_ENABLED: ${GMAIL_ENABLED:-false}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      GMAIL_OAUTH_REDIRECT_URI: ${GMAIL_OAUTH_REDIRECT_URI:-http://localhost:8000/admin/gmail/callback}
+      GMAIL_INITIAL_LOOKBACK_HOURS: ${GMAIL_INITIAL_LOOKBACK_HOURS:-48}
+      GMAIL_INITIAL_MAX_MESSAGES: ${GMAIL_INITIAL_MAX_MESSAGES:-25}
+      GMAIL_REQUEST_TIMEOUT_SECONDS: ${GMAIL_REQUEST_TIMEOUT_SECONDS:-15}
+      GMAIL_MAX_RETRIES: ${GMAIL_MAX_RETRIES:-2}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/intelligence
+      ADMIN_SOURCES_PATH: /app/config/sources.example.yaml
+      ADMIN_MODELS_PATH: /app/config/models.example.yaml
+      ADMIN_INTERESTS_PATH: /app/config/interests.example.yaml
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./config:/app/config"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

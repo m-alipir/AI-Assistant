@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015">
+  <title>Fixture Channel</title>
+  <entry>
+    <id>yt:video:abc123</id>
+    <yt:videoId>abc123</yt:videoId>
+    <title>Fresh graphics programming video</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=abc123&amp;utm_source=feed"/>
+    <author><name>Fixture Creator</name></author>
+    <published>2026-09-05T13:00:00+00:00</published>
+    <updated>2026-09-05T13:30:00+00:00</updated>
+  </entry>
+</feed>

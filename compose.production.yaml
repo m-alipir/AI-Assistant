@@ -1,0 +1,52 @@
+# Production-only compose file. Use a root-owned --env-file outside this repository.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-intelligence}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: ["production_postgres_data:/var/lib/postgresql/data"]
+    networks: [backend]
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+  app:
+    build: .
+    # Keep credentials out of this YAML. The env file is read at container start;
+    # Docker daemon administrators can still inspect it, so protect that host account.
+    env_file: ["${PRODUCTION_ENV_FILE:-.env.production}"]
+    environment:
+      APP_ENV: production
+      ADMIN_SOURCES_PATH: /app/config/sources.example.yaml
+      ADMIN_MODELS_PATH: /app/config/models.example.yaml
+      ADMIN_INTERESTS_PATH: /app/config/interests.example.yaml
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["${ADMIN_CONFIG_DIR:-./config}:/app/config"]
+    networks: [default, backend]
+    depends_on: {db: {condition: service_healthy}}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+volumes:
+  production_postgres_data:
+
+networks:
+  backend:
+    internal: true

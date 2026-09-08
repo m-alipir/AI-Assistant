@@ -1,0 +1,29 @@
+profile:
+  base:
+    categories:
+      technology: 0.8
+      technology.ai: 0.9
+      technology.hardware: 0.9
+      technology.semiconductors: 0.9
+      software: 0.8
+      game-development: 0.8
+    topics:
+      gpu: 0.9
+      cpu: 0.8
+      graphics-programming: 0.9
+      local-llm: 0.8
+    entities: {}
+  adaptive:
+    rolling_window_days: 14
+    half_life_days: 7
+    min_positive_signals: 4
+    min_distinct_days: 3
+    max_delta_per_7_days: 0.25
+    decay_to_neutral_after_days: 21
+world_in_brief:
+  enabled: true
+  min_items: 3
+  max_items: 7
+  independent_of_interest_profile: true
+admin_overrides:
+  NVIDIA: 1
