@@ -53,6 +53,6 @@ class NtfyNotifier:
 
     async def _publish_once(self, url: str, headers: dict[str, str], body: str) -> int:
         timeout = httpx.Timeout(self._timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.post(url, headers=headers, content=body.encode("utf-8"))
         return response.status_code

@@ -272,4 +272,20 @@ back a briefing or stop source processing. A protected self-hosted ntfy service 
 
 ---
 
+## D025 — Production security boundaries remain single-process and role-separated
+**Date:** 2026-09-10
+**Status:** Accepted
+
+Single-process V1 uses separate in-memory authentication and request limiters; scaling to multiple
+replicas is explicitly deferred until a shared limiter/state design is approved. Production image
+startup never mutates schema: a one-shot migration container receives the migration-owner DSN and
+the application receives a restricted runtime DSN. Retention is opt-in and preserves distilled
+knowledge/provenance while expiring raw content and operational history.
+
+Consequences: Redis or another service is not added solely for V1 limiting. Live database-role,
+TLS-proxy, remote PostgreSQL, encrypted backup, and isolated restore evidence remains pending VPS
+validation. RSSHub remains absent from production deployment and isolated in its explicit pilot.
+
+---
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

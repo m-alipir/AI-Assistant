@@ -78,6 +78,9 @@ class HttpFeedFetcher:
                         )
                     },
                 ) as response:
+                    _validate_connected_peer(
+                        response, allow_private_hosts=self._allow_private_hosts
+                    )
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location")
                         if not location or redirect_count == self._max_redirects:
@@ -123,11 +126,28 @@ def _validate_remote_url(
             raise ProviderError("feed URL resolves to a non-public address")
 
 
+def _validate_connected_peer(response: httpx.Response, *, allow_private_hosts: bool) -> None:
+    """Fail closed when the actual connected peer is unavailable or non-public."""
+    if allow_private_hosts:
+        return
+    stream = response.extensions.get("network_stream")
+    peer = stream.get_extra_info("server_addr") if stream is not None else None
+    if not peer or not isinstance(peer, tuple) or not peer:
+        raise ProviderError("connected peer address could not be verified")
+    try:
+        address = ipaddress.ip_address(str(peer[0]).split("%", 1)[0])
+    except ValueError as error:
+        raise ProviderError("connected peer address could not be verified") from error
+    if not address.is_global:
+        raise ProviderError("connected peer is a non-public address")
+
+
 class RssCollector:
     """Collect RSS/Atom metadata only; article-body fetching is deliberately out of scope."""
 
-    def __init__(self, fetcher: FeedFetcher) -> None:
+    def __init__(self, fetcher: FeedFetcher, max_items: int = 100) -> None:
         self._fetcher = fetcher
+        self._max_items = max_items
 
     async def collect(
         self,
@@ -137,8 +157,11 @@ class RssCollector:
         """Fetch and normalize source entries into compact candidate items."""
         now = (fetched_at or datetime.now(UTC)).astimezone(UTC)
         payload = await self._fetcher.fetch(source.url)
+        lowered = payload.lower()
+        if b"<!doctype" in lowered or b"<!entity" in lowered:
+            raise ProviderError("feed XML contains a prohibited declaration")
         parsed = feedparser.parse(payload)
-        entries: list[Mapping[str, Any]] = list(parsed.entries)
+        entries: list[Mapping[str, Any]] = list(parsed.entries[: self._max_items])
         if parsed.bozo and not entries:
             raise ProviderError("feed XML could not be parsed")
         return [self._normalize_entry(entry, source, now) for entry in entries]
@@ -149,7 +172,7 @@ class RssCollector:
         source: RssSourceConfig,
         fetched_at: datetime,
     ) -> SourceItem:
-        title = str(entry.get("title") or "Untitled source item").strip()
+        title = str(entry.get("title") or "Untitled source item").strip()[:512]
         snippet = _entry_text(entry)
         source_published_at = parse_source_datetime(
             entry.get("published_parsed") or entry.get("published")
@@ -186,16 +209,16 @@ def _entry_text(entry: Mapping[str, Any]) -> str | None:
         content = entry["content"]
         if isinstance(content, list) and content and isinstance(content[0], Mapping):
             value = content[0].get("value")
-    return str(value).strip() if value else None
+    return str(value).strip()[:4_000] if value else None
 
 
 def _external_id(entry: Mapping[str, Any]) -> str | None:
     """Prefer feed-native identifiers before falling back to URL/hash identity."""
     value = entry.get("id") or entry.get("guid")
-    return str(value).strip() if value else None
+    return str(value).strip()[:512] if value else None
 
 
 def _author(entry: Mapping[str, Any]) -> str | None:
     """Extract an optional compact author value from common feedparser fields."""
     value = entry.get("author")
-    return str(value).strip() if value else None
+    return str(value).strip()[:256] if value else None

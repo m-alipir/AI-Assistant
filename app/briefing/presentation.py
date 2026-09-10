@@ -1,5 +1,6 @@
 """Safe, Turkish-first presentation models for persisted briefings."""
 
+import ipaddress
 import re
 from datetime import datetime
 from urllib.parse import urlparse
@@ -69,8 +70,15 @@ def safe_links(values: object) -> list[str]:
     for value in values if isinstance(values, list) else []:
         candidate = str(value)
         parsed = urlparse(candidate)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            links.append(candidate[:2048])
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            continue
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            address = None
+        if address is not None and not address.is_global:
+            continue
+        links.append(candidate[:2048])
     return links[:3]
 
 

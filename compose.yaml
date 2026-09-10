@@ -1,6 +1,6 @@
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
     environment:
       POSTGRES_DB: intelligence
       POSTGRES_USER: postgres
@@ -16,9 +16,11 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    networks: [backend]
 
   app:
     build: .
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     environment:
       APP_ENV: development
       APP_TIMEZONE: Europe/Istanbul
@@ -53,6 +55,11 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    networks: [default, backend]
 
 volumes:
   postgres_data:
+
+networks:
+  backend:
+    internal: true

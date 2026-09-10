@@ -54,4 +54,9 @@ def _redact_log_value(value: str, secrets: tuple[str, ...]) -> str:
         redacted,
     )
     redacted = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b(postgresql(?:\+asyncpg)?://[^:\s/@]+:)[^@\s/]+(@)",
+        r"\1[REDACTED]\2",
+        redacted,
+    )
     return redacted

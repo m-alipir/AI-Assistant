@@ -270,7 +270,8 @@ async def fetch_sql_candidates(
                     (
                         await connection.execute(
                             text(
-                                "SELECT classification, action_summary, deadline, application_company, "
+                                "SELECT classification, action_summary, deadline, "
+                                "application_company, "
                                 "created_at AS recorded_at "
                                 "FROM email_classifications "
                                 "WHERE created_at >= :since AND created_at <= :until "

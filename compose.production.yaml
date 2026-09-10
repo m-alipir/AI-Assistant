@@ -1,7 +1,7 @@
 # Production-only compose file. Use a root-owned --env-file outside this repository.
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-intelligence}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -10,7 +10,10 @@ services:
     networks: [backend]
     restart: unless-stopped
     init: true
+    cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -24,13 +27,18 @@ services:
     env_file: ["${PRODUCTION_ENV_FILE:-.env.production}"]
     environment:
       APP_ENV: production
+      DATABASE_URL_FILE: /run/secrets/database_runtime_url
       ADMIN_SOURCES_PATH: /app/config/sources.example.yaml
       ADMIN_MODELS_PATH: /app/config/models.example.yaml
       ADMIN_INTERESTS_PATH: /app/config/interests.example.yaml
     ports: ["127.0.0.1:8000:8000"]
-    volumes: ["${ADMIN_CONFIG_DIR:-./config}:/app/config"]
+    volumes:
+      - "${ADMIN_CONFIG_DIR:-./config}:/app/config"
+      - "${DATABASE_RUNTIME_URL_FILE:?set DATABASE_RUNTIME_URL_FILE}:/run/secrets/database_runtime_url:ro"
     networks: [default, backend]
-    depends_on: {db: {condition: service_healthy}}
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     restart: unless-stopped
     init: true
     read_only: true
@@ -44,6 +52,24 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    env_file: ["${PRODUCTION_ENV_FILE:-.env.production}"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL_FILE: /run/secrets/database_migration_url
+    volumes:
+      - "${DATABASE_MIGRATION_URL_FILE:?set DATABASE_MIGRATION_URL_FILE}:/run/secrets/database_migration_url:ro"
+    networks: [backend]
+    depends_on: {db: {condition: service_healthy}}
+    restart: "no"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
 volumes:
   production_postgres_data:
 

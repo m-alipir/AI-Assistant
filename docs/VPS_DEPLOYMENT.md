@@ -17,7 +17,6 @@ network, and requires authenticated HTTPS Admin access.
 POSTGRES_DB=intelligence
 POSTGRES_USER=appdb
 POSTGRES_PASSWORD=<long-unique-database-password>
-DATABASE_URL=postgresql+asyncpg://appdb:<url-encoded-password>@db:5432/intelligence
 APP_ENV=production
 APP_TIMEZONE=Europe/Istanbul
 ADMIN_AUTH_ENABLED=true
@@ -32,7 +31,16 @@ ALLOW_INSECURE_SOURCE_URLS=false
 SCHEDULER_ENABLED=false
 GMAIL_ENABLED=false
 AGENT_API_ENABLED=false
+RETENTION_ENABLED=true
+TRUSTED_PROXY_IPS=<literal-container-network-proxy-ip>
 ```
+
+Create separate protected DSN files for the migration owner and restricted runtime role, then set
+`DATABASE_MIGRATION_URL_FILE` and `DATABASE_RUNTIME_URL_FILE` for Compose interpolation. Apply
+`ops/bootstrap-database-roles.sql` as the database owner before first runtime use. The application
+container never runs Alembic; the one-shot `migrate` service must finish successfully first.
+Remote/managed PostgreSQL must validate server certificates; set `DATABASE_SSL_CA_FILE` when the
+system trust store is insufficient. Role grants and remote TLS remain `pending VPS validation`.
 
 Use `OPENROUTER_API_KEY_FILE`, `GMAIL_CLIENT_SECRET_FILE`, `APP_ENCRYPTION_KEY_FILE`,
 `ADMIN_PASSWORD_FILE`, and `AGENT_API_TOKEN_FILE` when an orchestrator can mount Docker secrets at
@@ -43,7 +51,9 @@ stable Fernet key; changing it requires Gmail reauthorization. When Gmail is ena
 this file and Google Cloud Console.
 
 4. Configure a TLS reverse proxy for `https://intelligence.example.com` to
-   `http://127.0.0.1:8000`, preserve `Host`, and set `X-Forwarded-Proto: https`. Firewall the VPS:
+   `http://127.0.0.1:8000`, preserve `Host`, and set `X-Forwarded-Proto: https`. Configure
+   `TRUSTED_PROXY_IPS` with only the proxy's literal peer address; never trust forwarding headers
+   from arbitrary clients. Firewall the VPS:
    expose only SSH (restricted) and HTTPS; never publish PostgreSQL or port 8000 publicly. Prefer
    VPN or an identity-aware proxy in front of Basic auth for a shared/admin deployment.
 
@@ -66,15 +76,14 @@ mode. Keep `SCHEDULER_ENABLED=false` until a manual ingestion test succeeds.
 Perform these checks in a staging VPS first, then repeat them during a planned production change
 window. They do not require an RSS, YouTube, Gmail, or OpenRouter call.
 
-1. Take an encrypted database backup and restore it to an isolated database. Confirm the restore
+1. Follow `docs/BACKUP_RESTORE.md` to take an encrypted database backup and restore it to an isolated database. Confirm the restore
    can be migrated and queried there; keep the backup separate from the Fernet key and never copy
    the environment file into it.
 2. Review the effective production Compose configuration locally on the VPS. Do not paste its
    output into tickets or chat because environment interpolation may reveal sensitive values.
    Confirm app port `8000` binds only to loopback and PostgreSQL has no published port.
-3. Build and start with the protected environment file. Confirm the `app` and `db` health checks
-   pass, then confirm the applied Alembic revision includes `20260908_0015` before relying on the
-   M16 reader snapshot fields.
+3. Build and start with the protected environment file. Confirm `migrate` succeeds and the `app`
+   and `db` health checks pass, then confirm Alembic is at head.
 4. Through the TLS proxy, verify `/health`, `/ready`, a rejected unauthenticated `/admin` request,
    an authenticated Admin request, HTTPS forwarding, host allow-list behavior, no-store/security
    headers, and that API docs are unavailable. Inspect only safe operational logs.
@@ -99,10 +108,12 @@ the Admin password, Docker socket, environment file, database URL, Gmail materia
   writable by container UID/GID `10001` (for example, `chown -R 10001:10001 /path/to/config` on
   Linux).
 - Back up the Postgres volume with encryption and access control; test restoring to an isolated
-  host. Store the backup and Fernet key separately. Do not include environment files in backups.
-- Run migrations as part of the image startup. Before an upgrade, make a tested backup; do not run
-  destructive SQL manually. Roll back application images only after confirming migration
-  compatibility.
+  host using the repository scripts. Store the age identity and Fernet key separately. Do not
+  include environment files in backups. Status remains `pending VPS validation` until a real drill.
+- Run migrations only through the dedicated one-shot migration service. Before an upgrade, make a
+  tested backup; do not run destructive SQL manually. Roll back application images only after
+  confirming migration compatibility.
+- RSSHub is not a production service and must not be merged into this deployment.
 - On suspected credential exposure, rotate the relevant secret, revoke Google access if relevant,
   inspect access logs, and reauthorize Gmail after a Fernet-key rotation. Do not paste logs or
   database exports containing sensitive metadata into issue trackers.

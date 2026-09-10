@@ -311,7 +311,8 @@ async def test_extractor_accepts_compact_fenced_provider_json_without_a_second_r
     assert requests == 1
     assert result.compact_summary == "A source-backed video summary."
     assert result.what_changed == "A source-backed video summary."
-    assert result.claims[0].statement == "A source fact."
+    # Legacy string claims lack a locator and are not persisted as facts.
+    assert result.claims == []
 
 
 def test_usage_breakdown_separates_provider_requests_from_cache_metadata() -> None:

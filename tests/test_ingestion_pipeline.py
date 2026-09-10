@@ -9,6 +9,7 @@ from app.dedup.cache import InMemoryDedupCache
 from app.ingestion.pipeline import DeterministicIngestionPipeline
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.normalize.source_items import content_fingerprint
+from app.providers.contracts import ProviderError
 
 
 class FixtureFeedFetcher(FeedFetcher):
@@ -111,3 +112,26 @@ def test_dedup_cache_uses_native_id_then_url_then_content_fingerprint() -> None:
     )
     assert cache.reserve(item(None, None, "Fingerprint", "Same compact content"))
     assert not cache.reserve(item(None, None, "Fingerprint", "Same compact content"))
+
+
+@pytest.mark.asyncio
+async def test_hostile_feed_is_item_and_field_bounded_and_rejects_dtd() -> None:
+    entries = "".join(
+        f"<item><guid>{index}</guid><title>{'T' * 700}</title>"
+        f"<description>{'S' * 5000}</description></item>" for index in range(5)
+    )
+    payload = f"<rss><channel>{entries}</channel></rss>".encode()
+    source = RssSourceConfig(
+        name="Fixture RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+    )
+    items = await RssCollector(FixtureFeedFetcher(payload), max_items=2).collect(source)
+    assert len(items) == 2
+    assert all(len(item.title) == 512 for item in items)
+    assert all(item.snippet is not None and len(item.snippet) == 4_000 for item in items)
+
+    dtd = b'<!DOCTYPE rss [<!ENTITY x "boom">]><rss><channel/></rss>'
+    with pytest.raises(ProviderError, match="prohibited declaration"):
+        await RssCollector(FixtureFeedFetcher(dtd)).collect(source)

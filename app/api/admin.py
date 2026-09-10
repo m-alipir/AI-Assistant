@@ -568,7 +568,7 @@ async def update_model(update: ModelUpdate, request: Request) -> dict[str, str]:
     return {"role": update.role, "model": update.model}
 
 
-@router.get("/gmail/connect")
+@router.post("/gmail/connect")
 async def gmail_connect(request: Request) -> RedirectResponse:
     oauth = getattr(request.app.state, "gmail_oauth", None)
     if (

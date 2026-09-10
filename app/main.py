@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
@@ -40,6 +41,7 @@ from app.email.gmail_api import GmailApiClient
 from app.email.oauth import GmailOAuth
 from app.ingestion.schemas import SourceItem, SourceKind, TimestampConfidence
 from app.jobs.gmail_runtime import GmailAccountRecord, GmailRuntimeJob
+from app.jobs.retention import RetentionJob, RetentionScheduler
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
 from app.jobs.scheduler import DailyScheduler, RuntimeRunCoordinator
 from app.jobs.youtube_runtime import YouTubeRuntimeJob
@@ -68,6 +70,7 @@ from app.notifications.core import (
 )
 from app.notifications.ntfy import NtfyNotifier
 from app.observability.logging import configure_logging
+from app.security import ProcessRateLimiter, opaque_client_key
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
 
@@ -93,9 +96,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
         scheduler = getattr(lifespan_app.state, "scheduler", None)
+        retention_scheduler = getattr(lifespan_app.state, "retention_scheduler", None)
         if scheduler:
             scheduler.start()
+        if retention_scheduler:
+            retention_scheduler.start()
         yield
+        if retention_scheduler:
+            await retention_scheduler.stop()
         if scheduler:
             await scheduler.stop()
         if lifespan_app.state.engine is not None:
@@ -109,15 +117,17 @@ def create_app(
         redoc_url=None if active_settings.app_env.casefold() == "production" else "/redoc",
         openapi_url=None if active_settings.app_env.casefold() == "production" else "/openapi.json",
     )
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=active_settings.allowed_host_list)
-
     @app.middleware("http")
     async def protect_admin_and_add_security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         """Apply production-only access control, CSRF origin checks, and browser hardening."""
+        request.state.csp_nonce = secrets.token_urlsafe(18)
         is_admin = request.url.path == "/admin" or request.url.path.startswith("/admin/")
         is_agent_api = request.url.path.startswith("/api/v1/")
         if is_admin and active_settings.admin_auth_enabled:
             if not _admin_credentials_valid(request, active_settings):
+                client_key = opaque_client_key(request.client.host if request.client else None)
+                if not await app.state.admin_auth_rate_limiter.allow(client_key):
+                    return PlainTextResponse("Too many authentication attempts.", status_code=429)
                 return PlainTextResponse(
                     "Admin authentication required.",
                     status_code=401,
@@ -128,11 +138,12 @@ def create_app(
             ):
                 return PlainTextResponse("Invalid admin request origin.", status_code=403)
         if active_settings.force_https and request.url.path not in {"/health", "/ready"}:
-            forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-            proto = forwarded_proto.split(",")[0].strip()
-            if proto != "https":
-                secure_url = request.url.replace(scheme="https")
-                return RedirectResponse(str(secure_url), status_code=307)
+            if not _request_is_https(request, active_settings):
+                origin = urlsplit(active_settings.admin_public_origin)
+                secure_url = urlunsplit(
+                    (origin.scheme, origin.netloc, request.url.path, request.url.query, "")
+                )
+                return RedirectResponse(secure_url, status_code=307)
         response: Response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -144,7 +155,8 @@ def create_app(
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
             "img-src 'self' data: https:; connect-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+            f"script-src 'self' 'nonce-{request.state.csp_nonce}'; "
+            f"style-src 'self' 'nonce-{request.state.csp_nonce}'",
         )
         if is_admin or is_agent_api:
             response.headers.setdefault("Cache-Control", "no-store")
@@ -156,11 +168,19 @@ def create_app(
             )
         return response
 
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=active_settings.allowed_host_list)
+
     app.state.readiness_check = readiness_check
     app.state.engine = engine
     app.state.agent_api_settings = active_settings
     app.state.agent_api_rate_limiter = AgentApiRateLimiter(
         active_settings.agent_api_rate_limit_per_minute
+    )
+    app.state.agent_api_auth_rate_limiter = ProcessRateLimiter(
+        active_settings.agent_api_auth_rate_limit_per_minute
+    )
+    app.state.admin_auth_rate_limiter = ProcessRateLimiter(
+        active_settings.admin_auth_rate_limit_per_minute
     )
 
     async def metrics() -> dict[str, object]:
@@ -283,9 +303,10 @@ def create_app(
                         (
                             await session.execute(
                                 text(
-                                    "SELECT id, canonical_title, raw_content, embedding_model_id, embedding_dimensions "
-                                    "FROM events WHERE embedding IS NULL OR embedding_model_id != :model "
-                                    "OR (:dimensions IS NOT NULL AND embedding_dimensions != :dimensions) "
+                                    "SELECT id, canonical_title, raw_content, embedding_model_id, "
+                                    "embedding_dimensions FROM events WHERE embedding IS NULL "
+                                    "OR embedding_model_id != :model OR (:dimensions IS NOT NULL "
+                                    "AND embedding_dimensions != :dimensions) "
                                     "ORDER BY occurred_at DESC LIMIT :limit"
                                 ),
                                 {
@@ -321,7 +342,8 @@ def create_app(
                         await session.execute(
                             text(
                                 "UPDATE events SET embedding = CAST(:embedding AS vector), "
-                                "embedding_model_id = :model, embedding_dimensions = :dimensions WHERE id = :id"
+                                "embedding_model_id = :model, embedding_dimensions = :dimensions "
+                                "WHERE id = :id"
                             ),
                             {
                                 "id": event_id,
@@ -532,7 +554,8 @@ def create_app(
                     HttpFeedFetcher(
                         allow_private_hosts=active_settings.allow_private_source_urls,
                         allow_insecure_http=active_settings.allow_insecure_source_urls,
-                    )
+                    ),
+                    max_items=active_settings.rss_max_items_per_feed,
                 ),
                 post_llm_failure=mark_post_llm_failure,
                 is_post_llm_failed=is_post_llm_failed,
@@ -650,7 +673,9 @@ def create_app(
 
         app.state.ask_callback = ask_knowledge
 
-        async def agent_briefing_items(briefing_id: str, rendered: str) -> list[AgentBriefingItem]:
+        async def agent_briefing_items(
+            briefing_id: str, rendered: str
+        ) -> list[AgentBriefingItem]:
             """Select only safe persisted briefing/event/action fields for Agent API reads."""
             async with sessions() as session:
                 rows = (
@@ -661,18 +686,23 @@ def create_app(
                                 "bc.what_changed_tr, bc.why_important_tr, e.canonical_title, "
                                 "e.occurred_at, ec.classification, ec.action_summary, ec.deadline, "
                                 "ec.application_company, ec.created_at AS email_recorded_at, "
-                                "ARRAY(SELECT c.statement FROM claims c WHERE c.event_id = bi.event_id "
+                                "ARRAY(SELECT c.statement FROM claims c "
+                                "WHERE c.event_id = bi.event_id "
                                 "ORDER BY c.id LIMIT 5) AS facts, "
                                 "ARRAY(SELECT i.inference_text FROM inferences i "
-                                "WHERE i.event_id = bi.event_id ORDER BY i.id LIMIT 3) AS inferences, "
+                                "WHERE i.event_id = bi.event_id "
+                                "ORDER BY i.id LIMIT 3) AS inferences, "
                                 "ARRAY(SELECT es.canonical_url FROM event_sources es "
-                                "WHERE es.event_id = bi.event_id AND es.canonical_url IS NOT NULL "
+                                "WHERE es.event_id = bi.event_id "
+                                "AND es.canonical_url IS NOT NULL "
                                 "ORDER BY es.canonical_url LIMIT 3) AS source_links "
                                 "FROM briefing_items bi "
-                                "LEFT JOIN briefing_item_content bc ON bc.briefing_id = bi.briefing_id "
+                                "LEFT JOIN briefing_item_content bc "
+                                "ON bc.briefing_id = bi.briefing_id "
                                 "AND bc.event_id = bi.event_id "
                                 "LEFT JOIN events e ON e.id = bi.event_id "
-                                "LEFT JOIN email_classifications ec ON ec.source_item_id = bi.event_id "
+                                "LEFT JOIN email_classifications ec "
+                                "ON ec.source_item_id = bi.event_id "
                                 "WHERE bi.briefing_id = :briefing_id "
                                 "ORDER BY bi.section, e.occurred_at DESC NULLS LAST"
                             ),
@@ -798,7 +828,8 @@ def create_app(
                         await session.execute(
                             text(
                                 "SELECT b.id, b.created_at, count(bi.event_id) AS item_count "
-                                "FROM briefings b LEFT JOIN briefing_items bi ON bi.briefing_id = b.id "
+                                "FROM briefings b LEFT JOIN briefing_items bi "
+                                "ON bi.briefing_id = b.id "
                                 f"{clause} GROUP BY b.id, b.created_at "
                                 "ORDER BY b.created_at DESC LIMIT :query_limit"
                             ),
@@ -1021,6 +1052,15 @@ def create_app(
             claim_scheduled_day,
             record_scheduled_result,
         )
+        if active_settings.retention_enabled:
+            app.state.retention_scheduler = RetentionScheduler(
+                RetentionJob(
+                    sessions,
+                    public_raw_days=active_settings.public_raw_content_retention_days,
+                    operational_days=active_settings.operational_retention_days,
+                ),
+                active_settings.retention_interval_hours,
+            )
     app.include_router(health_router)
     app.include_router(admin_router)
     app.include_router(agent_router)
@@ -1122,3 +1162,13 @@ def _same_admin_origin(request: Request, settings: Settings) -> bool:
     origin = request.headers.get("origin", "").rstrip("/")
     expected = settings.admin_public_origin.rstrip("/")
     return bool(origin and expected and secrets.compare_digest(origin, expected))
+
+
+def _request_is_https(request: Request, settings: Settings) -> bool:
+    if request.url.scheme == "https":
+        return True
+    client_host = request.client.host if request.client else ""
+    if client_host not in settings.trusted_proxy_ip_list:
+        return False
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return forwarded_proto.split(",", 1)[0].strip().casefold() == "https"

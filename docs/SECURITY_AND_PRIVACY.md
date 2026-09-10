@@ -17,12 +17,12 @@
 
 | Asset / boundary | Primary threat | Implemented control | Residual risk |
 | --- | --- | --- | --- |
-| Internet-facing Admin | guessed credentials, CSRF, UI embedding | production fail-closed Basic auth, constant-time comparison, same-origin checks for mutations, `no-store`, CSP/frame/referrer headers | Basic auth has no per-user audit/MFA/rate limit; put it behind VPN or an identity-aware proxy for multi-user use |
-| OAuth callback | state replay, redirect/client misconfiguration | random single-use 10-minute state, bounded in-memory state count, exact configured redirect, safe error categories | state is process-local; a multi-replica deployment needs shared session/state storage |
+| Internet-facing Admin | guessed credentials, CSRF, UI embedding | production fail-closed Basic auth, constant-time comparison, pre-audit failed-auth limiting, same-origin checks, POST-only OAuth start, nonce CSP/frame/referrer headers | Basic auth has no MFA; put it behind VPN or an identity-aware proxy for multi-user use |
+| OAuth callback | state replay, authorization-code interception, redirect/client misconfiguration | random single-use 10-minute state, PKCE S256, bounded in-memory state count, exact configured redirect, safe error categories | state is process-local; a multi-replica deployment needs shared session/state storage |
 | Gmail refresh tokens | database/backup theft or accidental logs | Fernet authenticated encryption, read-only scope, no token/body logging, legacy XOR values force reauthorization | encryption key and encrypted DB backup must be protected independently |
-| PostgreSQL | public network access, credential theft, accidental deletion | private Compose network/no DB port, non-root app, backups/restore runbook | at-rest DB encryption and managed-DB RLS are operator responsibilities |
-| RSS/YouTube URLs | SSRF, redirect to private address, hostile payload | production HTTPS-only public-IP validation on every redirect, timeout/size bounds, no general web crawl | DNS rebinding after resolution and compromised public sources remain possible |
-| LLM prompts/Search | prompt injection, over-sharing Gmail/history | source text is data, bounded candidate retrieval, Gmail classification-only Search data, model outputs separated from source facts | a configured third-party model receives the selected public/compact data; review provider policy |
+| PostgreSQL | public network access, credential theft, accidental deletion | private Compose network/no DB port, separate runtime/migration credentials, verifying TLS for remote DBs, encrypted backup scripts/runbook | live role grants, TLS, backup and restore remain pending VPS validation |
+| RSS/YouTube URLs | SSRF, redirects/DNS rebinding to private addresses, hostile payload | strict URL allow-lists, production HTTPS/public DNS and connected-peer checks, redirect/timeout/size/item/XML bounds | compromised public sources remain untrusted input |
+| LLM prompts/Search | prompt injection, invented claims, over-sharing Gmail/history | untrusted JSON encoding, bounded content, source-locator plus lexical grounding, Gmail classification-only Search data, facts/inferences separated | grounding is conservative lexical evidence, not semantic proof; review provider policy |
 | Read-only Agent API | orchestration layer becomes a path to operational secrets, private email, or host control | disabled-by-default distinct bearer token, bounded projection/pagination/request-response sizes, rate limit, metadata-only audit, no-store response | process-local rate limit; multi-replica use needs shared limiting and any future write scope needs independent authorization design |
 
 ## Admin and browser access
@@ -32,12 +32,14 @@
   a 16+ character password (or password file), explicit `ALLOWED_HOSTS`, HTTPS
   `ADMIN_PUBLIC_ORIGIN`, and production source restrictions are set.
 - State-changing Admin requests require the configured `Origin`; this is intentional CSRF
-  protection. The Google callback is a `GET` and relies on the single-use OAuth state instead.
+  protection. OAuth authorization starts with `POST`; the Google callback is a `GET` and relies
+  on single-use state plus PKCE.
 - API documentation/OpenAPI are disabled in production. `/health` and `/ready` remain unauthenticated
   for the local reverse-proxy/container health check only.
 - Secure headers include CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, and `no-store`
-  for Admin pages. Set `FORCE_HTTPS=true` only behind a trusted TLS proxy which sets
-  `X-Forwarded-Proto: https`.
+  for Admin pages. The CSP permits inline application assets only with a per-response nonce.
+  Set `FORCE_HTTPS=true` only behind a TLS proxy whose literal peer IP is listed in
+  `TRUSTED_PROXY_IPS`; untrusted forwarding headers are ignored.
 
 ## Gmail
 - V1 uses least-privilege read-only access where possible.
@@ -62,7 +64,8 @@
   (`From`, `Subject`, `Date`) and INBOX labels, not message bodies. Refresh/access tokens remain
   in memory only for the request; only deterministic classification/action metadata and a bounded
   briefing title are retained. Per-account failures report a count without logging provider bodies.
-- Do not store email raw bodies longer than necessary. Default retention target: <=7 days.
+- Gmail message bodies are not retained. Public-source raw content is removed after 30 days by
+  the opt-in retention job; operational/audit rows default to 90 days.
 - Do not send irrelevant/private email content into general knowledge embeddings/memory.
 - Only distilled actionable metadata/application-state may persist long term where required.
 - Revoke a compromised account in Google Account permissions, delete/reconnect its application
@@ -76,8 +79,9 @@
 - If a client-facing UI directly talks to Supabase later, add RLS before exposing it. V1 should preferably route UI requests through the app backend.
 - Database backups/migrations must not contain secrets.
 - Encrypt backups, restrict restore access, test a restore at least quarterly, and keep the Fernet
-  key in a separate secret store. There is no destructive retention migration in this milestone;
-  before adding automatic deletion, record a backup/restore and legal-retention plan.
+  key in a separate secret store. Use `docs/BACKUP_RESTORE.md`; live acceptance is pending VPS
+  validation. Retention preserves events, claims, inferences, relations, and provenance while
+  removing expired raw source text and bounded operational history.
 
 ## LLM privacy boundary
 Before an LLM request:
@@ -100,8 +104,9 @@ Log metadata (model, token usage, hash, latency, status), not sensitive prompt p
 - Validate MIME/content types where applicable.
 - Keep containers non-root where practical.
 - Production feed fetches reject plaintext HTTP and private, loopback, link-local, multicast,
-  reserved, or unspecified DNS results before each request and redirect. Local development can
-  explicitly retain private/HTTP fixture sources.
+  reserved, or unspecified DNS results before each request and redirect, and verify the connected
+  peer address after connection. Feed item counts/fields are bounded and DTD/entity declarations
+  are rejected. Local development can explicitly retain private/HTTP fixture sources.
 
 ## Future agent and coding-worker boundary
 

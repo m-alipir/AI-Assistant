@@ -12,6 +12,12 @@ The pilot runner stores aggregate route measurements only. It never stores feed 
 or article bodies. `retained_items` means fresh, de-duplicated feed candidates; it does not mean
 LLM-validated knowledge events.
 
+RSSHub is attached only to its egress network and cannot join the internal PostgreSQL network;
+the narrowly scoped runner is the only dual-homed component. The RSSHub container is read-only,
+capability-free, resource-bounded, and has `no-new-privileges`. It is absent from production
+Compose and must remain excluded from VPS deployment unless a separate production review approves
+it.
+
 ## Approved routes
 
 The paths below were checked against the current RSSHub provider manifest on 2026-09-10. All are

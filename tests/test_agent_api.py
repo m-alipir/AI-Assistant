@@ -3,9 +3,11 @@
 from datetime import UTC, datetime
 
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.api.agent import _bounded_request_body
 from app.config.settings import Settings
 from app.main import create_app
 
@@ -79,6 +81,32 @@ def test_agent_api_rejects_missing_or_invalid_token_without_echoing_it() -> None
         ("briefings.latest", "unauthorized", 0),
         ("briefings.latest", "unauthorized", 0),
     ]
+
+
+def test_agent_api_limits_failed_auth_before_unbounded_audit_writes() -> None:
+    app = _app(agent_api_auth_rate_limit_per_minute=1)
+    with TestClient(app) as client:
+        first = client.get("/api/v1/briefings/latest", headers=_headers("wrong-token"))
+        second = client.get("/api/v1/briefings/latest", headers=_headers("wrong-token"))
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert app.state.test_agent_audit == [("briefings.latest", "unauthorized", 0)]
+
+
+@pytest.mark.asyncio
+async def test_agent_api_streaming_body_stops_at_the_configured_bound() -> None:
+    calls = 0
+
+    async def receive() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"type": "http.request", "body": b"x" * 300, "more_body": True}
+
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []}, receive)
+    with pytest.raises(HTTPException) as error:
+        await _bounded_request_body(request, 256)
+    assert error.value.status_code == 413
+    assert calls == 1
 
 
 def test_agent_api_returns_bounded_briefing_with_facts_and_labelled_inferences() -> None:

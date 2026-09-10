@@ -311,12 +311,10 @@ storage is wired; deterministic filters and lexical ranking remain active.
 source-fetch policy; unauthenticated/cross-origin Admin mutation is rejected; no test makes a real
 provider request; the deployment guide gives a TLS, backup, and secret-handling path.
 
-**Known limitations / accepted risks:** Basic auth is single-operator rather than MFA/RBAC/rate
-limited, OAuth state is memory-local for this single-process deployment, and public DNS can still
-change after resolution. Put a production Admin behind VPN/identity-aware proxy where possible;
-multi-replica deployment needs shared OAuth state and external secret management. No destructive
-email metadata-retention migration was added; a retention job needs a separately approved
-backup/legal-retention plan.
+**Known limitations / accepted risks:** Basic auth is single-operator rather than MFA/RBAC. OAuth
+state and authentication/request limiters are memory-local for the single-process deployment.
+Put production Admin behind VPN/identity-aware proxy where possible. Multi-replica deployment needs
+shared OAuth state and limiting; adding Redis only for single-process V1 is explicitly deferred.
 
 ---
 
@@ -382,12 +380,16 @@ is labelled rather than translated at read time.
 
 - [x] offline production preflight remains covered: fail-closed settings, Admin/origin controls,
   source-fetch restrictions, Compose network/least-privilege topology, and generated migration SQL
+- [x] production separates one-shot migration-owner and runtime-role DSNs; remote database TLS
+  verifies hostname/certificate and supports an explicit CA file
+- [x] encrypted pg_dump/age and checksum-verified isolated restore scripts/runbook are present
 - [x] VPS runbook now sequences encrypted backup/isolated restore, startup/migration confirmation,
   TLS/Admin/health validation, M16 legacy-reader checking, and a scheduler-off default
 - [x] M16 migration `20260908_0015` is explicitly included in the operational verification path
 - [x] Hermes is documented as a separate orchestration layer with generic future domain API
   namespaces; direct DB, Gmail-token, OpenRouter-secret, and shell access remain prohibited
 - [!] staging VPS backup and isolated restore observation — BLOCKED / DEFERRED: VPS ready when
+- [!] runtime-role grant and remote PostgreSQL TLS observation — pending VPS validation
 - [!] staging/production Compose startup, TLS proxy, authenticated Admin, health/readiness, and
   migration-revision observation — BLOCKED / DEFERRED: VPS ready when
 - [!] explicitly approved controlled fresh-briefing verification, if a newly persisted Turkish
@@ -507,11 +509,12 @@ and correlation keeps claims and inferences separate with bounded context.
 
 ## Approved implementation sequence after M19
 
-The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. Later milestones are
-planned, not active; their scope must not be pulled into M19.
+The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. M20 and M22 are complete;
+M21 is the active milestone and its pilot remains open. Future milestones are planned and their
+scope must not be pulled into the active work.
 
-- [ ] **M20 — Full-article ingestion:** safe bounded article fetch plus Trafilatura extraction
-- [ ] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
+- [x] **M20 — Full-article ingestion:** safe bounded article fetch plus Trafilatura extraction
+- [~] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
   regression harness
 - [x] **M22 — Notification delivery:** disabled-by-default, privacy-minimized ntfy adapter
 - [ ] **M23 — Document ingestion:** isolated Docling boundary, only after explicit feature approval
@@ -542,6 +545,26 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-10: Final pre-VDS release validation: 190 passed, 0 skipped against a disposable
+  pgvector PostgreSQL migrated through `20260910_0019`; Ruff, uv lock consistency, Alembic static
+  SQL, synthetic production Compose resolution, production Docker image build, dependency audit
+  (no known vulnerabilities), and `git diff --check` passed. Pytest and pytest-asyncio were moved
+  to their compatible secure release lines; tracked test/lint caches were removed from Git.
+  Live TLS, database-role grants, and encrypted backup/restore remain VPS acceptance work.
+- 2026-09-10: Security remediation validation: 190 passed, 0 skipped against a disposable pgvector
+  PostgreSQL migrated through `20260910_0019`; Ruff, uv lock consistency, Alembic head/static SQL,
+  synthetic production and isolated RSSHub Compose configuration, dependency audit (no known
+  vulnerabilities), and `git diff --check` passed. All external application integrations remained
+  mocked/off; VPS TLS, live role grants, and real encrypted backup/restore remain pending VPS
+  validation.
+- 2026-09-10: Release QA: 167 passed, 0 skipped, with 2 upstream deprecation warnings against
+  a uniquely named disposable PostgreSQL Compose project migrated through `20260910_0019`.
+  Ruff passed with 0 errors; Alembic static SQL generation through `head`, production Compose
+  configuration with synthetic environment values, and `git diff --check` all passed. No
+  OpenRouter, Gmail, YouTube, RSSHub, ntfy, scheduler, VPS, or user-data request was made.
+  Existing M21 day-1 pilot observations were not independently re-verified in this QA run, because
+  the approved QA boundary forbids RSSHub or other external-service requests; they remain neither
+  changed nor completion evidence for the seven-day pilot.
 - 2026-09-10: M22 final validation: 167 passed, 0 skipped, 2 upstream deprecation warnings.
   Disposable local PostgreSQL migrated through `20260910_0019`; notification tests cover disabled
   defaults, protected ntfy configuration, sequence-ID retries, duplicate suppression, and isolated
@@ -790,6 +813,23 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-10: Prepared the security-remediated tree for VDS staging: refreshed the locked test
+  toolchain after a current dependency audit, confirmed the production image builds, and removed
+  generated pytest/Ruff caches from version control. No VDS connection or external application
+  integration was attempted; VPS-specific M17/M9 acceptance remains open.
+- 2026-09-10: Applied the accepted P1/P2 production security remediations locally: immutable
+  dependencies/images and deny-by-default build context; pre-audit auth/request limits; trusted
+  proxy, SSRF/redirect/peer and YouTube URL boundaries; runtime/migration DB split and verifying
+  TLS; opt-in retention; conservative claim grounding and hostile-feed bounds; PKCE/POST-only OAuth,
+  nonce CSP, stricter secret/ntfy/log/link handling, RSSHub network isolation, and encrypted
+  backup/restore tooling. Single-process limiting is an accepted risk; multi-replica sharing and
+  every real VPS/TLS/backup acceptance item remain deferred.
+- 2026-09-10: Release QA corrected ten Ruff line-length errors without changing runtime behavior.
+  The full offline suite passed against a uniquely named migrated disposable PostgreSQL instance;
+  production Compose resolved with synthetic values. M19–M22 runtime wiring was exercised by its
+  focused and full regression coverage with no additional reproducible runtime bug found. M21
+  remains in progress: its existing day-1 pilot observations were not re-verified in this QA run
+  and do not complete the required seven-day decision.
 - 2026-09-10: Started M21 Source expansion and evals. Added a normal-pytest synthetic/public-style
   golden dataset for core quality contracts and a prompt-injection boundary regression. Promptfoo
   remains deliberately uninstalled and manual because its configuration can execute trusted local

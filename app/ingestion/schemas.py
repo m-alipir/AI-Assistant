@@ -40,14 +40,14 @@ class FreshnessStatus(StrEnum):
 class SourceItem(BaseModel):
     """A compact normalized feed/video item before any LLM or article extraction work."""
 
-    source_name: str
+    source_name: str = Field(max_length=200)
     source_kind: SourceKind
     stream: SourceStream
-    external_id: str | None = None
-    canonical_url: str | None = None
-    title: str
-    author: str | None = None
-    snippet: str | None = None
+    external_id: str | None = Field(default=None, max_length=512)
+    canonical_url: str | None = Field(default=None, max_length=2_048)
+    title: str = Field(min_length=1, max_length=512)
+    author: str | None = Field(default=None, max_length=256)
+    snippet: str | None = Field(default=None, max_length=4_000)
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
     discovered_at: datetime
@@ -55,7 +55,7 @@ class SourceItem(BaseModel):
     timestamp_confidence: TimestampConfidence
     freshness_status: FreshnessStatus = FreshnessStatus.UNASSESSED
     source_freshness_hours: int | None = Field(default=None, ge=1, le=720)
-    content_hash: str
+    content_hash: str = Field(min_length=1, max_length=128)
 
     @field_validator("source_published_at", "source_updated_at", "discovered_at", "fetched_at")
     @classmethod

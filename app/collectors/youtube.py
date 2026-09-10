@@ -45,8 +45,8 @@ class YouTubeDiscovery:
         source: YouTubeSourceConfig,
         fetched_at: datetime,
     ) -> SourceItem:
-        title = str(entry.get("title") or "Untitled video").strip()
-        snippet = str(entry.get("summary") or "").strip() or None
+        title = str(entry.get("title") or "Untitled video").strip()[:512]
+        snippet = str(entry.get("summary") or "").strip()[:4_000] or None
         published_at = parse_source_datetime(
             entry.get("published_parsed") or entry.get("published")
         )
@@ -59,7 +59,7 @@ class YouTubeDiscovery:
             external_id=_video_id(entry, video_url),
             canonical_url=video_url,
             title=title,
-            author=str(entry.get("author") or "").strip() or None,
+            author=str(entry.get("author") or "").strip()[:256] or None,
             snippet=snippet,
             source_published_at=published_at,
             source_updated_at=updated_at,
@@ -138,6 +138,8 @@ class YtDlpSubtitleFetcher:
         """Use yt-dlp's library API in a temporary directory to retain captions only."""
         import yt_dlp
 
+        safe_video_url = _validated_youtube_video_url(video_url)
+
         with tempfile.TemporaryDirectory(prefix="personal-intelligence-subs-") as directory:
             output_template = str(Path(directory) / "%(id)s.%(ext)s")
             options = {
@@ -156,7 +158,7 @@ class YtDlpSubtitleFetcher:
             }
             try:
                 with yt_dlp.YoutubeDL(options) as downloader:
-                    info: Mapping[str, Any] = downloader.extract_info(video_url, download=True)
+                    info: Mapping[str, Any] = downloader.extract_info(safe_video_url, download=True)
             except Exception as error:  # yt-dlp has a broad exception hierarchy
                 raise ProviderError("yt-dlp subtitle retrieval failed") from error
             return _requested_subtitle_tracks(info, Path(directory), self._max_subtitle_bytes)
@@ -230,6 +232,23 @@ def _video_id(entry: Mapping[str, Any], video_url: str | None) -> str | None:
     if video_url:
         return parse_qs(urlsplit(video_url).query).get("v", [None])[0]
     return None
+
+
+def _validated_youtube_video_url(value: str) -> str:
+    """Canonicalize only known public YouTube video URLs before invoking yt-dlp."""
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ProviderError("subtitle URL is not an approved YouTube video URL")
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"} and parsed.path == "/watch":
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+    elif host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    else:
+        video_id = None
+    if not video_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,32}", video_id):
+        raise ProviderError("subtitle URL is not an approved YouTube video URL")
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def _timestamp_seconds(value: str) -> float:

@@ -245,7 +245,8 @@ async def _run_cli(report_days: int | None) -> None:
                 HttpFeedFetcher(
                     allow_private_hosts=settings.allow_private_source_urls,
                     allow_insecure_http=settings.allow_insecure_source_urls,
-                )
+                ),
+                max_items=settings.rss_max_items_per_feed,
             ),
             database_observation_writer(sessions),
         )

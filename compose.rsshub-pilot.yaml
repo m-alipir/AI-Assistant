@@ -7,7 +7,7 @@ services:
     profiles: [full-app]
 
   rsshub:
-    image: ${RSSHUB_IMAGE:-diygod/rsshub:latest}
+    image: ${RSSHUB_IMAGE:-diygod/rsshub:2025-09-01@sha256:32d157ab11a17f9648b063e7e7444e51dcc308a5fcad8e8cbfaddfdbfc9ad5dc}
     profiles: [rsshub-pilot]
     environment:
       NODE_ENV: production
@@ -16,9 +16,12 @@ services:
     restart: "no"
     init: true
     read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     pids_limit: 128
     mem_limit: 512m
+    networks: [rsshub_egress]
 
   rsshub-pilot-runner:
     build: .
@@ -39,3 +42,7 @@ services:
       rsshub:
         condition: service_started
     restart: "no"
+    networks: [backend, rsshub_egress]
+
+networks:
+  rsshub_egress: {}

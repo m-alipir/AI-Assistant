@@ -15,6 +15,8 @@ def test_oauth_authorization_url_is_readonly_and_stateful() -> None:
     query = parse_qs(urlparse(oauth.authorization_url()).query)
     assert query["scope"] == ["https://www.googleapis.com/auth/gmail.readonly"]
     assert len(query["state"][0]) >= 32
+    assert query["code_challenge_method"] == ["S256"]
+    assert len(query["code_challenge"][0]) >= 43
     assert "client_secret" not in query
 
 
@@ -61,6 +63,8 @@ def test_token_endpoint_error_codes_have_safe_categories(
 async def test_token_exchange_classifies_mock_google_responses(
     monkeypatch: pytest.MonkeyPatch, response: httpx.Response, category: str
 ) -> None:
+    submitted: list[dict[str, str]] = []
+
     class FakeClient:
         async def __aenter__(self) -> "FakeClient":
             return self
@@ -69,6 +73,7 @@ async def test_token_exchange_classifies_mock_google_responses(
             return None
 
         async def post(self, *args: object, **kwargs: object) -> httpx.Response:
+            submitted.append(kwargs["data"])  # type: ignore[arg-type]
             return response
 
     monkeypatch.setattr("app.email.oauth.httpx.AsyncClient", lambda **kwargs: FakeClient())
@@ -77,6 +82,26 @@ async def test_token_exchange_classifies_mock_google_responses(
     with pytest.raises(OAuthFlowError) as failure:
         await oauth.exchange("authorization-code", state)
     assert failure.value.category == category
+    assert len(submitted[0]["code_verifier"]) >= 64
+
+
+def test_oauth_connect_is_a_post_only_state_change() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    class FakeOAuth:
+        configured = True
+
+        def authorization_url(self) -> str:
+            return "https://accounts.google.com/o/oauth2/v2/auth?state=safe"
+
+    app.state.gmail_oauth = FakeOAuth()
+    app.state.gmail_enabled = True
+    app.state.gmail_encryption_ready = True
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.get("/admin/gmail/connect").status_code == 405
+        response = client.post("/admin/gmail/connect")
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://accounts.google.com/")
 
 
 def test_oauth_callback_stores_only_authenticated_ciphertext() -> None:

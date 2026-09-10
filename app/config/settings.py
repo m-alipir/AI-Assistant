@@ -1,12 +1,16 @@
 """Environment-backed runtime settings."""
 
+import ipaddress
+import os
 import re
+import stat
 from datetime import time
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from cryptography.fernet import Fernet
 from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,6 +32,9 @@ class Settings(BaseSettings):
         validation_alias="DATABASE_URL",
     )
     database_url_file: Path | None = Field(default=None, validation_alias="DATABASE_URL_FILE")
+    database_ssl_ca_file: Path | None = Field(
+        default=None, validation_alias="DATABASE_SSL_CA_FILE"
+    )
     admin_sources_path: Path = Field(
         default=Path("config/sources.example.yaml"), validation_alias="ADMIN_SOURCES_PATH"
     )
@@ -39,6 +46,16 @@ class Settings(BaseSettings):
     )
     scheduler_enabled: bool = Field(default=False, validation_alias="SCHEDULER_ENABLED")
     scheduler_daily_time: str = Field(default="08:00", validation_alias="SCHEDULER_DAILY_TIME")
+    retention_enabled: bool = Field(default=False, validation_alias="RETENTION_ENABLED")
+    public_raw_content_retention_days: int = Field(
+        default=30, validation_alias="PUBLIC_RAW_CONTENT_RETENTION_DAYS", ge=1, le=365
+    )
+    operational_retention_days: int = Field(
+        default=90, validation_alias="OPERATIONAL_RETENTION_DAYS", ge=7, le=730
+    )
+    retention_interval_hours: int = Field(
+        default=24, validation_alias="RETENTION_INTERVAL_HOURS", ge=1, le=168
+    )
     gmail_enabled: bool = Field(default=False, validation_alias="GMAIL_ENABLED")
     gmail_client_id: str = Field(default="", validation_alias="GMAIL_CLIENT_ID")
     gmail_client_secret: str = Field(default="", validation_alias="GMAIL_CLIENT_SECRET")
@@ -75,6 +92,9 @@ class Settings(BaseSettings):
     agent_api_rate_limit_per_minute: int = Field(
         default=30, validation_alias="AGENT_API_RATE_LIMIT_PER_MINUTE", ge=1, le=120
     )
+    agent_api_auth_rate_limit_per_minute: int = Field(
+        default=10, validation_alias="AGENT_API_AUTH_RATE_LIMIT_PER_MINUTE", ge=1, le=60
+    )
     agent_api_max_request_bytes: int = Field(
         default=2_048, validation_alias="AGENT_API_MAX_REQUEST_BYTES", ge=256, le=32_768
     )
@@ -85,16 +105,25 @@ class Settings(BaseSettings):
     admin_username: str = Field(default="", validation_alias="ADMIN_USERNAME")
     admin_password: str = Field(default="", validation_alias="ADMIN_PASSWORD")
     admin_password_file: Path | None = Field(default=None, validation_alias="ADMIN_PASSWORD_FILE")
+    admin_auth_rate_limit_per_minute: int = Field(
+        default=10, validation_alias="ADMIN_AUTH_RATE_LIMIT_PER_MINUTE", ge=1, le=60
+    )
     admin_public_origin: str = Field(default="", validation_alias="ADMIN_PUBLIC_ORIGIN")
     allowed_hosts: str = Field(
         default="localhost,127.0.0.1,testserver", validation_alias="ALLOWED_HOSTS"
     )
     force_https: bool = Field(default=False, validation_alias="FORCE_HTTPS")
+    trusted_proxy_ips: str = Field(
+        default="127.0.0.1,::1", validation_alias="TRUSTED_PROXY_IPS"
+    )
     allow_private_source_urls: bool = Field(
         default=True, validation_alias="ALLOW_PRIVATE_SOURCE_URLS"
     )
     allow_insecure_source_urls: bool = Field(
         default=True, validation_alias="ALLOW_INSECURE_SOURCE_URLS"
+    )
+    rss_max_items_per_feed: int = Field(
+        default=100, validation_alias="RSS_MAX_ITEMS_PER_FEED", ge=1, le=500
     )
     article_request_timeout_seconds: float = Field(
         default=12, validation_alias="ARTICLE_REQUEST_TIMEOUT_SECONDS", gt=0, le=60
@@ -122,6 +151,19 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as error:
             raise ValueError("APP_TIMEZONE must be an IANA timezone") from error
         return value
+
+    @field_validator("trusted_proxy_ips")
+    @classmethod
+    def validate_trusted_proxy_ips(cls, value: str) -> str:
+        entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+        if not entries:
+            raise ValueError("TRUSTED_PROXY_IPS must contain explicit IP addresses")
+        for entry in entries:
+            try:
+                ipaddress.ip_address(entry)
+            except ValueError as error:
+                raise ValueError("TRUSTED_PROXY_IPS must contain only IP addresses") from error
+        return ",".join(entries)
 
     @field_validator("scheduler_daily_time")
     @classmethod
@@ -160,18 +202,25 @@ class Settings(BaseSettings):
                 raise ValueError("NTFY_BASE_URL must be an HTTPS origin when NTFY_ENABLED=true")
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.ntfy_topic):
                 raise ValueError("NTFY_TOPIC must be a simple topic name when NTFY_ENABLED=true")
-            if len(self.ntfy_token_value) < 12:
-                raise ValueError("NTFY_TOKEN(_FILE) is required when NTFY_ENABLED=true")
+            if len(self.ntfy_token_value) < 32 or len(set(self.ntfy_token_value)) < 8:
+                raise ValueError("NTFY_TOKEN(_FILE) must be a high-entropy 32+ character value")
             if parsed_ntfy.hostname in {"ntfy.sh", "www.ntfy.sh"} and (
-                not self.ntfy_allow_public_topic or len(self.ntfy_topic) < 24
+                not self.ntfy_allow_public_topic or len(self.ntfy_topic) < 32
             ):
                 raise ValueError(
-                    "public ntfy.sh requires NTFY_ALLOW_PUBLIC_TOPIC=true and a 24+ character topic"
+                    "public ntfy.sh requires NTFY_ALLOW_PUBLIC_TOPIC=true and a 32+ character topic"
                 )
         if self.agent_api_enabled and len(self.agent_api_token_value) < 24:
             raise ValueError(
                 "AGENT_API_TOKEN(_FILE) must contain at least 24 characters when enabled"
             )
+        if self.gmail_enabled:
+            if not self.gmail_client_id.strip() or not self.gmail_client_secret_value:
+                raise ValueError("GMAIL_ENABLED requires Gmail client credentials")
+            try:
+                Fernet(self.app_encryption_key_value.encode("ascii"))
+            except (UnicodeError, ValueError) as error:
+                raise ValueError("GMAIL_ENABLED requires a valid APP_ENCRYPTION_KEY") from error
         if self.app_env.casefold() != "production":
             return self
         if not self.admin_auth_enabled:
@@ -202,6 +251,11 @@ class Settings(BaseSettings):
                 "production requires ALLOW_PRIVATE_SOURCE_URLS=false and "
                 "ALLOW_INSECURE_SOURCE_URLS=false"
             )
+        database = urlsplit(self.database_url_string)
+        if not database.hostname:
+            raise ValueError("DATABASE_URL must contain a hostname in production")
+        if database.hostname != "db" and "sslmode=disable" in database.query.casefold():
+            raise ValueError("remote production PostgreSQL cannot disable TLS")
         return self
 
     @property
@@ -248,6 +302,10 @@ class Settings(BaseSettings):
             entry.strip().casefold() for entry in self.allowed_hosts.split(",") if entry.strip()
         ]
 
+    @property
+    def trusted_proxy_ip_list(self) -> tuple[str, ...]:
+        return tuple(entry.strip() for entry in self.trusted_proxy_ips.split(",") if entry.strip())
+
     def logging_secret_values(self) -> tuple[str, ...]:
         """Supply known secret values to log redaction without exposing them elsewhere."""
         return tuple(
@@ -259,18 +317,29 @@ class Settings(BaseSettings):
                 self.admin_password_value,
                 self.agent_api_token_value,
                 self.ntfy_token_value,
+                self.database_url_string,
             )
             if value
         )
 
-    @staticmethod
-    def _secret_or_file(value: str, path: Path | None) -> str:
+    def _secret_or_file(self, value: str, path: Path | None) -> str:
         if path is None:
             return value.strip()
         try:
+            if path.is_symlink():
+                raise ValueError("invalid secret file")
+            if self.app_env.casefold() == "production" and not path.is_absolute():
+                raise ValueError("invalid secret file")
             resolved = path.resolve(strict=True)
             if not resolved.is_file() or resolved.stat().st_size > 16_384:
                 raise ValueError("invalid secret file")
+            if self.app_env.casefold() == "production":
+                if resolved.is_relative_to(Path.cwd().resolve()):
+                    raise ValueError("invalid secret file")
+                if os.name == "posix":
+                    metadata = resolved.stat()
+                    if stat.S_IMODE(metadata.st_mode) & 0o077 or metadata.st_uid != os.geteuid():
+                        raise ValueError("invalid secret file")
             return resolved.read_text(encoding="utf-8").strip()
         except (OSError, ValueError) as error:
             raise ValueError("configured secret file is unavailable or invalid") from error

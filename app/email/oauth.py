@@ -1,5 +1,7 @@
 """Bounded Google OAuth code flow; secrets are never logged or returned."""
 
+import base64
+import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -43,7 +45,7 @@ class GmailOAuth:
             client_secret,
             redirect_uri,
         )
-        self.states: dict[str, datetime] = {}
+        self.states: dict[str, tuple[datetime, str]] = {}
 
     @property
     def configured(self) -> bool:
@@ -53,13 +55,15 @@ class GmailOAuth:
         if not self.configured:
             raise ValueError("Gmail OAuth is not configured")
         now = datetime.now(UTC)
-        self.states = {value: expires for value, expires in self.states.items() if expires >= now}
+        self.states = {value: entry for value, entry in self.states.items() if entry[0] >= now}
         if len(self.states) >= 32:
             # An authenticated operator can start a fresh flow after old states expire; do not
             # allow repeated browser navigation to consume unbounded process memory.
             raise ValueError("too many active OAuth authorization attempts")
         state = secrets.token_urlsafe(32)
-        self.states[state] = now + timedelta(minutes=10)
+        verifier = secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode()
+        self.states[state] = (now + timedelta(minutes=10), verifier)
         return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(
             {
                 "client_id": self.client_id,
@@ -69,13 +73,16 @@ class GmailOAuth:
                 "access_type": "offline",
                 "prompt": "consent",
                 "state": state,
+                "code_challenge": challenge.rstrip("="),
+                "code_challenge_method": "S256",
             }
         )
 
     async def exchange(self, code: str, state: str) -> dict[str, str]:
-        expires = self.states.pop(state, None)
-        if not expires or expires < datetime.now(UTC):
+        entry = self.states.pop(state, None)
+        if not entry or entry[0] < datetime.now(UTC):
             raise OAuthFlowError("oauth_state_invalid_or_expired")
+        _, verifier = entry
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.post(
@@ -86,6 +93,7 @@ class GmailOAuth:
                         "client_secret": self.client_secret,
                         "redirect_uri": self.redirect_uri,
                         "grant_type": "authorization_code",
+                        "code_verifier": verifier,
                     },
                 )
         except httpx.HTTPError as error:

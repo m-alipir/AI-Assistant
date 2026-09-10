@@ -23,6 +23,7 @@ token in the repository. `AGENT_API_TOKEN_FILE` takes precedence over `AGENT_API
 AGENT_API_ENABLED=true
 AGENT_API_TOKEN_FILE=/run/secrets/agent_api_token
 AGENT_API_RATE_LIMIT_PER_MINUTE=30
+AGENT_API_AUTH_RATE_LIMIT_PER_MINUTE=10
 AGENT_API_MAX_REQUEST_BYTES=2048
 AGENT_API_MAX_RESPONSE_BYTES=65536
 ```
@@ -38,9 +39,11 @@ logs. Keep the API behind the same TLS proxy, host allow-list, and network polic
 Send the token only in `Authorization: Bearer <agent-api-token>`. Missing/wrong tokens return 401;
 disabled API routes return 404. Responses use `Cache-Control: no-store` and `Vary: Authorization`.
 
-- Rate limiting is a small process-local rolling one-minute limit. It stores no caller identity,
-  request text, or token. A future multi-replica deployment needs a shared limiter before using
-  more than one application process.
+- Authentication failures are limited before audit persistence; authenticated requests have a
+  separate rolling one-minute limit. Both store only an opaque client-key hash, never request text
+  or token. They are deliberately process-local for single-process V1. Multi-replica deployment is
+  an accepted risk/deferred item and requires a shared limiter before scaling out; Redis is not a
+  V1 dependency solely for this purpose.
 - Briefing list pages allow 1–20 rows. `before` is an ISO-8601 timestamp cursor.
 - Search requests and every JSON response are size-bounded. An over-limit request/response returns
   413 with a generic error.

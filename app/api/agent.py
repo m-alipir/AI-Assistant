@@ -1,10 +1,7 @@
 """Read-only, bounded integration API for external orchestration agents."""
 
-import asyncio
 import json
 import secrets
-import time
-from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 
@@ -16,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.briefing.presentation import safe_links
 from app.config.settings import Settings
 from app.knowledge.search import SafeEmailResult, SearchFilters, SearchResponse
+from app.security import ProcessRateLimiter, opaque_client_key
 
 router = APIRouter(prefix="/api/v1", tags=["agent-api"])
 
@@ -28,25 +26,7 @@ MAX_LINKS_PER_ITEM = 3
 AuditWriter = Callable[[str, str, int], Awaitable[None]]
 
 
-class AgentApiRateLimiter:
-    """Small process-local request limiter; it intentionally stores no caller or token value."""
-
-    def __init__(self, max_requests: int, window_seconds: float = 60.0) -> None:
-        self._max_requests = max_requests
-        self._window_seconds = window_seconds
-        self._timestamps: deque[float] = deque()
-        self._lock = asyncio.Lock()
-
-    async def allow(self) -> bool:
-        now = time.monotonic()
-        async with self._lock:
-            cutoff = now - self._window_seconds
-            while self._timestamps and self._timestamps[0] <= cutoff:
-                self._timestamps.popleft()
-            if len(self._timestamps) >= self._max_requests:
-                return False
-            self._timestamps.append(now)
-            return True
+AgentApiRateLimiter = ProcessRateLimiter
 
 
 class AgentEmailAction(BaseModel):
@@ -137,6 +117,10 @@ async def _guard(request: Request, endpoint: str) -> None:
     if not authorization.startswith("Bearer ") or not secrets.compare_digest(
         authorization[7:], expected
     ):
+        limiter: ProcessRateLimiter = request.app.state.agent_api_auth_rate_limiter
+        client_key = opaque_client_key(request.client.host if request.client else None)
+        if not await limiter.allow(client_key):
+            raise HTTPException(status_code=429, detail="Agent API authentication rate limited.")
         await _audit(request, endpoint, "unauthorized", 0)
         raise HTTPException(
             status_code=401,
@@ -147,6 +131,18 @@ async def _guard(request: Request, endpoint: str) -> None:
     if not await limiter.allow():
         await _audit(request, endpoint, "rate_limited", 0)
         raise HTTPException(status_code=429, detail="Agent API rate limit exceeded.")
+
+
+async def _bounded_request_body(request: Request, maximum: int) -> bytes:
+    """Read at most the configured body size, including transfer-encoded requests."""
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > maximum:
+            raise HTTPException(
+                status_code=413, detail="Agent API request exceeds configured limit."
+            )
+        body.extend(chunk)
+    return bytes(body)
 
 
 async def _response(
@@ -294,10 +290,11 @@ async def knowledge_search(request: Request) -> JSONResponse:
     ):
         await _audit(request, endpoint, "request_too_large", 0)
         raise HTTPException(status_code=413, detail="Agent API request exceeds configured limit.")
-    body = await request.body()
-    if len(body) > settings.agent_api_max_request_bytes:
+    try:
+        body = await _bounded_request_body(request, settings.agent_api_max_request_bytes)
+    except HTTPException:
         await _audit(request, endpoint, "request_too_large", 0)
-        raise HTTPException(status_code=413, detail="Agent API request exceeds configured limit.")
+        raise
     try:
         filters = SearchFilters.model_validate_json(body)
     except ValidationError:

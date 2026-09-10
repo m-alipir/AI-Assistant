@@ -12,6 +12,7 @@ htmlcov/
 .venv/
 venv/
 .uv-cache/
+.tmp-*/
 *.egg-info/
 dist/
 build/

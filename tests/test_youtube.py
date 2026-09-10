@@ -16,6 +16,7 @@ from app.collectors.youtube import (
 )
 from app.config.sources import YouTubeSourceConfig
 from app.ingestion.schemas import SourceKind
+from app.providers.contracts import ProviderError
 
 
 class FixtureFeedFetcher(FeedFetcher):
@@ -102,7 +103,7 @@ def test_ytdlp_wrapper_requests_captions_only_without_downloading_media(monkeypa
 
     monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDl))
     tracks = YtDlpSubtitleFetcher()._fetch_subtitles_sync(
-        "https://example.test/watch?v=abc", ("en", "en-US", "tr", "tr-TR")
+        "https://www.youtube.com/watch?v=abc123", ("en", "en-US", "tr", "tr-TR")
     )
 
     assert captured_options["skip_download"] is True
@@ -116,6 +117,14 @@ def test_ytdlp_wrapper_requests_captions_only_without_downloading_media(monkeypa
             vtt="WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption",
         )
     ]
+
+
+def test_yt_dlp_rejects_non_youtube_and_malformed_video_urls_before_invocation() -> None:
+    fetcher = YtDlpSubtitleFetcher()
+    with pytest.raises(ProviderError, match="approved YouTube"):
+        fetcher._fetch_subtitles_sync("https://127.0.0.1/watch?v=abc123", ("en",))
+    with pytest.raises(ProviderError, match="approved YouTube"):
+        fetcher._fetch_subtitles_sync("https://www.youtube.com/watch?v=short", ("en",))
 
 
 def test_configured_caption_language_requests_only_its_known_regional_family() -> None:

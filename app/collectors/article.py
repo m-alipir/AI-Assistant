@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 import httpx
 import trafilatura
 
-from app.collectors.rss import _validate_remote_url
+from app.collectors.rss import _validate_connected_peer, _validate_remote_url
 from app.providers.contracts import ProviderError
 
 
@@ -60,6 +60,7 @@ class ArticleFetcher:
                 async with client.stream(
                     "GET", current, headers={"Accept": "text/html,application/xhtml+xml"}
                 ) as response:
+                    _validate_connected_peer(response, allow_private_hosts=self._allow_private)
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location")
                         if not location or redirects == self._max_redirects:

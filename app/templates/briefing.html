@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Günlük Briefing</title>
-  <style>
+  <style nonce="{{ request.state.csp_nonce }}">
     body{max-width:900px;margin:2rem auto;padding:0 1rem;background:#f7f8fb;color:#172033;font-family:system-ui,-apple-system,sans-serif;line-height:1.5}
     a{color:#1557a6}.muted{color:#5d687b}.section{margin:2rem 0}.card{background:#fff;border:1px solid #dce2ec;border-radius:10px;padding:1rem 1.1rem;margin:.8rem 0}.meta{font-size:.9rem;color:#5d687b}.label{font-size:.85rem;font-weight:650;color:#324a71;margin-top:.7rem}.inference{border-left:3px solid #a66e16;padding-left:.7rem;color:#553e10}.feedback{display:flex;gap:.45rem;flex-wrap:wrap;margin-top:1rem}.feedback button{border:1px solid #9caac1;background:#f9fbff;border-radius:5px;padding:.35rem .55rem;cursor:pointer}.feedback button:hover{background:#e9f1ff}.feedback button.selected{background:#1557a6;color:#fff;border-color:#1557a6}#notice{min-height:1.5rem}.legacy{background:#fff6d8;padding:.7rem;border-radius:6px}
   </style>
@@ -30,13 +30,14 @@
       {% if item.model_inferences %}<p class="inference"><span class="label">Model çıkarımı — kaynakla doğrulanmış bilgi değildir</span><br>{{ item.model_inferences | join(' ') }}</p>{% endif %}
       {% if item.shown_because %}<p class="meta"><b>Bu neden gösterildi?</b> {{ item.shown_because }}</p>{% endif %}
       <p>{% for url in item.source_links %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">Kaynağı aç</a>{% if not loop.last %} · {% endif %}{% else %}<span class="muted">Kaynak bağlantısı eski kayıtta bulunmuyor.</span>{% endfor %}</p>
-      {% if item.event_id %}<div class="feedback" data-event-id="{{ item.event_id }}"><button class="{% if item.feedback_action == 'more' %}selected{% endif %}" data-action="more" onclick="feedback(this,'{{ item.event_id }}','more')">Daha fazla</button><button class="{% if item.feedback_action == 'less' %}selected{% endif %}" data-action="less" onclick="feedback(this,'{{ item.event_id }}','less')">Daha az</button><button class="{% if item.feedback_action == 'not_useful' %}selected{% endif %}" data-action="not_useful" onclick="feedback(this,'{{ item.event_id }}','not_useful')">Faydalı değil</button></div>{% endif %}
+      {% if item.event_id %}<div class="feedback" data-event-id="{{ item.event_id }}"><button class="{% if item.feedback_action == 'more' %}selected{% endif %}" data-action="more">Daha fazla</button><button class="{% if item.feedback_action == 'less' %}selected{% endif %}" data-action="less">Daha az</button><button class="{% if item.feedback_action == 'not_useful' %}selected{% endif %}" data-action="not_useful">Faydalı değil</button></div>{% endif %}
     </article>
     {% else %}<p class="muted">Bugün bu bölüm için uygun öğe yok.</p>{% endfor %}
   </section>
   {% endfor %}
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     async function feedback(button,eventId,action){const notice=document.querySelector('#notice');try{const r=await fetch(`/admin/briefings/{{ briefing_id }}/items/${encodeURIComponent(eventId)}/feedback`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});const body=await r.json().catch(()=>({}));if(!r.ok)throw Error(body.detail||'Geri bildirim kaydedilemedi.');button.closest('.feedback').querySelectorAll('button').forEach(value=>value.classList.toggle('selected',value.dataset.action===body.selected_action));notice.textContent=body.message;notice.className='meta'}catch(error){notice.textContent=error.message;notice.className='legacy'}}
+    document.addEventListener('click',event=>{const button=event.target.closest('.feedback button[data-action]');if(button){const box=button.closest('.feedback');feedback(button,box.dataset.eventId,button.dataset.action)}});
   </script>
 </body>
 </html>
