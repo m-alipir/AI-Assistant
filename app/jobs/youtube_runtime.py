@@ -202,6 +202,14 @@ class YouTubeRuntimeJob:
                         run.processing_errors += 1
                     return
                 try:
+                    await self._flow.embed_extraction(item.title, extracted, item.content_hash)
+                except (BudgetExceeded, ProviderBusy):
+                    # Keep the event when optional retrieval enrichment is unavailable.
+                    pass
+                except Exception:
+                    # The router records safe provider metadata; captions are not logged here.
+                    pass
+                try:
                     event_id = await self._persist_event(item, gate, extracted)
                 except Exception:
                     run.failed += 1
@@ -267,9 +275,7 @@ class YouTubeRuntimeJob:
         return run
 
 
-async def _ignore_post_llm_failure(
-    item: SourceItem, category: str, language: str | None
-) -> None:
+async def _ignore_post_llm_failure(item: SourceItem, category: str, language: str | None) -> None:
     """Keep standalone/offline jobs side-effect free when no durable guard is supplied."""
 
 

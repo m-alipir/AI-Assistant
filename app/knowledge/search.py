@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -55,6 +55,9 @@ class SearchEvent(BaseModel):
     category_paths: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
+    _embedding: list[float] | None = PrivateAttr(default=None)
+    _embedding_model_id: str | None = PrivateAttr(default=None)
+    _embedding_dimensions: int = PrivateAttr(default=0)
 
 
 class SafeEmailResult(BaseModel):
@@ -118,6 +121,39 @@ class KnowledgeSearchService:
             for result in ranked
         ], emails[: effective.limit]
 
+    async def semantic_rerank(
+        self, filters: SearchFilters, events: list[SearchEvent], router: Router
+    ) -> list[SearchEvent]:
+        """Use a query vector only after deterministic candidates exist on compatible rows."""
+        query = await router.embed(
+            [filters.question[:500]],
+            hashlib.sha256(filters.question.encode()).hexdigest(),
+            input_type="search_query",
+        )
+        compatible = [
+            event
+            for event in events
+            if event._embedding is not None
+            and event._embedding_model_id == query.model_id
+            and event._embedding_dimensions == query.dimensions
+        ]
+        if not compatible:
+            return events
+        repository = InMemoryKnowledgeRepository()
+        for event in compatible:
+            draft = _to_event_draft(event)
+            draft = draft.model_copy(update={"embedding": event._embedding})
+            repository.add_event(draft)
+        ranked = HybridRetriever(repository).search(
+            RetrievalQuery(text=filters.question, embedding=query.vectors[0], limit=filters.limit)
+        )
+        by_id = {event.event_id: event for event in compatible}
+        ranked_events = [by_id[result.event.event_id] for result in ranked]
+        return (
+            ranked_events
+            + [event for event in events if event.event_id not in by_id][: filters.limit]
+        )
+
 
 async def answer_question(
     filters: SearchFilters, service: KnowledgeSearchService, router: Router | None
@@ -130,6 +166,14 @@ async def answer_question(
             answer_tr="Yeterli kaynak bulunamadı.",
             llm=usage_breakdown([]),
         )
+    if router is not None and events:
+        try:
+            events = await service.semantic_rerank(filters, events, router)
+        except Exception:
+            logger.warning(
+                "knowledge_search_embedding_unavailable",
+                extra={"search_error_category": "embedding_provider_or_schema_error"},
+            )
     answer = (
         "İlgili kaynaklar aşağıda listelenmiştir. Kaynakla doğrulanmış bilgiler ve çıkarımlar "
         "ayrı gösterilir."
@@ -197,7 +241,8 @@ async def fetch_sql_candidates(
             )
             query_parameters["source_kind"] = filters.source_type
         event_query = text(
-            "SELECT e.id, e.canonical_title, e.occurred_at, "
+            "SELECT e.id, e.canonical_title, e.occurred_at, e.embedding::text AS embedding, "
+            "e.embedding_model_id, e.embedding_dimensions, "
             "coalesce(m.category_paths_json, '[]') AS category_paths_json, "
             "coalesce(m.entities_json, '[]') AS entities_json, "
             "coalesce(m.topics_json, '[]') AS topics_json, "
@@ -214,38 +259,31 @@ async def fetch_sql_candidates(
             "LEFT JOIN event_search_metadata m ON m.event_id = e.id "
             "WHERE e.occurred_at >= :since AND e.occurred_at <= :until "
             f"{source_filter}"
-            "GROUP BY e.id, e.canonical_title, e.occurred_at, m.category_paths_json, "
-            "m.entities_json, m.topics_json ORDER BY e.occurred_at DESC "
+            "ORDER BY e.occurred_at DESC "
             "LIMIT :candidate_limit"
         )
         async with engine.connect() as connection:
-            rows = (
-                (
-                    await connection.execute(event_query, query_parameters)
-                )
-                .mappings()
-                .all()
-            )
+            rows = (await connection.execute(event_query, query_parameters)).mappings().all()
             emails: list[SafeEmailResult] = []
             if filters.source_type == "gmail" or _asks_for_email(filters.question):
                 email_rows = (
                     (
                         await connection.execute(
-                        text(
-                            "SELECT classification, action_summary, deadline, application_company, "
-                            "created_at AS recorded_at "
-                            "FROM email_classifications "
-                            "WHERE created_at >= :since AND created_at <= :until "
-                            "AND classification IN "
-                            "('action_required', 'application_update', 'recruiter', "
-                            "'security', 'transactional') "
-                            "ORDER BY created_at DESC NULLS LAST LIMIT :email_limit"
-                        ),
-                        {
-                            "since": since,
-                            "until": until,
-                            "email_limit": min(max(filters.limit * 5, filters.limit), 50),
-                        },
+                            text(
+                                "SELECT classification, action_summary, deadline, application_company, "
+                                "created_at AS recorded_at "
+                                "FROM email_classifications "
+                                "WHERE created_at >= :since AND created_at <= :until "
+                                "AND classification IN "
+                                "('action_required', 'application_update', 'recruiter', "
+                                "'security', 'transactional') "
+                                "ORDER BY created_at DESC NULLS LAST LIMIT :email_limit"
+                            ),
+                            {
+                                "since": since,
+                                "until": until,
+                                "email_limit": min(max(filters.limit * 5, filters.limit), 50),
+                            },
                         )
                     )
                     .mappings()
@@ -271,7 +309,7 @@ def _safe_event_from_row(row: object) -> SearchEvent | None:
     """Skip one malformed legacy row rather than making the whole user search unavailable."""
     try:
         mapping = dict(row)
-        return SearchEvent(
+        event = SearchEvent(
             event_id=str(mapping["id"]),
             title=str(mapping["canonical_title"]),
             occurred_at=mapping["occurred_at"],
@@ -284,6 +322,12 @@ def _safe_event_from_row(row: object) -> SearchEvent | None:
             entities=_json_list(mapping["entities_json"]),
             topics=_json_list(mapping["topics_json"]),
         )
+        embedding = _vector_from_row(mapping.get("embedding"))
+        if embedding and mapping.get("embedding_model_id") and mapping.get("embedding_dimensions"):
+            event._embedding = embedding
+            event._embedding_model_id = str(mapping["embedding_model_id"])
+            event._embedding_dimensions = int(mapping["embedding_dimensions"])
+        return event
     except (KeyError, TypeError, ValidationError, ValueError):
         logger.warning(
             "knowledge_search_legacy_event_skipped",
@@ -410,6 +454,20 @@ def _json_list(value: object) -> list[str]:
     except (TypeError, ValueError):
         return []
     return [str(item) for item in loaded] if isinstance(loaded, list) else []
+
+
+def _vector_from_row(value: object) -> list[float] | None:
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or not all(isinstance(item, (int, float)) for item in parsed)
+    ):
+        return None
+    return [float(item) for item in parsed]
 
 
 def _asks_for_email(question: str) -> bool:

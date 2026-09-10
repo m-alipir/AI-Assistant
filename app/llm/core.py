@@ -12,7 +12,7 @@ from datetime import time as datetime_time
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 if TYPE_CHECKING:
     from app.llm.repository import DailySpend, LlmRepository
@@ -151,6 +151,23 @@ class OpenRouterResponse(BaseModel):
     usage: Usage
 
 
+class EmbeddingResponse(BaseModel):
+    """Validated embedding vectors and metadata returned by the embeddings endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+    embeddings: list[list[float]]
+    usage: Usage
+
+
+class EmbeddingResult(BaseModel):
+    """Cached, model-bound embedding result; vectors never come from a chat model."""
+
+    model_config = ConfigDict(extra="forbid")
+    model_id: str
+    dimensions: int = Field(ge=1)
+    vectors: list[list[float]] = Field(min_length=1)
+
+
 class OpenRouterClient:
     """Small direct HTTP client with bounded retries and no payload logging."""
 
@@ -213,6 +230,49 @@ class OpenRouterClient:
             response.raise_for_status()
         data = response.json().get("data", [])
         return [entry for entry in data if isinstance(entry, Mapping)]
+
+    async def embed(
+        self, model: str, inputs: list[str], config: RoleConfig, input_type: str
+    ) -> EmbeddingResponse:
+        """Create bounded text vectors through OpenRouter's dedicated embeddings endpoint."""
+        body: dict[str, Any] = {"model": model, "input": inputs, "input_type": input_type}
+        if config.dimensions is not None:
+            body["dimensions"] = config.dimensions
+        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        started = time.perf_counter()
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=15, transport=self._transport) as client:
+                    response = await client.post(
+                        f"{self._base_url}/embeddings", json=body, headers=headers
+                    )
+                    if response.status_code >= 500:
+                        raise httpx.HTTPStatusError(
+                            "provider server error", request=response.request, response=response
+                        )
+                    response.raise_for_status()
+                data = response.json()
+                entries = sorted(data["data"], key=lambda entry: entry["index"])
+                embeddings = [entry["embedding"] for entry in entries]
+                if len(embeddings) != len(inputs) or any(not vector for vector in embeddings):
+                    raise ValueError("embedding response shape is invalid")
+                raw_usage = data.get("usage", {})
+                return EmbeddingResponse(
+                    embeddings=embeddings,
+                    usage=Usage(
+                        model_id=model,
+                        input_tokens=raw_usage.get(
+                            "prompt_tokens", raw_usage.get("total_tokens", 0)
+                        ),
+                        latency_ms=round((time.perf_counter() - started) * 1000),
+                        provider_cost_usd=_provider_cost(raw_usage.get("cost")),
+                    ),
+                )
+            except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+                if attempt:
+                    raise LlmError("OpenRouter embedding request failed") from error
+                await asyncio.sleep(0.1)
+        raise AssertionError("unreachable")
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -484,6 +544,83 @@ class Router:
                 assert self._provider_coordinator is not None
                 self._provider_coordinator.release()
 
+    async def embed(
+        self, inputs: list[str], content_hash: str, *, input_type: str = "search_document"
+    ) -> EmbeddingResult:
+        """Generate/cache compact vectors with the same budgets and work guard as chat roles."""
+        if not inputs or any(not value for value in inputs):
+            raise ValueError("embedding inputs must be non-empty")
+        role, config, now = "embedding", self._settings.roles["embedding"], self._now()
+        for model_id in config.candidates:
+            key = self._cache.key(content_hash, role, "embedding-v1", model_id, "v1")
+            cached = self._cache.values.get(key)
+            if cached is None and self._repository:
+                cached = await self._repository.get_cache(key)
+            if cached is not None:
+                result = EmbeddingResult.model_validate_json(cached)
+                if len(result.vectors) == len(inputs) and all(
+                    len(vector) == result.dimensions for vector in result.vectors
+                ):
+                    self._cache.values[key] = cached
+                    await self._record_cache_hit(role, model_id, now)
+                    return result
+        claimed_provider_slot = False
+        if self._provider_coordinator is not None:
+            claimed_provider_slot = await self._provider_coordinator.try_acquire()
+            if not claimed_provider_slot:
+                raise ProviderBusy("another provider request is already active")
+        try:
+            last_error: Exception | None = None
+            for model_id in config.candidates:
+                now = self._now()
+                await self._sync_budget(now)
+                estimated = config.estimated_input_tokens * config.input_usd_per_million / 1_000_000
+                self._budget.allow(role, estimated, self._settings.budgets, config, now=now)
+                try:
+                    response = await self._client.embed(model_id, inputs, config, input_type)
+                    dimensions = len(response.embeddings[0])
+                    if config.dimensions is not None and dimensions != config.dimensions:
+                        raise ValueError(
+                            "configured embedding dimensions do not match provider result"
+                        )
+                    if any(len(vector) != dimensions for vector in response.embeddings):
+                        raise ValueError("embedding dimensions are inconsistent")
+                    response.usage.estimated_cost_usd = (
+                        response.usage.provider_cost_usd
+                        if response.usage.provider_cost_usd is not None
+                        else (
+                            response.usage.input_tokens * config.input_usd_per_million / 1_000_000
+                        )
+                    )
+                    response.usage.cost_status = (
+                        "provider_reported"
+                        if response.usage.provider_cost_usd is not None
+                        else (
+                            "configured_estimate" if config.input_usd_per_million else "unavailable"
+                        )
+                    )
+                    result = EmbeddingResult(
+                        model_id=model_id, dimensions=dimensions, vectors=response.embeddings
+                    )
+                except (LlmError, ValueError) as error:
+                    await self._record_attempt(
+                        role, Usage(model_id=model_id), "provider_failed", config, now
+                    )
+                    last_error = error
+                    continue
+                await self._record_attempt(role, response.usage, "success", config, now)
+                serialized = result.model_dump_json()
+                key = self._cache.key(content_hash, role, "embedding-v1", model_id, "v1")
+                self._cache.values[key] = serialized
+                if self._repository:
+                    await self._repository.put_cache(key, model_id, serialized)
+                return result
+            raise LlmError("all configured embedding models failed") from last_error
+        finally:
+            if claimed_provider_slot:
+                assert self._provider_coordinator is not None
+                self._provider_coordinator.release()
+
     def input_char_limit(self, role: str) -> int:
         """Return the configured source/context ceiling for a model role."""
         return self._settings.roles[role].max_input_chars
@@ -516,6 +653,10 @@ class ExtractorResult(BaseModel):
     entities: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     uncertainty_markers: list[str] = Field(default_factory=list)
+    _embedding_model_id: str | None = PrivateAttr(default=None)
+    _embedding_dimensions: int = PrivateAttr(default=0)
+    _event_embedding: list[float] | None = PrivateAttr(default=None)
+    _claim_embeddings: list[list[float]] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -582,6 +723,32 @@ class ExtractionFlow:
         return await self._router.structured(
             "extractor", prompt, content_hash, ExtractorResult, "v2", "v1"
         )
+
+    async def embed_extraction(
+        self, title: str, extracted: ExtractorResult, content_hash: str
+    ) -> ExtractorResult:
+        """Embed only compact event/claim text after extraction; never raw feeds or transcripts."""
+        event_text = "\n".join(
+            part
+            for part in [
+                title[:512],
+                extracted.compact_summary[:1600],
+                extracted.what_changed[:800],
+            ]
+            if part
+        )
+        claim_texts = [claim.statement[:1600] for claim in extracted.claims[:20] if claim.statement]
+        result = await self._router.embed(
+            [event_text, *claim_texts],
+            hashlib.sha256(
+                f"{content_hash}|{event_text}|{'|'.join(claim_texts)}".encode()
+            ).hexdigest(),
+        )
+        extracted._embedding_model_id = result.model_id
+        extracted._embedding_dimensions = result.dimensions
+        extracted._event_embedding = result.vectors[0]
+        extracted._claim_embeddings = result.vectors[1:]
+        return extracted
 
 
 def _bounded_metadata_prompt(title: str, snippet: str, limit: int) -> str:

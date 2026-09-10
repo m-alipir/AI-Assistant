@@ -27,3 +27,25 @@ def test_scheduler_configuration_requires_valid_timezone_and_hh_mm_time() -> Non
         Settings(_env_file=None, app_timezone="not/a-timezone")
     with pytest.raises(ValidationError, match="SCHEDULER_DAILY_TIME"):
         Settings(_env_file=None, scheduler_daily_time="08:00:30")
+
+
+def test_ntfy_is_disabled_by_default_and_fails_closed_when_enabled() -> None:
+    assert not Settings(_env_file=None).ntfy_enabled
+    with pytest.raises(ValidationError, match="NTFY_BASE_URL"):
+        Settings(_env_file=None, ntfy_enabled=True, ntfy_token="long-enough-token")
+    with pytest.raises(ValidationError, match="public ntfy.sh"):
+        Settings(
+            _env_file=None,
+            ntfy_enabled=True,
+            ntfy_base_url="https://ntfy.sh",
+            ntfy_topic="short-topic",
+            ntfy_token="long-enough-token",
+        )
+    settings = Settings(
+        _env_file=None,
+        ntfy_enabled=True,
+        ntfy_base_url="https://ntfy.example.test",
+        ntfy_topic="private_topic",
+        ntfy_token="long-enough-token",
+    )
+    assert settings.ntfy_token_value == "long-enough-token"

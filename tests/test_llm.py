@@ -95,6 +95,51 @@ async def test_mocked_gatekeeper_uses_fallback_validates_schema_and_hits_cache()
     assert router.calls[-1].cache_hit is True
 
 
+@pytest.mark.asyncio
+async def test_embedding_role_uses_dedicated_endpoint_and_reuses_validated_cache() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 1, "embedding": [0.0, 1.0]},
+                    {"index": 0, "embedding": [1.0, 0.0]},
+                ],
+                "usage": {"prompt_tokens": 4, "cost": 0.0001},
+            },
+        )
+
+    embedding = RoleConfig(model="fake/embed", dimensions=2, max_output_tokens=1)
+    model_settings = ModelSettings(
+        roles={"embedding": embedding},
+        budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
+    )
+    router = Router(
+        OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
+        model_settings,
+        InMemoryResultCache(),
+        BudgetTracker(),
+    )
+
+    first = await router.embed(["event", "claim"], "embedding-content")
+    second = await router.embed(["event", "claim"], "embedding-content")
+
+    assert first.vectors == [[1.0, 0.0], [0.0, 1.0]]
+    assert second.vectors == first.vectors
+    assert requests == [
+        {
+            "model": "fake/embed",
+            "input": ["event", "claim"],
+            "input_type": "search_document",
+            "dimensions": 2,
+        }
+    ]
+    assert router.calls[-1].cache_hit is True
+
+
 def test_budget_reserves_capacity_for_email_actions() -> None:
     policy = BudgetPolicy(daily_soft_usd=0.5, daily_hard_usd=1, reserve_email_action_usd=0.2)
     tracker = BudgetTracker(spent_usd=0.75)

@@ -1,5 +1,6 @@
 """Environment-backed runtime settings."""
 
+import re
 from datetime import time
 from functools import lru_cache
 from pathlib import Path
@@ -95,6 +96,23 @@ class Settings(BaseSettings):
     allow_insecure_source_urls: bool = Field(
         default=True, validation_alias="ALLOW_INSECURE_SOURCE_URLS"
     )
+    article_request_timeout_seconds: float = Field(
+        default=12, validation_alias="ARTICLE_REQUEST_TIMEOUT_SECONDS", gt=0, le=60
+    )
+    article_max_response_bytes: int = Field(
+        default=3_000_000, validation_alias="ARTICLE_MAX_RESPONSE_BYTES", ge=32_768, le=10_000_000
+    )
+    article_max_retries: int = Field(default=1, validation_alias="ARTICLE_MAX_RETRIES", ge=0, le=3)
+    ntfy_enabled: bool = Field(default=False, validation_alias="NTFY_ENABLED")
+    ntfy_base_url: str = Field(default="", validation_alias="NTFY_BASE_URL")
+    ntfy_topic: str = Field(default="", validation_alias="NTFY_TOPIC")
+    ntfy_token: str = Field(default="", validation_alias="NTFY_TOKEN")
+    ntfy_token_file: Path | None = Field(default=None, validation_alias="NTFY_TOKEN_FILE")
+    ntfy_allow_public_topic: bool = Field(default=False, validation_alias="NTFY_ALLOW_PUBLIC_TOPIC")
+    ntfy_request_timeout_seconds: float = Field(
+        default=10, validation_alias="NTFY_REQUEST_TIMEOUT_SECONDS", gt=0, le=30
+    )
+    ntfy_max_retries: int = Field(default=1, validation_alias="NTFY_MAX_RETRIES", ge=0, le=3)
 
     @field_validator("app_timezone")
     @classmethod
@@ -131,6 +149,25 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         """Fail closed when a production process would expose its admin surface."""
+        if self.ntfy_enabled:
+            parsed_ntfy = urlsplit(self.ntfy_base_url)
+            valid_ntfy_origin = (
+                parsed_ntfy.scheme == "https"
+                and bool(parsed_ntfy.netloc)
+                and parsed_ntfy.path in {"", "/"}
+            )
+            if not valid_ntfy_origin:
+                raise ValueError("NTFY_BASE_URL must be an HTTPS origin when NTFY_ENABLED=true")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.ntfy_topic):
+                raise ValueError("NTFY_TOPIC must be a simple topic name when NTFY_ENABLED=true")
+            if len(self.ntfy_token_value) < 12:
+                raise ValueError("NTFY_TOKEN(_FILE) is required when NTFY_ENABLED=true")
+            if parsed_ntfy.hostname in {"ntfy.sh", "www.ntfy.sh"} and (
+                not self.ntfy_allow_public_topic or len(self.ntfy_topic) < 24
+            ):
+                raise ValueError(
+                    "public ntfy.sh requires NTFY_ALLOW_PUBLIC_TOPIC=true and a 24+ character topic"
+                )
         if self.agent_api_enabled and len(self.agent_api_token_value) < 24:
             raise ValueError(
                 "AGENT_API_TOKEN(_FILE) must contain at least 24 characters when enabled"
@@ -200,6 +237,11 @@ class Settings(BaseSettings):
         return self._secret_or_file(self.admin_password, self.admin_password_file)
 
     @property
+    def ntfy_token_value(self) -> str:
+        """Return the ntfy publishing token only when constructing its outbound request."""
+        return self._secret_or_file(self.ntfy_token, self.ntfy_token_file)
+
+    @property
     def allowed_host_list(self) -> list[str]:
         """Return normalized host allow-list entries for TrustedHost middleware."""
         return [
@@ -216,6 +258,7 @@ class Settings(BaseSettings):
                 self.app_encryption_key_value,
                 self.admin_password_value,
                 self.agent_api_token_value,
+                self.ntfy_token_value,
             )
             if value
         )

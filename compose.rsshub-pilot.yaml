@@ -1,0 +1,41 @@
+# Explicit pilot only: docker compose -f compose.yaml -f compose.rsshub-pilot.yaml --profile rsshub-pilot up
+# It is not included by the normal or production Compose commands.
+services:
+  # Suppress the normal application when this narrowly scoped pilot profile is selected.
+  # That protects its existing RSS/YouTube configuration from this experiment.
+  app:
+    profiles: [full-app]
+
+  rsshub:
+    image: ${RSSHUB_IMAGE:-diygod/rsshub:latest}
+    profiles: [rsshub-pilot]
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: memory
+    expose: ["1200"]
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    pids_limit: 128
+    mem_limit: 512m
+
+  rsshub-pilot-runner:
+    build: .
+    profiles: [rsshub-pilot]
+    command: ["sh", "-c", "alembic upgrade head && python -m app.pilot.rsshub"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/intelligence
+      ADMIN_SOURCES_PATH: /app/config/sources.rsshub-pilot.yaml
+      SCHEDULER_ENABLED: "false"
+      GMAIL_ENABLED: "false"
+      OPENROUTER_API_KEY: ""
+      ALLOW_PRIVATE_SOURCE_URLS: "true"
+      ALLOW_INSECURE_SOURCE_URLS: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      rsshub:
+        condition: service_started
+    restart: "no"

@@ -45,6 +45,7 @@ class EventRow(Base):
     canonical_title: Mapped[str] = mapped_column(String(512))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     embedding_dimensions: Mapped[int] = mapped_column(Integer)
+    embedding_model_id: Mapped[str | None] = mapped_column(String(256))
     raw_content: Mapped[str | None] = mapped_column(Text)
 
 
@@ -72,6 +73,8 @@ class ClaimRow(Base):
     source_item_id: Mapped[str] = mapped_column(String(256))
     statement: Mapped[str] = mapped_column(Text)
     source_locator: Mapped[str | None] = mapped_column(String(512))
+    embedding_model_id: Mapped[str | None] = mapped_column(String(256))
+    embedding_dimensions: Mapped[int | None] = mapped_column(Integer)
 
 
 class InferenceRow(Base):

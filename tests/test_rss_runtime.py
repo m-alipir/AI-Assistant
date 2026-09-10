@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.briefing.core import BriefingItem
+from app.collectors.article import ArticleContent
 from app.collectors.rss import RssCollector
 from app.config.sources import RssSourceConfig, SourceCatalog
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
@@ -101,6 +102,7 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
             "briefing_render_error": 0,
             "briefing_persistence_error": 0,
             "extractor_error": 0,
+            "article_fetch_error": 0,
             "event_persistence_error": 0,
             "provider_busy": 0,
             "budget_exhausted": 0,
@@ -135,9 +137,9 @@ async def test_runtime_exposes_safe_briefing_render_category() -> None:
         global_importance=0,
         video=True,
     )
-    result = await RssRuntimeJob(
-        SourceCatalog(), FakeFlow(), persist_event, broken_briefing
-    ).run([item])
+    result = await RssRuntimeJob(SourceCatalog(), FakeFlow(), persist_event, broken_briefing).run(
+        [item]
+    )
 
     assert result["counts"]["failure_categories"]["briefing_render_error"] == 1
     assert result["message"] == "briefing_render_error"
@@ -312,3 +314,203 @@ async def test_durable_outbox_is_locked_and_deleted_only_with_briefing_persisten
     assert "FOR UPDATE SKIP LOCKED" in statements
     assert "INSERT INTO briefings" in statements
     assert "DELETE FROM briefing_outbox" in statements
+
+
+@pytest.mark.asyncio
+async def test_irrelevant_rss_item_never_fetches_article_body() -> None:
+    class IrrelevantFlow(FakeFlow):
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            return GatekeeperResult(
+                relevant=False,
+                global_importance=1,
+                personal_relevance=0,
+                category_paths=[],
+                entities=[],
+                topics=[],
+                importance=1,
+                needs_full_extraction=True,
+            )
+
+    class ProbeFetcher:
+        calls = 0
+
+        async def fetch(self, url: str) -> ArticleContent:
+            self.calls += 1
+            return ArticleContent("fixture article text", url)
+
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    item = SourceItem(
+        source_name="Fixture RSS",
+        source_kind=SourceKind.RSS,
+        stream=SourceStream.TECH,
+        canonical_url="https://example.test/article",
+        title="Irrelevant fixture",
+        discovered_at=now,
+        fetched_at=now,
+        timestamp_confidence=TimestampConfidence.DISCOVERED_FALLBACK,
+        content_hash="irrelevant-fixture",
+    )
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("irrelevant item must not persist")
+
+    async def persist_briefing(items) -> None:
+        return None
+
+    probe = ProbeFetcher()
+    result = await RssRuntimeJob(
+        SourceCatalog(),
+        IrrelevantFlow(),
+        persist_event,
+        persist_briefing,
+        article_fetcher=probe,  # type: ignore[arg-type]
+    ).run(retry_item=item)
+    assert probe.calls == 0
+    assert result["counts"]["processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_full_article_is_used_only_after_gate_and_fetch_failure_uses_feed_metadata() -> None:
+    class FullArticleFlow(FakeFlow):
+        def __init__(self) -> None:
+            super().__init__()
+            self.extraction_inputs: list[str] = []
+
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            return GatekeeperResult(
+                relevant=True,
+                global_importance=2,
+                personal_relevance=6,
+                category_paths=["technology"],
+                entities=["Example"],
+                topics=["testing"],
+                importance=6,
+                needs_full_extraction=True,
+            )
+
+        async def extract(self, content: str, digest: str) -> ExtractorResult:
+            self.extraction_inputs.append(content)
+            return await super().extract(content, digest)
+
+    class Fetcher:
+        def __init__(self, fail: bool = False) -> None:
+            self.fail = fail
+            self.calls = 0
+
+        async def fetch(self, url: str) -> ArticleContent:
+            self.calls += 1
+            if self.fail:
+                raise RuntimeError("fixture fetch failure")
+            return ArticleContent("Useful article body with source-backed detail.", url)
+
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    item = SourceItem(
+        source_name="Fixture RSS", source_kind=SourceKind.RSS, stream=SourceStream.TECH,
+        canonical_url="https://example.test/article", title="Full article fixture",
+        snippet="Feed fallback", discovered_at=now, fetched_at=now,
+        timestamp_confidence=TimestampConfidence.DISCOVERED_FALLBACK, content_hash="full-article",
+    )
+
+    async def persist_event(item, gate, extracted) -> str:
+        return "event-full"
+
+    async def persist_briefing(items) -> None:
+        return None
+
+    flow, fetcher = FullArticleFlow(), Fetcher()
+    result = await RssRuntimeJob(
+        SourceCatalog(), flow, persist_event, persist_briefing, article_fetcher=fetcher  # type: ignore[arg-type]
+    ).run(retry_item=item)
+    assert fetcher.calls == 1
+    assert "ARTICLE:\nUseful article body" in flow.extraction_inputs[0]
+    assert result["counts"]["failure_categories"]["article_fetch_error"] == 0
+
+    fallback_flow, failing_fetcher = FullArticleFlow(), Fetcher(fail=True)
+    fallback = await RssRuntimeJob(
+        SourceCatalog(), fallback_flow, persist_event, persist_briefing,
+        article_fetcher=failing_fetcher,  # type: ignore[arg-type]
+    ).run(retry_item=item.model_copy(update={"content_hash": "full-article-fallback"}))
+    assert "SNIPPET: Feed fallback" in fallback_flow.extraction_inputs[0]
+    assert fallback["counts"]["failure_categories"]["article_fetch_error"] == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_rss_item_never_fetches_article_body() -> None:
+    class FullArticleFlow(FakeFlow):
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            raise AssertionError("duplicate item must not reach the gatekeeper")
+
+    class ProbeFetcher:
+        calls = 0
+
+        async def fetch(self, url: str) -> ArticleContent:
+            self.calls += 1
+            raise AssertionError("duplicate item must not fetch an article")
+
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    item = SourceItem(
+        source_name="Fixture RSS", source_kind=SourceKind.RSS, stream=SourceStream.TECH,
+        canonical_url="https://example.test/article", title="Duplicate fixture",
+        discovered_at=now, fetched_at=now,
+        timestamp_confidence=TimestampConfidence.DISCOVERED_FALLBACK, content_hash="duplicate",
+    )
+
+    async def known(content_hash: str) -> bool:
+        return True
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("duplicate item must not persist")
+
+    async def persist_briefing(items) -> None:
+        return None
+
+    probe = ProbeFetcher()
+    result = await RssRuntimeJob(
+        SourceCatalog(), FullArticleFlow(), persist_event, persist_briefing, known,
+        article_fetcher=probe,  # type: ignore[arg-type]
+    ).run(retry_item=item)
+    assert probe.calls == 0
+    assert result["counts"]["duplicates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_rss_item_never_fetches_article_body() -> None:
+    class FullArticleFlow(FakeFlow):
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            raise AssertionError("stale item must not reach the gatekeeper")
+
+    class ProbeFetcher:
+        calls = 0
+
+        async def fetch(self, url: str) -> ArticleContent:
+            self.calls += 1
+            raise AssertionError("stale item must not fetch an article")
+
+    source = RssSourceConfig(
+        name="Fixture RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+    )
+    payload = b"""<rss><channel><item><title>Stale article</title>
+    <link>https://example.test/article</link><pubDate>Mon, 01 Sep 2026 12:00:00 +0000</pubDate>
+    <description>Old fixture.</description></item></channel></rss>"""
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("stale item must not persist")
+
+    async def persist_briefing(items) -> None:
+        return None
+
+    probe = ProbeFetcher()
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FullArticleFlow(),
+        persist_event,
+        persist_briefing,
+        collector=RssCollector(FixtureFetcher(payload)),
+        clock=lambda: datetime(2026, 9, 10, 12, tzinfo=UTC),
+        article_fetcher=probe,  # type: ignore[arg-type]
+    ).run()
+    assert probe.calls == 0
+    assert result["counts"]["stale"] == 1

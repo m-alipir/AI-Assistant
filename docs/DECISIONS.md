@@ -151,4 +151,125 @@ limit as global.
 
 ---
 
+## D018 — External projects integrate behind removable boundaries
+**Date:** 2026-09-09
+**Status:** Accepted
+
+The FastAPI application, PostgreSQL/pgvector data, and event/claim/inference domain model remain
+the canonical system of record. Open-source projects may be added only when they provide a new,
+measurable capability and can be isolated as a library, adapter, generated artifact, or optional
+service. They do not bypass freshness, provenance, idempotency, privacy, budget, or authorization
+controls, and they must have a documented removal/rollback path.
+
+Consequences: there is no platform rewrite to Appwrite/Supabase, no replacement of the knowledge
+model with Mem0/Letta, and no replacement of deterministic ingestion/briefing with LangGraph or a
+workflow product. RSSHub, ntfy, Docling, generated SDKs, future MCP tools, and similar components
+remain subordinate to versioned application-owned interfaces. Full assistant repositories are
+architecture/UX references rather than dependencies.
+
+---
+
+## D019 — Close operational and knowledge-quality gaps before expanding product scope
+**Date:** 2026-09-09
+**Status:** Accepted
+
+Production operations verification is the active gate. After it closes, implementation proceeds
+through real embedding/clustering/correlation behavior, safe full-article extraction, measured
+source expansion and LLM evaluation, then notification delivery. Document ingestion, mobile SDKs,
+tasks, offline sync, MCP actions, advanced agents, and voice follow only after their preceding
+domain/API decisions are approved.
+
+Consequences: Trafilatura is the first approved article-extraction candidate; RSSHub and promptfoo
+are controlled pilots; ntfy is the first notification candidate. `youtube-transcript-api` is only
+a benchmarked fallback behind the current caption interface. OpenAPI Generator waits for a stable
+user/mobile API, and PGMQ/LiteLLM/Langfuse/LangGraph/Temporal-class infrastructure requires a
+demonstrated operational need. The updateable execution and acceptance plan is
+`docs/OPEN_SOURCE_INTEGRATION_PLAN.md`.
+
+---
+
+## D020 — Full-article parsing stays behind an application-owned fetch boundary
+**Date:** 2026-09-10
+**Status:** Accepted
+
+Trafilatura parses only HTML bytes already fetched by the application. The application retains
+ownership of URL/public-address validation on every redirect, HTTPS policy, timeout, retry,
+response-size, MIME, and decompression bounds. The parser receives no URL and therefore cannot
+expand the outbound network surface. A fetch or parsing failure falls back to bounded RSS metadata
+instead of failing the whole run or triggering another model attempt.
+
+Consequences: Trafilatura `>=2.2,<3` is the first removable extraction dependency (Apache-2.0 in
+the current upstream release). Its removal restores metadata-only extraction without data
+migration. Dynamic browser tooling, crawling, and arbitrary URL input remain out of scope.
+
+---
+
+## D021 — Quality regression defaults to sanitized deterministic fixtures
+**Date:** 2026-09-10
+**Status:** Accepted
+
+The default M21 quality gate is a small synthetic/public-style golden dataset executed by pytest.
+It exercises gatekeeper, extraction, briefing, Search/Ask, fact-versus-inference, and source
+prompt-injection contracts without sending data to a provider. Promptfoo is not a normal runtime
+or CI dependency: its configuration and referenced transforms/assertions are trusted executable
+local inputs, so it is reserved for an explicitly approved, isolated, sanitized, budgeted manual
+evaluation.
+
+Consequences: no Gmail body, production history, credential, real source payload, cloud report, or
+telemetry is permitted in the golden dataset. RSSHub remains a separate disabled pilot with an
+operator-approved route allow-list; the core collector continues to operate independently.
+
+---
+
+## D022 — RSSHub pilot is aggregate-only and cannot activate the normal runtime
+**Date:** 2026-09-10
+**Status:** Accepted
+
+The approved RSSHub experiment uses a separate, default-off Compose profile with exactly fifteen
+credential-free routes. Selecting that profile suppresses the normal application service and runs
+only an explicit, once-per-day collector. The collector applies existing freshness and
+deduplication rules but performs no LLM, Gmail, YouTube, briefing, or scheduler work. It stores
+only route name, tier, timestamp, availability, latency, aggregate item counts, and a safe error
+category.
+
+Consequences: current core sources remain independent and unaffected. The seven-day review uses
+the persisted operational aggregates plus host-side Docker memory samples to select `keep`,
+`disable`, or `needs-auth` per route. GitHub Trending remains deferred because it requires a
+token; Reddit is not an RSSHub route and stays a separate community/discovery-only backlog item.
+
+---
+
+## D023 — Promptfoo provider evaluation is manual, separate-key, and bounded
+**Date:** 2026-09-10
+**Status:** Accepted
+
+The M21 provider-evaluation option is a committed synthetic Promptfoo configuration, not a CI or
+runtime dependency. It uses one explicitly chosen OpenAI-compatible model through OpenRouter, five
+synthetic cases, at most 300 generated tokens per case, one request per minute, no sharing, and a
+separate `PROMPTFOO_OPENROUTER_API_KEY` environment variable. It contains no executable assertion,
+custom provider, transform, red-team generator, real source, Gmail data, production history, or
+credential.
+
+Consequences: an operator must separately approve the model, scoped key, and five-request budget
+before a manual run. A provider-evaluation result cannot silently alter models, prompts, or runtime
+behavior. Normal pytest remains the only default quality gate.
+
+---
+
+## D024 — ntfy delivery is optional, protected, and idempotent
+**Date:** 2026-09-10
+**Status:** Accepted
+
+Notifications use a provider-neutral contract and an ntfy adapter that defaults to disabled. An
+enabled adapter requires an HTTPS origin, topic, and token; `ntfy.sh` additionally requires explicit
+public-topic acknowledgement and a long topic name. The adapter sends only fixed concise notices,
+not briefing contents, email subjects/bodies, provider errors, credentials, or source payloads.
+
+Consequences: a durable notification key claims each logical event, while ntfy's sequence ID updates
+the same logical message during a failed-delivery retry. Delivery happens only after the ingestion
+run's durable work and returns a safe status, so an unavailable notification channel cannot roll
+back a briefing or stop source processing. A protected self-hosted ntfy service remains preferred.
+
+---
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

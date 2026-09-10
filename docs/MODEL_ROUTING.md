@@ -60,7 +60,7 @@ Usually one strong call per daily briefing. Input is already distilled structure
 The editor may prioritize and phrase; it must not invent unsupported facts.
 
 ## Embedding
-Use a dedicated embedding model via OpenRouter or another configured provider. Store the model ID and dimensionality with embedding metadata. Model changes requiring dimension changes need a migration/re-embedding plan.
+Use a dedicated embedding model via OpenRouter or another configured provider. Store the model ID and dimensionality with embedding metadata. Model changes requiring dimension changes need a migration/re-embedding plan. Leave existing vectors readable but exclude incompatible rows from semantic comparison, generate replacement vectors through the configured `embedding` role, verify coverage, then retire old vectors in a separately approved operation.
 
 ## OpenRouter integration requirements
 - Use OpenRouter model API/catalog to inspect current capabilities/pricing when requested.

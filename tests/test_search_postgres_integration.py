@@ -10,9 +10,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
+from app.jobs.rss_runtime import database_persistence
 from app.knowledge.search import SearchFilters, fetch_sql_candidates
+from app.llm.core import ExtractedClaim, ExtractorResult, GatekeeperResult
 
 DATABASE_URL = os.environ.get("SEARCH_INTEGRATION_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -34,7 +37,7 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
     try:
         async with engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "20260908_0014"
+            assert revision == "20260910_0019"
             await connection.execute(
                 text(
                     "INSERT INTO events (id, canonical_title, occurred_at, embedding_dimensions) "
@@ -74,8 +77,10 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
                 {"event_id": event_id},
             )
             await connection.execute(
-                text("INSERT INTO claims (id, event_id, source_item_id, statement) "
-                     "VALUES (:id, :event_id, :source_item_id, :statement)"),
+                text(
+                    "INSERT INTO claims (id, event_id, source_item_id, statement) "
+                    "VALUES (:id, :event_id, :source_item_id, :statement)"
+                ),
                 {
                     "id": f"c{suffix}",
                     "event_id": event_id,
@@ -134,4 +139,62 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
                 text("DELETE FROM events WHERE id IN (:event_id, :legacy_event_id)"),
                 {"event_id": event_id, "legacy_event_id": legacy_event_id},
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_event_persistence_clusters_sources_and_keeps_runtime_vectors() -> None:
+    """Verify M19 persistence against pgvector without a provider or user data."""
+    assert DATABASE_URL is not None
+    engine = create_async_engine(DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix, now = uuid.uuid4().hex, datetime.now(UTC)
+    gate = GatekeeperResult(
+        relevant=True, global_importance=6, personal_relevance=5, importance=8,
+        needs_full_extraction=False,
+        category_paths=["technology.ai"], entities=["NVIDIA"], topics=["ai"],
+    )
+    extracted = ExtractorResult(
+        compact_summary="NVIDIA announced an AI platform update.", what_changed="Platform update.",
+        claims=[ExtractedClaim(statement="NVIDIA announced the platform update.")],
+        entities=["NVIDIA"], topics=["ai"], uncertainty_markers=[],
+    )
+    extracted._embedding_model_id, extracted._embedding_dimensions = "fixture-embed", 2
+    extracted._event_embedding, extracted._claim_embeddings = [0.1, 0.2], [[0.2, 0.1]]
+    persist_event, *_ = database_persistence(sessions)
+
+    def item(name: str, digest: str) -> SourceItem:
+        return SourceItem(
+            source_name=name,
+            source_kind=SourceKind.RSS,
+            stream=SourceStream.TECH,
+            canonical_url=f"https://example.test/{digest}",
+            title="NVIDIA announces AI platform update",
+            snippet="Fixture only",
+            source_published_at=now,
+            discovered_at=now,
+            fetched_at=now,
+            timestamp_confidence=TimestampConfidence.SOURCE,
+            content_hash=digest,
+        )
+
+    event_id = await persist_event(item("Fixture A", f"a-{suffix}"), gate, extracted)
+    same_event_id = await persist_event(item("Fixture B", f"b-{suffix}"), gate, extracted)
+    assert same_event_id == event_id
+    try:
+        async with engine.connect() as connection:
+            row = (await connection.execute(text(
+                "SELECT embedding_model_id, embedding_dimensions, "
+                "(SELECT count(*) FROM event_sources WHERE event_id = :id) AS sources "
+                "FROM events WHERE id = :id"), {"id": event_id})).mappings().one()
+        assert row["embedding_model_id"] == "fixture-embed"
+        assert row["embedding_dimensions"] == 2
+        assert row["sources"] == 2
+    finally:
+        async with engine.begin() as connection:
+            for table in ("briefing_outbox", "event_search_metadata", "event_sources", "claims"):
+                await connection.execute(
+                    text(f"DELETE FROM {table} WHERE event_id = :id"), {"id": event_id}
+                )
+            await connection.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
         await engine.dispose()

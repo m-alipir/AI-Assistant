@@ -1,11 +1,13 @@
 """FastAPI application factory and production ASGI entrypoint."""
 
+import asyncio
 import logging
 import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
@@ -24,7 +26,9 @@ from app.api.agent import (
 )
 from app.api.agent import router as agent_router
 from app.api.health import router as health_router
+from app.briefing.core import BriefingItem
 from app.briefing.presentation import compact_sentences, legacy_sections, safe_links
+from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
@@ -39,6 +43,7 @@ from app.jobs.gmail_runtime import GmailAccountRecord, GmailRuntimeJob
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
 from app.jobs.scheduler import DailyScheduler, RuntimeRunCoordinator
 from app.jobs.youtube_runtime import YouTubeRuntimeJob
+from app.knowledge.reembedding import ReembeddingRecord, ReembeddingService
 from app.knowledge.search import (
     KnowledgeSearchService,
     SearchFilters,
@@ -55,6 +60,13 @@ from app.llm.core import (
     usage_breakdown,
 )
 from app.llm.repository import SqlAlchemyLlmRepository
+from app.notifications.core import (
+    Notification,
+    NotificationKind,
+    database_dispatcher,
+    notification_key,
+)
+from app.notifications.ntfy import NtfyNotifier
 from app.observability.logging import configure_logging
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
@@ -143,6 +155,7 @@ def create_app(
                 "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
             )
         return response
+
     app.state.readiness_check = readiness_check
     app.state.engine = engine
     app.state.agent_api_settings = active_settings
@@ -241,9 +254,98 @@ def create_app(
             claim_blocked_item,
             resolve_blocked_item,
             has_pending_briefing,
+            correlate_event,
         ) = database_persistence(sessions)
         provider_coordinator = ProviderCallCoordinator()
         app.state.provider_coordinator = provider_coordinator
+        notification_dispatcher = None
+        if active_settings.ntfy_enabled:
+            ntfy_notifier = NtfyNotifier(
+                active_settings.ntfy_base_url,
+                active_settings.ntfy_topic,
+                active_settings.ntfy_token_value,
+                active_settings.ntfy_request_timeout_seconds,
+                active_settings.ntfy_max_retries,
+            )
+            notification_dispatcher = database_dispatcher(sessions, ntfy_notifier.send)
+        app.state.notifications_enabled = notification_dispatcher is not None
+
+        async def reembed_knowledge(limit: int = 50) -> int:
+            """Explicit operator action; startup and scheduled jobs never call this routine."""
+            model_settings = load_model_settings(active_settings.admin_models_path)
+            embedding_config = model_settings.roles["embedding"]
+            target_model = embedding_config.candidates[0]
+            target_dimensions = embedding_config.dimensions
+
+            async def fetch(limit_value: int) -> list[ReembeddingRecord]:
+                async with sessions() as session:
+                    rows = (
+                        (
+                            await session.execute(
+                                text(
+                                    "SELECT id, canonical_title, raw_content, embedding_model_id, embedding_dimensions "
+                                    "FROM events WHERE embedding IS NULL OR embedding_model_id != :model "
+                                    "OR (:dimensions IS NOT NULL AND embedding_dimensions != :dimensions) "
+                                    "ORDER BY occurred_at DESC LIMIT :limit"
+                                ),
+                                {
+                                    "model": target_model,
+                                    "dimensions": target_dimensions,
+                                    "limit": limit_value,
+                                },
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                return [
+                    ReembeddingRecord(
+                        str(row["id"]),
+                        "\n".join(
+                            value
+                            for value in [
+                                str(row["canonical_title"]),
+                                str(row["raw_content"] or ""),
+                            ]
+                            if value
+                        ),
+                        str(row["embedding_model_id"]) if row["embedding_model_id"] else None,
+                        int(row["embedding_dimensions"]) if row["embedding_dimensions"] else None,
+                    )
+                    for row in rows
+                ]
+
+            async def persist(values: list[tuple[str, object, int]]) -> None:
+                async with sessions.begin() as session:
+                    for event_id, result, index in values:
+                        await session.execute(
+                            text(
+                                "UPDATE events SET embedding = CAST(:embedding AS vector), "
+                                "embedding_model_id = :model, embedding_dimensions = :dimensions WHERE id = :id"
+                            ),
+                            {
+                                "id": event_id,
+                                "embedding": "["
+                                + ",".join(str(value) for value in result.vectors[index])
+                                + "]",
+                                "model": result.model_id,
+                                "dimensions": result.dimensions,
+                            },
+                        )
+
+            router = Router(
+                OpenRouterClient(
+                    active_settings.openrouter_api_key_value, model_settings.openrouter.base_url
+                ),
+                model_settings,
+                InMemoryResultCache(),
+                BudgetTracker(),
+                SqlAlchemyLlmRepository(sessions),
+                provider_coordinator=provider_coordinator,
+            )
+            return await ReembeddingService(fetch, persist, router.embed).run(limit=limit)
+
+        app.state.reembed_knowledge_callback = reembed_knowledge
         gmail_client = GmailApiClient(
             active_settings.gmail_client_id,
             active_settings.gmail_client_secret_value,
@@ -324,8 +426,7 @@ def create_app(
                             "title": classification.action_summary or "Gmail action item",
                             "importance": (
                                 8
-                                if classification.classification
-                                in {"security", "action_required"}
+                                if classification.classification in {"security", "action_required"}
                                 else 6
                             ),
                         },
@@ -345,6 +446,67 @@ def create_app(
 
         async def fetch_gmail_account(account: GmailAccountRecord, refresh_token: str) -> object:
             return await gmail_client.sync(refresh_token, account.history_id)
+
+        async def deliver_run_notifications(
+            result: dict[str, object], gmail_items: list[BriefingItem]
+        ) -> list[str]:
+            """Deliver minimal post-persistence notices without changing a completed run result."""
+            if notification_dispatcher is None:
+                return ["disabled"]
+            local_day = datetime.now(UTC).astimezone(
+                ZoneInfo(active_settings.app_timezone)
+            ).date().isoformat()
+            admin_link = (
+                f"{active_settings.admin_public_origin}/admin"
+                if active_settings.admin_public_origin
+                else None
+            )
+            notifications: list[Notification] = []
+            counts = result.get("counts")
+            processed = int(counts.get("processed", 0)) if isinstance(counts, dict) else 0
+            if processed:
+                notifications.append(
+                    Notification(
+                        idempotency_key=notification_key(
+                            NotificationKind.BRIEFING_READY, local_day
+                        ),
+                        kind=NotificationKind.BRIEFING_READY,
+                        title="Günlük özet hazır",
+                        body="Yeni özet güvenli yönetim panelinde hazır.",
+                        link=admin_link,
+                    )
+                )
+            for item in gmail_items:
+                notifications.append(
+                    Notification(
+                        idempotency_key=notification_key(
+                            NotificationKind.ACTIONABLE_MAIL, item.event_id
+                        ),
+                        kind=NotificationKind.ACTIONABLE_MAIL,
+                        title="Eylem gerektiren e-posta",
+                        body="Yeni bir eylem gerektiren e-posta tespit edildi.",
+                        link=admin_link,
+                    )
+                )
+            if result.get("status") in {"failed", "completed_with_errors"}:
+                notifications.append(
+                    Notification(
+                        idempotency_key=notification_key(
+                            NotificationKind.OPERATIONAL_FAILURE, local_day
+                        ),
+                        kind=NotificationKind.OPERATIONAL_FAILURE,
+                        title="İşlem uyarısı",
+                        body=(
+                            "Günlük işlem güvenli hata durumu ile tamamlandı. "
+                            "Ayrıntılar yönetim panelinde."
+                        ),
+                        link=admin_link,
+                    )
+                )
+            results = await asyncio.gather(
+                *(notification_dispatcher.deliver(notification) for notification in notifications)
+            )
+            return [delivery.status for delivery in results] or ["no_notification"]
 
         async def run_rss_now() -> dict[str, object]:
             """Run independently bounded Gmail, YouTube, and RSS paths in one briefing cycle."""
@@ -376,6 +538,14 @@ def create_app(
                 is_post_llm_failed=is_post_llm_failed,
                 refresh_blocked_item=refresh_blocked_item,
                 has_pending_briefing=has_pending_briefing,
+                correlate_event=correlate_event,
+                article_fetcher=ArticleFetcher(
+                    active_settings.article_request_timeout_seconds,
+                    active_settings.article_max_response_bytes,
+                    active_settings.article_max_retries,
+                    active_settings.allow_private_source_urls,
+                    active_settings.allow_insecure_source_urls,
+                ),
             )
             gmail_job = GmailRuntimeJob(
                 gmail_accounts,
@@ -441,6 +611,9 @@ def create_app(
                 result["message"] += f" Gmail sync had {gmail_run.failed} safe failure(s)."
             if youtube_run.failed:
                 result["message"] += f" YouTube sync had {youtube_run.failed} safe failure(s)."
+            result["notifications"] = await deliver_run_notifications(
+                result, gmail_run.action_items
+            )
             return result
 
         run_coordinator = RuntimeRunCoordinator()
@@ -461,10 +634,7 @@ def create_app(
             )
             model_settings = load_model_settings(active_settings.admin_models_path)
             router: Router | None = None
-            if (
-                active_settings.openrouter_api_key_value
-                and "reasoner" in model_settings.roles
-            ):
+            if active_settings.openrouter_api_key_value and "reasoner" in model_settings.roles:
                 router = Router(
                     OpenRouterClient(
                         active_settings.openrouter_api_key_value,
@@ -480,36 +650,38 @@ def create_app(
 
         app.state.ask_callback = ask_knowledge
 
-        async def agent_briefing_items(
-            briefing_id: str, rendered: str
-        ) -> list[AgentBriefingItem]:
+        async def agent_briefing_items(briefing_id: str, rendered: str) -> list[AgentBriefingItem]:
             """Select only safe persisted briefing/event/action fields for Agent API reads."""
             async with sessions() as session:
                 rows = (
-                    await session.execute(
-                        text(
-                            "SELECT bi.section, bc.title AS briefing_title, bc.summary_tr, "
-                            "bc.what_changed_tr, bc.why_important_tr, e.canonical_title, "
-                            "e.occurred_at, ec.classification, ec.action_summary, ec.deadline, "
-                            "ec.application_company, ec.created_at AS email_recorded_at, "
-                            "ARRAY(SELECT c.statement FROM claims c WHERE c.event_id = bi.event_id "
-                            "ORDER BY c.id LIMIT 5) AS facts, "
-                            "ARRAY(SELECT i.inference_text FROM inferences i "
-                            "WHERE i.event_id = bi.event_id ORDER BY i.id LIMIT 3) AS inferences, "
-                            "ARRAY(SELECT es.canonical_url FROM event_sources es "
-                            "WHERE es.event_id = bi.event_id AND es.canonical_url IS NOT NULL "
-                            "ORDER BY es.canonical_url LIMIT 3) AS source_links "
-                            "FROM briefing_items bi "
-                            "LEFT JOIN briefing_item_content bc ON bc.briefing_id = bi.briefing_id "
-                            "AND bc.event_id = bi.event_id "
-                            "LEFT JOIN events e ON e.id = bi.event_id "
-                            "LEFT JOIN email_classifications ec ON ec.source_item_id = bi.event_id "
-                            "WHERE bi.briefing_id = :briefing_id "
-                            "ORDER BY bi.section, e.occurred_at DESC NULLS LAST"
-                        ),
-                        {"briefing_id": briefing_id},
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT bi.section, bc.title AS briefing_title, bc.summary_tr, "
+                                "bc.what_changed_tr, bc.why_important_tr, e.canonical_title, "
+                                "e.occurred_at, ec.classification, ec.action_summary, ec.deadline, "
+                                "ec.application_company, ec.created_at AS email_recorded_at, "
+                                "ARRAY(SELECT c.statement FROM claims c WHERE c.event_id = bi.event_id "
+                                "ORDER BY c.id LIMIT 5) AS facts, "
+                                "ARRAY(SELECT i.inference_text FROM inferences i "
+                                "WHERE i.event_id = bi.event_id ORDER BY i.id LIMIT 3) AS inferences, "
+                                "ARRAY(SELECT es.canonical_url FROM event_sources es "
+                                "WHERE es.event_id = bi.event_id AND es.canonical_url IS NOT NULL "
+                                "ORDER BY es.canonical_url LIMIT 3) AS source_links "
+                                "FROM briefing_items bi "
+                                "LEFT JOIN briefing_item_content bc ON bc.briefing_id = bi.briefing_id "
+                                "AND bc.event_id = bi.event_id "
+                                "LEFT JOIN events e ON e.id = bi.event_id "
+                                "LEFT JOIN email_classifications ec ON ec.source_item_id = bi.event_id "
+                                "WHERE bi.briefing_id = :briefing_id "
+                                "ORDER BY bi.section, e.occurred_at DESC NULLS LAST"
+                            ),
+                            {"briefing_id": briefing_id},
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
             if not rows:
                 return [
                     AgentBriefingItem(
@@ -526,9 +698,7 @@ def create_app(
             for row in rows:
                 facts = [str(value)[:400] for value in (row["facts"] or []) if value][:5]
                 action_summary = (
-                    str(row["action_summary"])[:400]
-                    if row["action_summary"] is not None
-                    else None
+                    str(row["action_summary"])[:400] if row["action_summary"] is not None else None
                 )
                 title = (
                     row["briefing_title"]
@@ -580,14 +750,18 @@ def create_app(
         async def agent_briefing_detail(briefing_id: str) -> dict[str, object]:
             async with sessions() as session:
                 row = (
-                    await session.execute(
-                        text(
-                            "SELECT id, created_at, rendered FROM briefings "
-                            "WHERE id = :briefing_id"
-                        ),
-                        {"briefing_id": briefing_id},
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT id, created_at, rendered FROM briefings "
+                                "WHERE id = :briefing_id"
+                            ),
+                            {"briefing_id": briefing_id},
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
             if row is None:
                 raise LookupError("briefing not found")
             detail = AgentBriefingDetail(
@@ -600,17 +774,19 @@ def create_app(
         async def agent_latest_briefing() -> dict[str, object]:
             async with sessions() as session:
                 row = (
-                    await session.execute(
-                        text("SELECT id FROM briefings ORDER BY created_at DESC LIMIT 1")
+                    (
+                        await session.execute(
+                            text("SELECT id FROM briefings ORDER BY created_at DESC LIMIT 1")
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
             if row is None:
                 raise LookupError("no briefing")
             return await agent_briefing_detail(str(row["id"]))
 
-        async def agent_list_briefings(
-            limit: int, before: datetime | None
-        ) -> dict[str, object]:
+        async def agent_list_briefings(limit: int, before: datetime | None) -> dict[str, object]:
             clause = ""
             parameters: dict[str, object] = {"query_limit": limit + 1}
             if before is not None:
@@ -618,16 +794,20 @@ def create_app(
                 parameters["before"] = before
             async with sessions() as session:
                 rows = (
-                    await session.execute(
-                        text(
-                            "SELECT b.id, b.created_at, count(bi.event_id) AS item_count "
-                            "FROM briefings b LEFT JOIN briefing_items bi ON bi.briefing_id = b.id "
-                            f"{clause} GROUP BY b.id, b.created_at "
-                            "ORDER BY b.created_at DESC LIMIT :query_limit"
-                        ),
-                        parameters,
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT b.id, b.created_at, count(bi.event_id) AS item_count "
+                                "FROM briefings b LEFT JOIN briefing_items bi ON bi.briefing_id = b.id "
+                                f"{clause} GROUP BY b.id, b.created_at "
+                                "ORDER BY b.created_at DESC LIMIT :query_limit"
+                            ),
+                            parameters,
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
             has_more = len(rows) > limit
             page_rows = rows[:limit]
             page = AgentBriefingPage(
@@ -738,11 +918,7 @@ def create_app(
             catalog = load_source_catalog(active_settings.admin_sources_path)
             source_name = record.get("source_name")
             source = next(
-                (
-                    entry
-                    for entry in catalog.rss
-                    if entry.name == source_name and entry.enabled
-                ),
+                (entry for entry in catalog.rss if entry.name == source_name and entry.enabled),
                 None,
             )
             if source is None:
@@ -789,6 +965,14 @@ def create_app(
                 is_post_llm_failed=is_post_llm_failed,
                 refresh_blocked_item=refresh_blocked_item,
                 has_pending_briefing=has_pending_briefing,
+                correlate_event=correlate_event,
+                article_fetcher=ArticleFetcher(
+                    active_settings.article_request_timeout_seconds,
+                    active_settings.article_max_response_bytes,
+                    active_settings.article_max_retries,
+                    active_settings.allow_private_source_urls,
+                    active_settings.allow_insecure_source_urls,
+                ),
             ).run(retry_item=item)
             counts = result["counts"]
             retry_llm = usage_breakdown(retry_router.calls)
@@ -796,9 +980,10 @@ def create_app(
             counts["llm_cache_hits"] = retry_llm["cache_hits"]
             counts["llm_breakdown"] = retry_llm
             if counts["processed"] != 1:
-                if not counts["failure_categories"]["extractor_error"] and not counts[
-                    "failure_categories"
-                ]["event_persistence_error"]:
+                if (
+                    not counts["failure_categories"]["extractor_error"]
+                    and not counts["failure_categories"]["event_persistence_error"]
+                ):
                     await _reblock_retry(sessions, content_hash, "retry_failed")
                 return {"status": "retry_failed", "rss": result}
             await resolve_blocked_item(content_hash)

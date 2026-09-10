@@ -1,0 +1,82 @@
+# Approved M21 pilot only. Use with compose.rsshub-pilot.yaml; this is not the default catalog.
+defaults:
+  timezone: Europe/Istanbul
+  news_freshness_hours: 48
+  world_freshness_hours: 48
+  future_tolerance_hours: 6
+rss:
+  - name: "RSSHub Hacker News Best"
+    url: http://rsshub:1200/hackernews/best/sources
+    stream: tech
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub Hacker News Newest"
+    url: http://rsshub:1200/hackernews/newest/sources
+    stream: tech
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub Hacker News Ask"
+    url: http://rsshub:1200/hackernews/ask/sources
+    stream: personalized
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub Hacker News Show"
+    url: http://rsshub:1200/hackernews/show/sources
+    stream: tech
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub Hacker News Jobs"
+    url: http://rsshub:1200/hackernews/jobs/sources
+    stream: tech
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub Hacker News Front"
+    url: http://rsshub:1200/hackernews/front/sources
+    stream: tech
+    enabled: true
+    source_tier: community_discovery
+  - name: "RSSHub The Verge Apps"
+    url: http://rsshub:1200/theverge/apps
+    stream: tech
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub The Verge Android"
+    url: http://rsshub:1200/theverge/android
+    stream: tech
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub The Verge Microsoft"
+    url: http://rsshub:1200/theverge/microsoft
+    stream: tech
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub The Verge Web"
+    url: http://rsshub:1200/theverge/web
+    stream: tech
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub The Verge Gaming"
+    url: http://rsshub:1200/theverge/gaming
+    stream: personalized
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub The Verge Policy"
+    url: http://rsshub:1200/theverge/policy
+    stream: tech
+    enabled: true
+    source_tier: major_publication
+  - name: "RSSHub AP Top News"
+    url: http://rsshub:1200/apnews/topics/apf-topnews
+    stream: world
+    enabled: true
+    source_tier: wire_service
+  - name: "RSSHub Apple Security Releases"
+    url: http://rsshub:1200/apple/security-releases/en-us
+    stream: tech
+    enabled: true
+    source_tier: official_vendor
+  - name: "RSSHub Epic Free Games"
+    url: http://rsshub:1200/epicgames/freegames/en-US/US
+    stream: personalized
+    enabled: true
+    source_tier: official_vendor

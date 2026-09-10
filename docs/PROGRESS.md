@@ -1,8 +1,8 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M18
-**Last updated:** 2026-09-08
+**Current milestone:** M21 — Source expansion and evals (pilot observation continues)
+**Last updated:** 2026-09-10
 
 ## Rules for Codex
 - Read this file before every task.
@@ -15,7 +15,7 @@
 ---
 
 ## M0 — Foundation / runnable skeleton
-**Status:** [~] IN PROGRESS
+**Status:** [x] COMPLETE
 
 - [x] Python project/package structure
 - [x] Dockerfile + Docker Compose dev stack
@@ -166,15 +166,18 @@
 **Acceptance:** fresh install can be configured without editing Python source; local -> VPS deployment path documented and tested. RSS runtime acceptance passed with a real TechCrunch → OpenRouter → event → briefing run.
 
 ## M9 — Safe daily RSS operation
-**Status:** [~] IN PROGRESS
+**Status:** [!] BLOCKED / DEFERRED — Docker daemon available when
 
 - [x] durable source-item idempotency before LLM work
 - [x] provider-cost / configured-estimate / unavailable cost status
 - [x] opt-in daily scheduler with configured local time and timezone
 - [x] durable per-day scheduler claim to prevent restart double-runs
 - [x] offline scheduler and repeated-run tests
-- [ ] rebuilt-container second manual-run verification
-- [ ] scheduler opt-in smoke verification (manual, explicit only)
+- [!] rebuilt-container second manual-run verification — BLOCKED / DEFERRED: Docker CLI is
+  installed but its daemon is unavailable in the current workspace. Run when Docker is available;
+  do not enable a real provider or leave the scheduler enabled.
+- [!] scheduler opt-in smoke verification (manual, explicit only) — BLOCKED / DEFERRED: requires
+  the same local Docker runtime. Restore `SCHEDULER_ENABLED=false` immediately after the smoke.
 
 **Acceptance:** a repeated manual RSS run makes no LLM calls for already persisted fresh items; the UI distinguishes unavailable cost from zero; scheduler defaults disabled and cannot create two scheduled briefings for one local day across restarts.
 
@@ -375,7 +378,7 @@ is labelled rather than translated at read time.
 ---
 
 ## M17 — Production operations verification
-**Status:** [~] IN PROGRESS
+**Status:** [!] BLOCKED / DEFERRED — VPS ready when
 
 - [x] offline production preflight remains covered: fail-closed settings, Admin/origin controls,
   source-fetch restrictions, Compose network/least-privilege topology, and generated migration SQL
@@ -384,16 +387,20 @@ is labelled rather than translated at read time.
 - [x] M16 migration `20260908_0015` is explicitly included in the operational verification path
 - [x] Hermes is documented as a separate orchestration layer with generic future domain API
   namespaces; direct DB, Gmail-token, OpenRouter-secret, and shell access remain prohibited
-- [ ] staging VPS backup and isolated restore observation
-- [ ] staging/production Compose startup, TLS proxy, authenticated Admin, health/readiness, and
-  migration-revision observation
-- [ ] explicitly approved controlled fresh-briefing verification, if a newly persisted Turkish
-  snapshot is required (must not enable scheduler or use providers implicitly)
+- [!] staging VPS backup and isolated restore observation — BLOCKED / DEFERRED: VPS ready when
+- [!] staging/production Compose startup, TLS proxy, authenticated Admin, health/readiness, and
+  migration-revision observation — BLOCKED / DEFERRED: VPS ready when
+- [!] explicitly approved controlled fresh-briefing verification, if a newly persisted Turkish
+  snapshot is required — BLOCKED / DEFERRED: VPS ready when; never enable the scheduler or use
+  providers implicitly
+- [!] close M9 rebuilt-container second manual-run and explicitly enabled scheduler smoke
+  observations, then reconcile the M9 status without duplicating provider work — BLOCKED / DEFERRED:
+  Docker daemon available when
 
 **Acceptance:** a staging or production operator records the safe checklist observations after a
 tested backup/restore and confirms the hardened deployment, migration revision, and reader behavior
 without exposing secrets or enabling unapproved live integrations. Offline evidence alone cannot
-close this milestone.
+close this milestone. This milestone remains incomplete until the deferred observations are recorded.
 
 ---
 
@@ -420,12 +427,112 @@ secrets never appear; metadata-only audit persists without request content.
 
 ---
 
+## M21 — Source expansion and evals
+**Status:** [~] IN PROGRESS
+
+- [x] add a sanitized, offline golden quality dataset for gatekeeper, extractor, briefing, Search,
+  fact/inference separation, and source prompt-injection contracts
+- [x] keep deterministic assertions in pytest with no provider, mailbox, production-history, or
+  external evaluator request
+- [x] define an operator-approved 15-route RSSHub allow-list and an isolated, default-off Compose
+  profile; normal RSS/YouTube, Gmail, OpenRouter, and scheduler paths remain outside it
+- [~] persist aggregate-only route metrics (availability, latency, freshness, duplicates,
+  retained candidates, and error rate); run the approved profile once daily for seven days and
+  capture host-side RSSHub memory before the per-route `keep / disable / needs-auth` decision
+- [x] add an explicit, separately budgeted manual provider-evaluation option with a sanitized
+  Promptfoo-compatible configuration, separate scoped-key variable, one model, five cases,
+  300-output-token cap, one-request-per-minute limit, and sharing disabled
+
+**Acceptance:** quality regressions have an offline, sanitized baseline; an approved RSSHub pilot
+improves source coverage without becoming a runtime dependency or lowering core availability.
+
+**Pilot route findings (2026-09-10):** GitHub Trending is **needs-auth/deferred**: current route
+`/github/trending/:since/:language/:spoken_language?` requires `GITHUB_ACCESS_TOKEN`, which this
+pilot must not request or create. Current RSSHub upstream has no Reddit route namespace; Reddit is
+excluded from this pilot.
+
+---
+
+## M22 — Notification delivery
+**Status:** [x] COMPLETE
+
+- [x] add a generic notification contract and an optional ntfy HTTP adapter
+- [x] default the adapter to disabled and require HTTPS, a protected token, and explicit public-topic
+  risk acknowledgement when using `ntfy.sh`
+- [x] send only concise briefing-ready, actionable-mail, and operational-failure notices
+- [x] use durable notification keys plus ntfy sequence IDs to suppress duplicate logical notices
+- [x] use bounded timeout/retry and isolate delivery failure after ingestion/briefing persistence
+- [x] run full offline regression and disposable-PostgreSQL migration/idempotency validation
+
+**Acceptance:** duplicate scheduled/manual completion cannot produce duplicate delivery; notification
+failure cannot roll back a persisted briefing or stop ingestion; disabled defaults make no request.
+
+---
+
+## M20 — Full-article ingestion
+**Status:** [x] COMPLETE
+
+- [x] add a bounded HTML-only article fetcher with redirect-by-redirect source validation
+- [x] parse already-fetched public HTML through Trafilatura; parsing cannot initiate network work
+- [x] retain RSS metadata fallback when the page is inaccessible or not extractable
+- [x] add article-body use only after the gatekeeper requests full extraction in all RSS paths
+- [x] add representative extraction, redirect, MIME, response-size, freshness/dedup, and retry tests
+- [x] document dependency review, operational limits, and removal path
+
+**Acceptance:** representative fixtures remove navigation, advertisements, and boilerplate while
+retaining useful article text; stale/duplicate/irrelevant items never fetch an article; fetch and
+parse failures fall back safely without bypassing existing retry/post-LLM protections.
+
+---
+
+## M19 — Runtime knowledge quality
+**Status:** [x] COMPLETE
+
+- [x] persist embeddings for newly processed public events and claims through the configured
+  `embedding` role
+- [x] define model-dimension compatibility, migration, and re-embedding behavior before a model
+  change
+- [x] cluster multi-source coverage into one event while retaining every source provenance link
+- [x] keep materially distinct but similar events separate
+- [x] wire bounded correlation retrieval/runtime verification without sending full history or inbox
+  data to a model
+- [x] add fixture and disposable-PostgreSQL coverage for embedding persistence, corroboration,
+  update/supersession, and unrelated-event rejection
+
+**Acceptance:** semantic retrieval is non-neutral for newly processed public events; two sources
+about one event create one event with two source links; similar but different events do not merge;
+and correlation keeps claims and inferences separate with bounded context.
+
+---
+
+## Approved implementation sequence after M19
+
+The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. Later milestones are
+planned, not active; their scope must not be pulled into M19.
+
+- [ ] **M20 — Full-article ingestion:** safe bounded article fetch plus Trafilatura extraction
+- [ ] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
+  regression harness
+- [x] **M22 — Notification delivery:** disabled-by-default, privacy-minimized ntfy adapter
+- [ ] **M23 — Document ingestion:** isolated Docling boundary, only after explicit feature approval
+- [ ] **M24 — User/mobile API and generated SDK:** stabilize the user API before OpenAPI Generator
+- [ ] **M25+ — Tasks, mobile sync, and actions:** TaskService/Vikunja decision, then client sync and
+  least-privilege MCP-compatible tools
+
+**Sequencing rule:** M17 and linked M9 live observations remain deferred until the necessary
+environment is available. M19 is authorized by the project owner; later integrations remain
+removable adapters/services, and the existing database and domain model remain canonical.
+
+---
+
 ## Backlog / explicitly out of current track
 - [ ] Gmail Pub/Sub push/watch if polling latency becomes a real issue
 - [ ] Audio download + STT fallback when no YouTube captions exist
 - [ ] Telegram/Discord richer interactive feedback buttons
 - [ ] Qdrant migration only if pgvector scale proves inadequate
 - [ ] browser automation for non-RSS/paywalled/dynamic sources
+- [ ] Direct Reddit RSS decision: consider only as a separately approved `community/discovery`
+  source tier; it must never be treated as verified news on its own and is not part of RSSHub M21.
 - [ ] richer Q&A/chat over the knowledge base
 - [ ] automatic source-quality learning
 - [ ] task/reminder workflows, PC activity tracking, local model routing, and home-PC coding bridge
@@ -435,6 +542,69 @@ secrets never appear; metadata-only audit persists without request content.
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-10: M22 final validation: 167 passed, 0 skipped, 2 upstream deprecation warnings.
+  Disposable local PostgreSQL migrated through `20260910_0019`; notification tests cover disabled
+  defaults, protected ntfy configuration, sequence-ID retries, duplicate suppression, and isolated
+  delivery failure. No ntfy, OpenRouter, Gmail, YouTube, RSS, scheduler, VPS, or user-data request
+  was made.
+- 2026-09-10: M21 Promptfoo-option validation: 8 focused offline tests passed. The committed
+  configuration has five synthetic cases, source-data delimiters, static JSON assertions, no
+  sharing, and a separate scoped-key name; no Promptfoo installation, provider, Gmail, source,
+  RSSHub, YouTube, scheduler, VPS, or user-data call was made.
+- 2026-09-10: M21 RSSHub pilot day 1: the explicit profile wrote 15 aggregate-only route
+  observations. Eight routes were available; average available-route latency was 1030.1 ms; 114
+  fresh/de-duplicated candidates were retained; 16 duplicate candidates were observed; seven routes
+  returned safe failure categories. RSSHub host memory sample was 248 MiB / 512 MiB. No OpenRouter,
+  Gmail, YouTube, scheduler, VPS, or user-data operation was run. The seven-day decision remains
+  open.
+- 2026-09-10: M21 day-one route diagnosis: RSSHub service logs show all six The Verge routes
+  returning 503 (five provider parsing failures and one empty-route response); AP Top News returns
+  503 after its upstream responds 403. These are recorded as pilot maintenance/availability
+  evidence only. The approved route set remains unchanged until the seven-day review; no core
+  source, provider, scheduler, Gmail, YouTube, or user-data operation changed.
+- 2026-09-10: M21 RSSHub-pilot reporting validation: 6 offline tests passed. The read-only
+  seven-day report correctly groups aggregate-only data by route, stream, and tier without
+  refetching a source. Its first real report matched the 15 day-one observations; the current
+  seven-day decision remains open.
+- 2026-09-10: M21 RSSHub-pilot wiring validation: 5 offline tests passed and the isolated Compose
+  profile resolved successfully before it was explicitly started. The pilot allows exactly 15
+  approved routes, excludes the normal app/runtime, and records aggregate-only route health.
+- 2026-09-10: M21 first-slice offline validation: 2 sanitized golden-evaluation tests passed.
+  They verify required quality-contract coverage, forbid common credential/mail markers in the
+  dataset, and retain prompt-injection text inside the extractor's untrusted source delimiter. No
+  provider, RSSHub, promptfoo, Gmail, source, or user-data request was made.
+- 2026-09-10: M20 final validation: 155 passed, 0 skipped, 2 upstream deprecation warnings.
+  Disposable local PostgreSQL integration remained green. Article fixtures verify boilerplate
+  removal, unsafe redirect/MIME/size rejection, bounded retry, metadata fallback, and no body
+  request for stale/duplicate/irrelevant candidates. No live article, RSS, YouTube, Gmail,
+  OpenRouter, scheduler, VPS, or user-data call was made.
+- 2026-09-10: M20 RSS runtime wiring validation: 12 focused tests passed. The fixture verifies
+  full-article text reaches extraction only after the gatekeeper signal, while fetch failure keeps
+  the metadata fallback and records only the safe `article_fetch_error` category. No live request
+  or provider call was made.
+- 2026-09-10: M20 first-slice offline validation: 11 focused tests passed for safe article HTML
+  extraction and RSS gating. Trafilatura `>=2.2,<3` was added as an Apache-2.0 parser for
+  already-fetched public HTML; no live web, RSS, YouTube, Gmail, OpenRouter, scheduler, VPS, or
+  user-data operation was run.
+- 2026-09-10: M19 final validation: 145 passed, 0 skipped, 2 upstream deprecation warnings.
+  Disposable local PostgreSQL was migrated through `20260909_0017`; its integration coverage
+  verified current/legacy Search rows plus vector persistence and two-source corroboration. No
+  OpenRouter, Gmail, YouTube, RSS, scheduler, VPS, user-data, or production call was made.
+- 2026-09-10: M19 embedding/clustering offline validation: 140 passed, 1 skipped (dedicated
+  PostgreSQL integration URL not configured), 2 upstream deprecation warnings. Ruff and generated
+  Alembic SQL passed through `20260909_0017`. Added fixture coverage for corroborating
+  multi-source event clustering and rejection of similarly named but distinct events. Docker was
+  used only as an isolated test runner; no RSS, YouTube, Gmail, OpenRouter, scheduler, or VPS
+  operation was run.
+- 2026-09-09: M19 embedding first slice: added offline unit coverage for the dedicated OpenRouter
+  embedding endpoint, deterministic response ordering, dimensionality validation, and cache reuse.
+  The workspace currently has neither a Python/uv executable nor the prior `.venv`, so pytest,
+  Ruff, and generated Alembic SQL could not be run; `git diff --check` passed. No provider,
+  Docker, scheduler, source, Gmail, or VPS request was made.
+- 2026-09-09: M17/M9 local-runtime availability check: Docker CLI is present but the Docker daemon
+  is unavailable, so no container, provider, scheduler, or source run was attempted. `git diff
+  --check` passed. VPS-dependent M17 observations and Docker-dependent M9 smoke checks are
+  explicitly deferred; M19 is now active by project-owner decision.
 - 2026-09-08: M18 secure read-only Agent API: 137 passed, 1 skipped (dedicated PostgreSQL
   integration URL not configured), 2 upstream deprecation warnings; Ruff, generated Alembic SQL
   through `20260908_0016`, and `git diff --check` passed. New offline coverage verifies disabled,
@@ -620,6 +790,54 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-10: Started M21 Source expansion and evals. Added a normal-pytest synthetic/public-style
+  golden dataset for core quality contracts and a prompt-injection boundary regression. Promptfoo
+  remains deliberately uninstalled and manual because its configuration can execute trusted local
+  code; no paid or model-graded evaluation is enabled. RSSHub remains disabled pending an explicit
+  10–20 route allow-list and isolated-pilot operating decision.
+- 2026-09-10: Completed M20 Full-article ingestion. The application owns bounded public HTML
+  retrieval and validates every redirect before Trafilatura parses the received bytes. Normal and
+  explicit-retry RSS paths use the same policy; failures preserve the metadata path and existing
+  post-LLM protections. M21 is now active; no source expansion or model evaluation implementation
+  has begun.
+- 2026-09-10: Extended M20 through the normal and explicit-retry RSS paths. Both now receive the
+  configured bounded article fetcher. Full extraction uses article text only after the gatekeeper
+  requests it; inaccessible pages retain the feed-snippet input and a safe operational category.
+  MIME/size and broader retry fixture coverage remain open.
+- 2026-09-10: Started M20 Full-article ingestion. Added a bounded HTML-only fetcher with the
+  existing redirect-by-redirect public-address validation, timeout/retry/response limits, and
+  MIME checks. Trafilatura parses only the received response; an inaccessible or low-quality page
+  safely falls back to feed metadata. RSS invokes it only after the gatekeeper requests full
+  extraction. Remaining M20 coverage and all-path runtime wiring are still open.
+- 2026-09-10: Completed M19 Runtime knowledge quality. Newly extracted compact public event and
+  claim text is embedded through the configured role with model/dimension binding; re-embedding is
+  explicit and bounded. Conservative clustering retains each source link, and RSS correlation
+  retrieves at most 50 same-entity candidates before passing at most five compact records to the
+  reasoner; invalid links/evidence are rejected and inferences remain separate. The disposable
+  PostgreSQL suite passed with no skipped tests. M20 is now active; no M20 implementation began.
+- 2026-09-10: Extended M19 with conservative deterministic event clustering. A new source may join
+  a recent event only when title, normalized entity, and (where needed) source-backed claim overlap
+  meet the threshold; it is then stored as `corroborating` provenance and metadata is merged rather
+  than replaced. Ambiguous or materially distinct coverage remains separate. The runtime embedding
+  first slice and clustering are covered offline; re-embedding and bounded correlation runtime
+  wiring remain in progress.
+- 2026-09-09: Started M19 Runtime knowledge quality. The first slice adds a bounded, cached,
+  budget-accounted OpenRouter embedding path for compact event/claim text only; migration
+  `20260909_0017` records model IDs and dimensions with event/claim vectors. Search now attempts
+  semantic reranking only after deterministic candidates exist and only for matching
+  model/dimension rows. Re-embedding, clustering, and correlation runtime wiring remain open.
+- 2026-09-09: The project owner deferred M17's VPS/TLS/production observations until a VPS exists
+  and deferred M9's rebuilt-container/scheduler smoke until the local Docker daemon is available.
+  Docker CLI was found but could not connect to its daemon, so no local containers, live sources,
+  provider calls, or persistent scheduler change occurred. M17 remains incomplete; M19 Runtime
+  knowledge quality is now the authorized active milestone.
+- 2026-09-09: Approved and documented the post-M17 implementation sequence in
+  `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. The plan prioritizes runtime embeddings, event
+  clustering, full-article extraction, measured source expansion/evals, and privacy-minimized
+  notification delivery before document/mobile/task/action features. External repositories remain
+  removable adapters, libraries, isolated services, or references; no runtime dependency or code
+  change was introduced. Reconciled M0's stale status and set M17 as the active milestone because
+  its staging/production evidence and linked M9 manual checks remain open.
 - 2026-09-08: Completed M18 secure read-only Agent API. Added disabled-by-default separate bearer
   authentication, bounded briefing latest/list/detail reads, and a bounded Agent projection over
   the existing Search/Ask pipeline. The new `agent_api_audit_log` migration retains timestamp,
