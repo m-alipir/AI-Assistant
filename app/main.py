@@ -223,6 +223,7 @@ def create_app(
     app.state.gmail_encryption_configuration_error = False
     if engine is not None:
         sessions = create_session_factory(engine)
+        app.state.sessions = sessions
 
         async def write_agent_api_audit(endpoint: str, outcome: str, response_bytes: int) -> None:
             """Persist metadata only; no token, caller, question, source, or payload is stored."""
@@ -923,7 +924,7 @@ def create_app(
             }
 
         if telegram_bot is not None:
-            app.state.telegram_webhook_handler = TelegramWebhookHandler(
+            app.state.telegram_command_handler = TelegramWebhookHandler(
                 active_settings,
                 sessions,
                 telegram_bot,
@@ -932,6 +933,8 @@ def create_app(
                 ask=ask_knowledge,
                 status=telegram_status,
             )
+            if active_settings.telegram_mode == "webhook":
+                app.state.telegram_webhook_handler = app.state.telegram_command_handler
 
         async def retry_blocked_youtube(content_hash: str) -> dict[str, object]:
             """Run exactly one explicitly claimed retry; scheduler/manual runs remain blocked."""

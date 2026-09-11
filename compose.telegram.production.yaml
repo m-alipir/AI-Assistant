@@ -1,5 +1,5 @@
-# Optional production-only Telegram secret mount. Use together with compose.production.yaml only
-# after TELEGRAM_ENABLED=true and the non-secret Telegram settings are in the protected env file.
+# Optional webhook-only Telegram secret mount. For outbound polling use
+# compose.telegram.polling.production.yaml instead.
 services:
   app:
     environment:

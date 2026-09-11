@@ -1,0 +1,34 @@
+# Outbound-only Telegram polling. Use instead of compose.telegram.production.yaml.
+services:
+  app:
+    ports: !reset []
+    environment:
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+    volumes:
+      - "${TELEGRAM_BOT_TOKEN_HOST_FILE:?set TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro"
+  telegram-poller:
+    build: .
+    command: ["python", "-m", "app.telegram.poller"]
+    env_file: ["${PRODUCTION_ENV_FILE:-.env.production}"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL_FILE: /run/secrets/database_runtime_url
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      ADMIN_SOURCES_PATH: /app/config/sources.example.yaml
+      ADMIN_MODELS_PATH: /app/config/models.example.yaml
+      ADMIN_INTERESTS_PATH: /app/config/interests.example.yaml
+    volumes:
+      - "${ADMIN_CONFIG_DIR:-./config}:/app/config"
+      - "${DATABASE_RUNTIME_URL_FILE:?set DATABASE_RUNTIME_URL_FILE}:/run/secrets/database_runtime_url:ro"
+      - "${TELEGRAM_BOT_TOKEN_HOST_FILE:?set TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro"
+    networks: [default, backend]
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]

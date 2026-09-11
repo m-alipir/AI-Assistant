@@ -37,7 +37,7 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
     try:
         async with engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "20260911_0020"
+            assert revision == "20260911_0021"
             await connection.execute(
                 text(
                     "INSERT INTO events (id, canonical_title, occurred_at, embedding_dimensions) "
@@ -156,7 +156,8 @@ async def test_telegram_migration_creates_replay_tables_and_channel_key() -> Non
                         text(
                             "SELECT table_name FROM information_schema.tables "
                             "WHERE table_schema = 'public' AND table_name IN "
-                            "('telegram_updates', 'telegram_feedback_tokens')"
+                            "('telegram_updates', 'telegram_feedback_tokens', "
+                            "'telegram_polling_state')"
                         )
                     )
                 ).all()
@@ -174,8 +175,12 @@ async def test_telegram_migration_creates_replay_tables_and_channel_key() -> Non
                     )
                 )
             ).all()
-        assert revision == "20260911_0020"
-        assert tables == {"telegram_updates", "telegram_feedback_tokens"}
+        assert revision == "20260911_0021"
+        assert tables == {
+            "telegram_updates",
+            "telegram_feedback_tokens",
+            "telegram_polling_state",
+        }
         assert key_columns == ["channel", "idempotency_key"]
     finally:
         await engine.dispose()

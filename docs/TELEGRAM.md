@@ -4,6 +4,9 @@ Telegram is an optional, disabled-by-default interface over existing persisted b
 Ask, feedback, and notification services. It is not a second assistant, ingestion pipeline, task
 system, browser, shell, or general-action surface.
 
+`TELEGRAM_MODE=webhook` is the existing default. `TELEGRAM_MODE=polling` runs an outbound-only
+long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbound HTTP port.
+
 ## Commands
 
 - `/ozet` returns the latest safe persisted briefing and short-lived feedback buttons.
@@ -23,6 +26,7 @@ Keep these non-secret values only in the protected production environment file:
 
 ```dotenv
 TELEGRAM_ENABLED=true
+TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://intelligence.example.com/integrations/telegram/webhook
 TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
 # Optional; every listed chat must already occur in TELEGRAM_ALLOWED_ACTOR_PAIRS.
@@ -49,6 +53,32 @@ The setup command reads the mounted files and prints only a success/failure cate
 only `message` and `callback_query` updates with two Telegram-to-app connections. It is never run
 automatically at startup. Do not use polling in this deployment.
 
+## Outbound-only polling deployment
+
+Use polling only with one `telegram-poller` replica. Its protected environment needs no
+`TELEGRAM_WEBHOOK_URL` or webhook-secret setting:
+
+```dotenv
+TELEGRAM_ENABLED=true
+TELEGRAM_MODE=polling
+TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
+TELEGRAM_POLLING_TIMEOUT_SECONDS=30
+TELEGRAM_POLLING_BATCH_LIMIT=25
+TELEGRAM_POLLING_MAX_BACKOFF_SECONDS=30
+```
+
+Mount only the existing bot-token and runtime database secret files, then use the polling overlay:
+
+```text
+docker compose --env-file /etc/personal-intelligence/app.env \
+  -f compose.production.yaml -f compose.telegram.polling.production.yaml up -d --build
+```
+
+The overlay removes app host-port publication and adds an outbound-only `telegram-poller` with
+`restart: unless-stopped`. On every start it calls `deleteWebhook` with pending updates preserved,
+then uses `getUpdates` for `message` and `callback_query` only. The cursor stores only the next
+numeric offset; the existing durable update receipt remains the duplicate-work barrier.
+
 ## Security and privacy
 
 - The public endpoint accepts only a bounded JSON `POST` and uses Telegram's secret-token header
@@ -64,6 +94,8 @@ automatically at startup. Do not use polling in this deployment.
   success or invalid-button message, so Telegram's loading indicator closes without exposing a
   token, identity, database detail, or provider response. Its timeout/retry/error policy is the
   same bounded Bot API boundary as ordinary delivery.
+- Polling retains the same exact identity pairs, command/model limits, feedback rules, update
+  deduplication, source-link filtering, and safe failure categories as webhook delivery.
 - Outgoing messages are literal plain text with previews disabled and protected-content requested.
   There is no Telegram Markdown/HTML parser surface. Existing HTTPS-only provenance links are the
   only links rendered.
@@ -83,6 +115,11 @@ With no scheduler or unapproved source/provider run enabled, verify:
    only safe categories and confirm that tokens, IDs, command text, and reply text are absent.
 5. Temporarily block Telegram egress and verify ingestion, Admin, health, and readiness remain
    available; restore egress and confirm a new user command works.
+
+For `TELEGRAM_MODE=polling`, instead verify that no host port is published, the poller removes an
+old webhook without dropping pending updates, and `/ozet`, `/ara`, `/sor`, `/durum`, feedback,
+unauthorized identities, duplicate updates, restart recovery, and temporary outbound failure retain
+the same safe behavior. Do not run the webhook configuration command in polling mode.
 
 Never paste a bot token, webhook secret, Telegram message, database row, or raw proxy log into a
 ticket or chat.

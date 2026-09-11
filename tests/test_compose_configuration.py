@@ -78,6 +78,18 @@ def test_telegram_production_override_mounts_only_read_only_secret_files() -> No
     assert "TELEGRAM_WEBHOOK_SECRET=" not in str(telegram)
 
 
+def test_telegram_polling_override_has_no_host_port_or_webhook_secret() -> None:
+    polling = (PROJECT_ROOT / "compose.telegram.polling.production.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "command: [\"python\", \"-m\", \"app.telegram.poller\"]" in polling
+    assert "restart: unless-stopped" in polling
+    assert "ports: !reset []" in polling
+    assert "TELEGRAM_WEBHOOK_SECRET" not in polling
+    assert "TELEGRAM_BOT_TOKEN_FILE" in polling
+
+
 def test_backup_and_restore_scripts_encrypt_verify_and_require_isolation() -> None:
     backup = (PROJECT_ROOT / "ops/backup-postgres.sh").read_text(encoding="utf-8")
     restore = (PROJECT_ROOT / "ops/restore-postgres.sh").read_text(encoding="utf-8")

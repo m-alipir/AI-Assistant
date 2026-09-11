@@ -8,8 +8,8 @@ from app.telegram.core import TelegramBotClient, TelegramDeliveryError
 
 async def main() -> int:
     settings = get_settings()
-    if not settings.telegram_enabled:
-        print("Telegram is disabled; webhook was not changed.")
+    if not settings.telegram_enabled or settings.telegram_mode != "webhook":
+        print("Telegram webhook mode is disabled; webhook was not changed.")
         return 2
     client = TelegramBotClient(
         settings.telegram_bot_token_value,

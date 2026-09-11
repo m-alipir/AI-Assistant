@@ -582,6 +582,11 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-11: M22.1 polling validation: 213 passed, 0 skipped against disposable PostgreSQL
+  migrated through `20260911_0021`. Fake Bot API coverage validates webhook removal, bounded
+  getUpdates, cursor advancement, shared command routing, and polling-mode configuration. Ruff,
+  static Alembic SQL, both synthetic-secret production Compose resolutions, and `git diff --check`
+  passed. No live Telegram, VDS, provider, or user-data request was made.
 - 2026-09-11: M22.1 callback completion validation: 209 passed, 0 skipped against a disposable
   PostgreSQL instance migrated through `20260911_0020`. The integration check verifies both
   Telegram tables and the channel-scoped notification primary key. Callback fake-transport tests
@@ -867,6 +872,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-11: Added the M22.1 outbound-only polling mode. `TELEGRAM_MODE=webhook|polling` keeps
+  webhook as the default and uses a separate hardened poller service in polling mode. The worker
+  deletes any webhook without dropping pending updates, persists only its numeric offset, and routes
+  updates through the same authorization, deduplication, command, feedback, and callback boundary.
+  The polling Compose override exposes no host HTTP port; real VDS/Telegram smoke verification is
+  still required.
 - 2026-09-11: Completed the M22.1 callback acknowledgement boundary with bounded
   `answerCallbackQuery` delivery after every accepted feedback callback. Existing actor-bound,
   expiring one-use tokens and transactional feedback receipt remain intact; fake transport tests

@@ -7,6 +7,7 @@ import stat
 from datetime import time
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -143,6 +144,9 @@ class Settings(BaseSettings):
     )
     ntfy_max_retries: int = Field(default=1, validation_alias="NTFY_MAX_RETRIES", ge=0, le=3)
     telegram_enabled: bool = Field(default=False, validation_alias="TELEGRAM_ENABLED")
+    telegram_mode: Literal["webhook", "polling"] = Field(
+        default="webhook", validation_alias="TELEGRAM_MODE"
+    )
     telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_token_file: Path | None = Field(
         default=None, validation_alias="TELEGRAM_BOT_TOKEN_FILE"
@@ -184,6 +188,15 @@ class Settings(BaseSettings):
     )
     telegram_max_retries: int = Field(
         default=1, validation_alias="TELEGRAM_MAX_RETRIES", ge=0, le=2
+    )
+    telegram_polling_timeout_seconds: int = Field(
+        default=30, validation_alias="TELEGRAM_POLLING_TIMEOUT_SECONDS", ge=1, le=50
+    )
+    telegram_polling_batch_limit: int = Field(
+        default=25, validation_alias="TELEGRAM_POLLING_BATCH_LIMIT", ge=1, le=100
+    )
+    telegram_polling_max_backoff_seconds: int = Field(
+        default=30, validation_alias="TELEGRAM_POLLING_MAX_BACKOFF_SECONDS", ge=1, le=60
     )
 
     @field_validator("app_timezone")
@@ -235,32 +248,34 @@ class Settings(BaseSettings):
     def validate_production_security(self) -> "Settings":
         """Fail closed when a production process would expose its admin surface."""
         if self.telegram_enabled:
-            webhook = urlsplit(self.telegram_webhook_url)
-            if (
-                webhook.scheme != "https"
-                or not webhook.netloc
-                or webhook.path != "/integrations/telegram/webhook"
-                or webhook.query
-                or webhook.fragment
-                or webhook.username
-                or webhook.password
-            ):
-                raise ValueError(
-                    "TELEGRAM_WEBHOOK_URL must be HTTPS and end in the Telegram webhook path"
-                )
-            if webhook.hostname not in self.allowed_host_list:
-                raise ValueError("TELEGRAM_WEBHOOK_URL host must be in ALLOWED_HOSTS")
             if not self.telegram_allowed_actor_pair_list:
                 raise ValueError(
                     "TELEGRAM_ALLOWED_ACTOR_PAIRS is required when TELEGRAM_ENABLED=true"
                 )
             if len(self.telegram_bot_token_value) < 20:
                 raise ValueError("TELEGRAM_BOT_TOKEN(_FILE) is required when TELEGRAM_ENABLED=true")
-            secret = self.telegram_webhook_secret_value
-            if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", secret) or len(set(secret)) < 8:
-                raise ValueError(
-                    "TELEGRAM_WEBHOOK_SECRET(_FILE) must be a high-entropy 32-256 character value"
-                )
+            if self.telegram_mode == "webhook":
+                webhook = urlsplit(self.telegram_webhook_url)
+                if (
+                    webhook.scheme != "https"
+                    or not webhook.netloc
+                    or webhook.path != "/integrations/telegram/webhook"
+                    or webhook.query
+                    or webhook.fragment
+                    or webhook.username
+                    or webhook.password
+                ):
+                    raise ValueError(
+                        "TELEGRAM_WEBHOOK_URL must be HTTPS and end in the Telegram webhook path"
+                    )
+                if webhook.hostname not in self.allowed_host_list:
+                    raise ValueError("TELEGRAM_WEBHOOK_URL host must be in ALLOWED_HOSTS")
+                secret = self.telegram_webhook_secret_value
+                if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", secret) or len(set(secret)) < 8:
+                    raise ValueError(
+                        "TELEGRAM_WEBHOOK_SECRET(_FILE) must be a high-entropy "
+                        "32-256 character value"
+                    )
             notification_chats = set(self.telegram_notification_chat_id_list)
             allowed_chats = {chat_id for _, chat_id in self.telegram_allowed_actor_pair_list}
             if not notification_chats.issubset(allowed_chats):
@@ -297,11 +312,15 @@ class Settings(BaseSettings):
                 raise ValueError("GMAIL_ENABLED requires a valid APP_ENCRYPTION_KEY") from error
         if self.app_env.casefold() != "production":
             return self
+        telegram_secret_files_valid = self.telegram_bot_token_file is not None
+        if self.telegram_mode == "webhook":
+            telegram_secret_files_valid = (
+                telegram_secret_files_valid and self.telegram_webhook_secret_file is not None
+            )
         if self.telegram_enabled and (
-            self.telegram_bot_token_file is None
-            or self.telegram_webhook_secret_file is None
+            not telegram_secret_files_valid
             or self.telegram_bot_token.strip()
-            or self.telegram_webhook_secret.strip()
+            or (self.telegram_mode == "webhook" and self.telegram_webhook_secret.strip())
         ):
             raise ValueError(
                 "production Telegram secrets must use only absolute external secret files"

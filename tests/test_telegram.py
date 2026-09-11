@@ -1,5 +1,6 @@
 """Offline Telegram boundary regressions; no Bot API or provider call is permitted."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -17,6 +18,7 @@ from app.telegram.core import (
     TelegramMessage,
     split_plain_text,
 )
+from app.telegram.poller import TelegramPoller
 from app.telegram.service import Actor, TelegramWebhookHandler, _search_text
 
 TOKEN = "123456789:telegram-token-for-offline-tests"
@@ -65,6 +67,18 @@ def test_production_telegram_rejects_inline_secrets() -> None:
         )
 
 
+def test_polling_mode_requires_no_webhook_configuration() -> None:
+    settings = Settings(
+        _env_file=None,
+        telegram_enabled=True,
+        telegram_mode="polling",
+        telegram_bot_token=TOKEN,
+        telegram_allowed_actor_pairs="42:42",
+    )
+
+    assert settings.telegram_mode == "polling"
+
+
 @pytest.mark.asyncio
 async def test_telegram_client_retries_only_safe_transient_failures_and_never_uses_markup() -> None:
     calls: list[dict[str, object]] = []
@@ -110,6 +124,45 @@ async def test_callback_answer_retries_transient_failure_and_bounds_timeout() ->
     timeout_client = TelegramBotClient(TOKEN, timeout_seconds=1, retries=0, transport=timeout)
     with pytest.raises(TelegramDeliveryError, match="telegram_transport_error"):
         await timeout_client.answer_callback_query("callback-2", "Bu buton artık geçerli değil.")
+
+
+@pytest.mark.asyncio
+async def test_polling_client_deletes_webhook_and_requests_bounded_updates() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def transport(method: str, payload: dict[str, object]) -> tuple[int, bool, int | None]:
+        calls.append((method, payload))
+        return 200, True, None
+
+    async def poll_transport(
+        method: str, payload: dict[str, object]
+    ) -> tuple[int, bool, int | None, list[dict[str, object]] | None]:
+        calls.append((method, payload))
+        return 200, True, None, [{"update_id": 7}]
+
+    client = TelegramBotClient(
+        TOKEN,
+        timeout_seconds=1,
+        retries=0,
+        transport=transport,
+        polling_transport=poll_transport,
+    )
+    await client.delete_webhook()
+    updates = await client.get_updates(offset=4, timeout_seconds=30, limit=25)
+
+    assert calls == [
+        ("deleteWebhook", {"drop_pending_updates": False}),
+        (
+            "getUpdates",
+            {
+                "offset": 4,
+                "timeout": 30,
+                "limit": 25,
+                "allowed_updates": ["message", "callback_query"],
+            },
+        ),
+    ]
+    assert updates == [{"update_id": 7}]
 
 
 def test_plain_text_split_preserves_literal_content_without_format_mode() -> None:
@@ -508,3 +561,53 @@ def test_callback_answer_failure_is_safe_and_cannot_repeat_feedback() -> None:
     assert response.status_code == 200
     assert store.feedback_events == 1
     assert finished == [(50, "telegram_delivery_error")]
+
+
+@pytest.mark.asyncio
+async def test_poller_reuses_handler_and_advances_cursor_after_safe_skips() -> None:
+    processed: list[int] = []
+    advanced: list[int] = []
+    stop_event = asyncio.Event()
+
+    class Cursor:
+        async def load(self) -> int:
+            return 0
+
+        async def advance(self, offset: int) -> None:
+            advanced.append(offset)
+
+    class Handler:
+        async def process_update(self, update: object) -> None:
+            processed.append(update.update_id)  # type: ignore[attr-defined]
+
+    async def transport(_: str, __: dict[str, object]) -> tuple[int, bool, int | None]:
+        return 200, True, None
+
+    calls = 0
+
+    async def poll_transport(
+        _: str, __: dict[str, object]
+    ) -> tuple[int, bool, int | None, list[dict[str, object]] | None]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 200, True, None, [{"update_id": 8}, _payload(9)]
+        stop_event.set()
+        return 200, True, None, []
+
+    bot = TelegramBotClient(
+        TOKEN,
+        timeout_seconds=1,
+        retries=0,
+        transport=transport,
+        polling_transport=poll_transport,
+    )
+    await TelegramPoller(
+        _settings(telegram_mode="polling"),
+        bot,
+        Handler(),  # type: ignore[arg-type]
+        Cursor(),  # type: ignore[arg-type]
+    ).run(stop_event)
+
+    assert processed == [8, 9]
+    assert advanced == [9, 10]

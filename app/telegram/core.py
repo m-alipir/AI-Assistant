@@ -14,6 +14,10 @@ MAX_MESSAGE_CHARS = 4_000
 MAX_CALLBACK_ANSWER_CHARS = 200
 
 TelegramTransport = Callable[[str, dict[str, object]], Awaitable[tuple[int, bool, int | None]]]
+PollingTransport = Callable[
+    [str, dict[str, object]],
+    Awaitable[tuple[int, bool, int | None, list[dict[str, object]] | None]],
+]
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -36,11 +40,13 @@ class TelegramBotClient:
         timeout_seconds: float,
         retries: int,
         transport: TelegramTransport | None = None,
+        polling_transport: PollingTransport | None = None,
     ) -> None:
         self._base_url = f"https://api.telegram.org/bot{quote(token, safe=':_-')}/"
         self._timeout_seconds = timeout_seconds
         self._retries = retries
         self._transport = transport or self._post
+        self._polling_transport = polling_transport or self._poll_post
 
     async def send_message(
         self, chat_id: int, message: TelegramMessage, *, protect_content: bool = True
@@ -98,6 +104,39 @@ class TelegramBotClient:
             },
         )
 
+    async def delete_webhook(self) -> None:
+        """Disable a prior webhook without discarding queued Telegram updates."""
+        await self._call("deleteWebhook", {"drop_pending_updates": False})
+
+    async def get_updates(
+        self, *, offset: int, timeout_seconds: int, limit: int
+    ) -> list[dict[str, object]]:
+        """Receive one bounded long-poll batch without retaining provider response bodies."""
+        payload: dict[str, object] = {
+            "offset": offset,
+            "timeout": timeout_seconds,
+            "limit": limit,
+            "allowed_updates": ["message", "callback_query"],
+        }
+        for attempt in range(self._retries + 1):
+            try:
+                status, ok, retry_after, updates = await self._polling_transport(
+                    "getUpdates", payload
+                )
+            except httpx.HTTPError as error:
+                if attempt == self._retries:
+                    raise TelegramDeliveryError("telegram_transport_error") from error
+            else:
+                if 200 <= status < 300 and ok and updates is not None:
+                    return updates[:limit]
+                retryable = status >= 500 or status == 429
+                if not retryable or attempt == self._retries:
+                    raise TelegramDeliveryError("telegram_api_error")
+                await asyncio.sleep(min(max(retry_after or 1, 1), 10))
+                continue
+            await asyncio.sleep(0.2 * (attempt + 1))
+        raise TelegramDeliveryError("telegram_delivery_error")
+
     async def _call(self, method: str, payload: dict[str, object]) -> None:
         for attempt in range(self._retries + 1):
             try:
@@ -134,6 +173,28 @@ class TelegramBotClient:
         except ValueError:
             ok = False
         return response.status_code, ok, retry_after
+
+    async def _poll_post(
+        self, method: str, payload: dict[str, object]
+    ) -> tuple[int, bool, int | None, list[dict[str, object]] | None]:
+        timeout = httpx.Timeout(self._timeout_seconds + int(payload["timeout"]) + 5)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.post(f"{self._base_url}{method}", json=payload)
+        retry_after: int | None = None
+        updates: list[dict[str, object]] | None = None
+        try:
+            response_json: Any = response.json()
+            ok = isinstance(response_json, dict) and response_json.get("ok") is True
+            if isinstance(response_json, dict):
+                parameters = response_json.get("parameters")
+                if isinstance(parameters, dict) and isinstance(parameters.get("retry_after"), int):
+                    retry_after = parameters["retry_after"]
+                result = response_json.get("result")
+                if isinstance(result, list) and all(isinstance(item, dict) for item in result):
+                    updates = result
+        except ValueError:
+            ok = False
+        return response.status_code, ok, retry_after, updates
 
 
 def split_plain_text(value: str, *, maximum: int = MAX_MESSAGE_CHARS) -> list[str]:

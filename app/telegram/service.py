@@ -134,18 +134,23 @@ class TelegramWebhookHandler:
             update = TelegramUpdate.model_validate_json(body)
         except (HTTPException, ValidationError, ValueError):
             return Response(status_code=400)
+        await self.process_update(update)
+        return Response(status_code=200)
+
+    async def process_update(self, update: TelegramUpdate) -> None:
+        """Run the canonical command/feedback boundary for webhook and polling transports."""
         actor = _actor_for(update)
         if actor is None or (actor.user_id, actor.chat_id) not in set(
             self._settings.telegram_allowed_actor_pair_list
         ):
             # Do not make an unauthorized caller observable in an audit table or bot response.
-            return Response(status_code=200)
+            return
         kind = "callback" if update.callback_query is not None else "message"
         if not await self._claim_update(update.update_id, actor, kind):
-            return Response(status_code=200)
+            return
         if not await self._global.allow() or not await self._per_actor.allow(actor.pair_hash):
             await self._finish_update(update.update_id, "rate_limited")
-            return Response(status_code=200)
+            return
         try:
             async with self._semaphore, asyncio.timeout(
                 self._settings.telegram_command_timeout_seconds
@@ -167,7 +172,6 @@ class TelegramWebhookHandler:
         except Exception:
             # The command, provider response, and database exception never enter logs or Telegram.
             await self._finish_update(update.update_id, "command_unavailable")
-        return Response(status_code=200)
 
     async def _handle_message(self, update: TelegramUpdate, actor: Actor) -> None:
         assert update.message is not None
