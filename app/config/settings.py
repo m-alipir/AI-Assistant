@@ -142,6 +142,49 @@ class Settings(BaseSettings):
         default=10, validation_alias="NTFY_REQUEST_TIMEOUT_SECONDS", gt=0, le=30
     )
     ntfy_max_retries: int = Field(default=1, validation_alias="NTFY_MAX_RETRIES", ge=0, le=3)
+    telegram_enabled: bool = Field(default=False, validation_alias="TELEGRAM_ENABLED")
+    telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
+    telegram_bot_token_file: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_BOT_TOKEN_FILE"
+    )
+    telegram_webhook_secret: str = Field(default="", validation_alias="TELEGRAM_WEBHOOK_SECRET")
+    telegram_webhook_secret_file: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_WEBHOOK_SECRET_FILE"
+    )
+    telegram_webhook_url: str = Field(default="", validation_alias="TELEGRAM_WEBHOOK_URL")
+    telegram_allowed_actor_pairs: str = Field(
+        default="", validation_alias="TELEGRAM_ALLOWED_ACTOR_PAIRS"
+    )
+    telegram_notification_chat_ids: str = Field(
+        default="", validation_alias="TELEGRAM_NOTIFICATION_CHAT_IDS"
+    )
+    telegram_max_request_bytes: int = Field(
+        default=8_192, validation_alias="TELEGRAM_MAX_REQUEST_BYTES", ge=512, le=32_768
+    )
+    telegram_command_max_chars: int = Field(
+        default=500, validation_alias="TELEGRAM_COMMAND_MAX_CHARS", ge=32, le=2_000
+    )
+    telegram_rate_limit_per_minute: int = Field(
+        default=10, validation_alias="TELEGRAM_RATE_LIMIT_PER_MINUTE", ge=1, le=60
+    )
+    telegram_global_rate_limit_per_minute: int = Field(
+        default=20, validation_alias="TELEGRAM_GLOBAL_RATE_LIMIT_PER_MINUTE", ge=1, le=120
+    )
+    telegram_max_concurrent_commands: int = Field(
+        default=1, validation_alias="TELEGRAM_MAX_CONCURRENT_COMMANDS", ge=1, le=4
+    )
+    telegram_command_timeout_seconds: float = Field(
+        default=25, validation_alias="TELEGRAM_COMMAND_TIMEOUT_SECONDS", gt=0, le=45
+    )
+    telegram_processing_lease_seconds: int = Field(
+        default=90, validation_alias="TELEGRAM_PROCESSING_LEASE_SECONDS", ge=60, le=600
+    )
+    telegram_request_timeout_seconds: float = Field(
+        default=10, validation_alias="TELEGRAM_REQUEST_TIMEOUT_SECONDS", gt=0, le=30
+    )
+    telegram_max_retries: int = Field(
+        default=1, validation_alias="TELEGRAM_MAX_RETRIES", ge=0, le=2
+    )
 
     @field_validator("app_timezone")
     @classmethod
@@ -191,6 +234,37 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         """Fail closed when a production process would expose its admin surface."""
+        if self.telegram_enabled:
+            webhook = urlsplit(self.telegram_webhook_url)
+            if (
+                webhook.scheme != "https"
+                or not webhook.netloc
+                or webhook.path != "/integrations/telegram/webhook"
+                or webhook.query
+                or webhook.fragment
+                or webhook.username
+                or webhook.password
+            ):
+                raise ValueError(
+                    "TELEGRAM_WEBHOOK_URL must be HTTPS and end in the Telegram webhook path"
+                )
+            if webhook.hostname not in self.allowed_host_list:
+                raise ValueError("TELEGRAM_WEBHOOK_URL host must be in ALLOWED_HOSTS")
+            if not self.telegram_allowed_actor_pair_list:
+                raise ValueError(
+                    "TELEGRAM_ALLOWED_ACTOR_PAIRS is required when TELEGRAM_ENABLED=true"
+                )
+            if len(self.telegram_bot_token_value) < 20:
+                raise ValueError("TELEGRAM_BOT_TOKEN(_FILE) is required when TELEGRAM_ENABLED=true")
+            secret = self.telegram_webhook_secret_value
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", secret) or len(set(secret)) < 8:
+                raise ValueError(
+                    "TELEGRAM_WEBHOOK_SECRET(_FILE) must be a high-entropy 32-256 character value"
+                )
+            notification_chats = set(self.telegram_notification_chat_id_list)
+            allowed_chats = {chat_id for _, chat_id in self.telegram_allowed_actor_pair_list}
+            if not notification_chats.issubset(allowed_chats):
+                raise ValueError("TELEGRAM_NOTIFICATION_CHAT_IDS must be allow-listed chats")
         if self.ntfy_enabled:
             parsed_ntfy = urlsplit(self.ntfy_base_url)
             valid_ntfy_origin = (
@@ -223,6 +297,15 @@ class Settings(BaseSettings):
                 raise ValueError("GMAIL_ENABLED requires a valid APP_ENCRYPTION_KEY") from error
         if self.app_env.casefold() != "production":
             return self
+        if self.telegram_enabled and (
+            self.telegram_bot_token_file is None
+            or self.telegram_webhook_secret_file is None
+            or self.telegram_bot_token.strip()
+            or self.telegram_webhook_secret.strip()
+        ):
+            raise ValueError(
+                "production Telegram secrets must use only absolute external secret files"
+            )
         if not self.admin_auth_enabled:
             raise ValueError("ADMIN_AUTH_ENABLED=true is required when APP_ENV=production")
         if not self.admin_username.strip() or not self.admin_password_value:
@@ -296,6 +379,50 @@ class Settings(BaseSettings):
         return self._secret_or_file(self.ntfy_token, self.ntfy_token_file)
 
     @property
+    def telegram_bot_token_value(self) -> str:
+        """Return the Bot API token only while creating a Telegram request."""
+        return self._secret_or_file(self.telegram_bot_token, self.telegram_bot_token_file)
+
+    @property
+    def telegram_webhook_secret_value(self) -> str:
+        """Return the webhook verification secret only for constant-time comparison."""
+        return self._secret_or_file(
+            self.telegram_webhook_secret, self.telegram_webhook_secret_file
+        )
+
+    @property
+    def telegram_allowed_actor_pair_list(self) -> tuple[tuple[int, int], ...]:
+        """Parse explicit user/chat pairs, avoiding an accidental cross-product allow-list."""
+        pairs: list[tuple[int, int]] = []
+        for entry in self.telegram_allowed_actor_pairs.split(","):
+            candidate = entry.strip()
+            if not candidate:
+                continue
+            match = re.fullmatch(r"(-?\d{1,16}):(-?\d{1,16})", candidate)
+            if match is None:
+                raise ValueError("TELEGRAM_ALLOWED_ACTOR_PAIRS must use user_id:chat_id entries")
+            user_id, chat_id = (int(match.group(1)), int(match.group(2)))
+            if not -(2**52) < user_id < 2**52 or not -(2**52) < chat_id < 2**52:
+                raise ValueError("Telegram user/chat IDs are outside the supported range")
+            pairs.append((user_id, chat_id))
+        return tuple(dict.fromkeys(pairs))
+
+    @property
+    def telegram_notification_chat_id_list(self) -> tuple[int, ...]:
+        values: list[int] = []
+        for entry in self.telegram_notification_chat_ids.split(","):
+            candidate = entry.strip()
+            if not candidate:
+                continue
+            if not re.fullmatch(r"-?\d{1,16}", candidate):
+                raise ValueError("TELEGRAM_NOTIFICATION_CHAT_IDS must contain numeric chat IDs")
+            value = int(candidate)
+            if not -(2**52) < value < 2**52:
+                raise ValueError("Telegram chat ID is outside the supported range")
+            values.append(value)
+        return tuple(dict.fromkeys(values))
+
+    @property
     def allowed_host_list(self) -> list[str]:
         """Return normalized host allow-list entries for TrustedHost middleware."""
         return [
@@ -317,6 +444,8 @@ class Settings(BaseSettings):
                 self.admin_password_value,
                 self.agent_api_token_value,
                 self.ntfy_token_value,
+                self.telegram_bot_token_value,
+                self.telegram_webhook_secret_value,
                 self.database_url_string,
             )
             if value

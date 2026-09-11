@@ -1,6 +1,7 @@
 """FastAPI application factory and production ASGI entrypoint."""
 
 import asyncio
+import hashlib
 import logging
 import secrets
 import uuid
@@ -49,6 +50,7 @@ from app.knowledge.reembedding import ReembeddingRecord, ReembeddingService
 from app.knowledge.search import (
     KnowledgeSearchService,
     SearchFilters,
+    SearchResponse,
     answer_question,
     fetch_sql_candidates,
 )
@@ -71,6 +73,9 @@ from app.notifications.core import (
 from app.notifications.ntfy import NtfyNotifier
 from app.observability.logging import configure_logging
 from app.security import ProcessRateLimiter, opaque_client_key
+from app.telegram.api import router as telegram_router
+from app.telegram.core import TelegramBotClient
+from app.telegram.service import TelegramWebhookHandler
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
 
@@ -278,7 +283,7 @@ def create_app(
         ) = database_persistence(sessions)
         provider_coordinator = ProviderCallCoordinator()
         app.state.provider_coordinator = provider_coordinator
-        notification_dispatcher = None
+        notification_dispatchers = []
         if active_settings.ntfy_enabled:
             ntfy_notifier = NtfyNotifier(
                 active_settings.ntfy_base_url,
@@ -287,8 +292,28 @@ def create_app(
                 active_settings.ntfy_request_timeout_seconds,
                 active_settings.ntfy_max_retries,
             )
-            notification_dispatcher = database_dispatcher(sessions, ntfy_notifier.send)
-        app.state.notifications_enabled = notification_dispatcher is not None
+            notification_dispatchers.append(
+                database_dispatcher(sessions, ntfy_notifier.send, channel="ntfy")
+            )
+        telegram_bot = None
+        if active_settings.telegram_enabled:
+            telegram_bot = TelegramBotClient(
+                active_settings.telegram_bot_token_value,
+                timeout_seconds=active_settings.telegram_request_timeout_seconds,
+                retries=active_settings.telegram_max_retries,
+            )
+            for chat_id in active_settings.telegram_notification_chat_id_list:
+                async def send_telegram_notification(
+                    notification: Notification, *, destination: int = chat_id
+                ) -> None:
+                    assert telegram_bot is not None
+                    await telegram_bot.send_notification(destination, notification)
+
+                channel = f"tg-{hashlib.sha256(str(chat_id).encode()).hexdigest()[:20]}"
+                notification_dispatchers.append(
+                    database_dispatcher(sessions, send_telegram_notification, channel=channel)
+                )
+        app.state.notifications_enabled = bool(notification_dispatchers)
 
         async def reembed_knowledge(limit: int = 50) -> int:
             """Explicit operator action; startup and scheduled jobs never call this routine."""
@@ -473,7 +498,7 @@ def create_app(
             result: dict[str, object], gmail_items: list[BriefingItem]
         ) -> list[str]:
             """Deliver minimal post-persistence notices without changing a completed run result."""
-            if notification_dispatcher is None:
+            if not notification_dispatchers:
                 return ["disabled"]
             local_day = datetime.now(UTC).astimezone(
                 ZoneInfo(active_settings.app_timezone)
@@ -526,7 +551,11 @@ def create_app(
                     )
                 )
             results = await asyncio.gather(
-                *(notification_dispatcher.deliver(notification) for notification in notifications)
+                *(
+                    dispatcher.deliver(notification)
+                    for dispatcher in notification_dispatchers
+                    for notification in notifications
+                )
             )
             return [delivery.status for delivery in results] or ["no_notification"]
 
@@ -673,6 +702,28 @@ def create_app(
 
         app.state.ask_callback = ask_knowledge
 
+        async def search_knowledge(filters: SearchFilters) -> dict[str, object]:
+            """Return the existing deterministic bounded retrieval without a reasoner call."""
+            service = KnowledgeSearchService(
+                lambda requested: fetch_sql_candidates(engine, requested)
+            )
+            events, emails = await service.search(filters)
+            if not events and not emails:
+                return SearchResponse(
+                    status="insufficient_sources",
+                    answer_tr="Yeterli kaynak bulunamadı.",
+                    llm={"provider_calls": 0, "cache_hits": 0, "by_role": {}},
+                ).model_dump(mode="json")
+            return SearchResponse(
+                status="ok",
+                answer_tr="Kaynaklar aşağıda listelenmiştir.",
+                events=events,
+                emails=emails,
+                llm={"provider_calls": 0, "cache_hits": 0, "by_role": {}},
+            ).model_dump(mode="json")
+
+        app.state.search_callback = search_knowledge
+
         async def agent_briefing_items(
             briefing_id: str, rendered: str
         ) -> list[AgentBriefingItem]:
@@ -682,7 +733,8 @@ def create_app(
                     (
                         await session.execute(
                             text(
-                                "SELECT bi.section, bc.title AS briefing_title, bc.summary_tr, "
+                                "SELECT bi.event_id, bi.section, bc.title AS briefing_title, "
+                                "bc.summary_tr, "
                                 "bc.what_changed_tr, bc.why_important_tr, e.canonical_title, "
                                 "e.occurred_at, ec.classification, ec.action_summary, ec.deadline, "
                                 "ec.application_company, ec.created_at AS email_recorded_at, "
@@ -716,6 +768,7 @@ def create_app(
                 return [
                     AgentBriefingItem(
                         section=item.section,
+                        event_id=item.event_id,
                         title=item.title[:320],
                         summary=compact_sentences(item.summary, max_chars=600),
                         source_links=safe_links(item.source_links),
@@ -753,6 +806,7 @@ def create_app(
                 result.append(
                     AgentBriefingItem(
                         section=str(row["section"])[:128],
+                        event_id=str(row["event_id"])[:36],
                         title=str(title)[:320],
                         summary=compact_sentences(str(summary), max_chars=600),
                         what_changed=(
@@ -857,6 +911,27 @@ def create_app(
         app.state.agent_api_latest_briefing = agent_latest_briefing
         app.state.agent_api_briefing_detail = agent_briefing_detail
         app.state.agent_api_list_briefings = agent_list_briefings
+
+        async def telegram_status() -> dict[str, object]:
+            ready = await readiness_check()
+            last_run = str(getattr(app.state, "last_run", "idle"))[:64]
+            return {
+                "text": (
+                    f"Sistem: {'hazır' if ready else 'geçici olarak hazır değil'}\n"
+                    f"Son işlem: {last_run}"
+                )
+            }
+
+        if telegram_bot is not None:
+            app.state.telegram_webhook_handler = TelegramWebhookHandler(
+                active_settings,
+                sessions,
+                telegram_bot,
+                latest_briefing=agent_latest_briefing,
+                search=search_knowledge,
+                ask=ask_knowledge,
+                status=telegram_status,
+            )
 
         async def retry_blocked_youtube(content_hash: str) -> dict[str, object]:
             """Run exactly one explicitly claimed retry; scheduler/manual runs remain blocked."""
@@ -1064,6 +1139,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(admin_router)
     app.include_router(agent_router)
+    app.include_router(telegram_router)
 
     logging.getLogger(__name__).info(
         "application_configured",

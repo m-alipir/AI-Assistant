@@ -26,6 +26,7 @@ from app.briefing.presentation import (
     shown_because,
 )
 from app.email.oauth import OAuthErrorCategory, OAuthFlowError
+from app.interests.feedback import record_briefing_feedback
 from app.knowledge.search import KnowledgeSearchError, SearchFilters, SearchResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -793,68 +794,16 @@ async def briefing_feedback(
         raise HTTPException(503, "briefing feedback is unavailable in this deployment")
     try:
         async with engine.begin() as connection:
-            item = (
-                await connection.execute(
-                    text(
-                        "SELECT bi.section, e.canonical_title, coalesce(m.entities_json, '[]') "
-                        "AS entities_json FROM briefing_items bi "
-                        "JOIN events e ON e.id = bi.event_id "
-                        "LEFT JOIN event_search_metadata m ON m.event_id = e.id "
-                        "WHERE bi.briefing_id = :briefing_id AND bi.event_id = :event_id"
-                    ),
-                    {"briefing_id": briefing_id, "event_id": event_id},
-                )
-            ).mappings().one_or_none()
-            if item is None:
-                raise HTTPException(404, "briefing item not found")
-            section = _display_section(str(item["section"]))
-            candidate_subjects = _json_strings(item["entities_json"])
-            subject = (candidate_subjects or [str(item["canonical_title"])])[0][:256]
-            recorded_action = {
-                "more": "explicit_more",
-                "less": "explicit_less",
-                "not_useful": "dismissed",
-            }[feedback.action]
-            await connection.execute(
-                text(
-                    "INSERT INTO feedback_events (subject, action, occurred_at) "
-                    "VALUES (:subject, :action, :occurred_at)"
-                ),
-                {"subject": subject, "action": recorded_action, "occurred_at": datetime.now(UTC)},
+            result = await record_briefing_feedback(
+                connection, briefing_id, event_id, feedback.action
             )
-            if (
-                section != "Dünyada Neler Oldu? / World in Brief"
-                and feedback.action in {"more", "less"}
-            ):
-                delta = 1 if feedback.action == "more" else -1
-                await connection.execute(
-                    text(
-                        "INSERT INTO interest_profile (subject, base, explicit, adaptive) "
-                        "VALUES (:subject, 0, :delta, 0) "
-                        "ON CONFLICT (subject) DO UPDATE SET explicit = "
-                        "greatest(-10, least(10, interest_profile.explicit + :delta))"
-                    ),
-                    {"subject": subject, "delta": delta},
-                )
-        if section == "Dünyada Neler Oldu? / World in Brief":
-            return {
-                "status": "recorded",
-                "selected_action": feedback.action,
-                "message": (
-                    "Geri bildirim kaydedildi; World in Brief kişisel tercihlerden etkilenmez."
-                ),
-            }
-        if feedback.action == "not_useful":
-            return {
-                "status": "recorded",
-                "selected_action": "not_useful",
-                "message": "Faydalı değil geri bildiriminiz kaydedildi.",
-            }
         return {
-            "status": "recorded",
-            "selected_action": feedback.action,
-            "message": "Açık tercihiniz kaydedildi ve sonraki kişisel sıralamada uygulanacak.",
+            "status": result.status,
+            "selected_action": result.selected_action,
+            "message": result.message,
         }
+    except LookupError:
+        raise HTTPException(404, "briefing item not found") from None
     except HTTPException:
         raise
     except Exception:

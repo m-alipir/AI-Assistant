@@ -8,10 +8,11 @@
 - Production secrets may be supplied via `*_FILE` settings mounted at `/run/secrets/...`; a file
   takes precedence over its paired environment variable. Do not put secret values in Compose YAML,
   source configuration, fixture data, shell history, or support screenshots.
-- `APP_ENCRYPTION_KEY`, `OPENROUTER_API_KEY`, `GMAIL_CLIENT_SECRET`, `ADMIN_PASSWORD`, and
-  `DATABASE_URL` have file-backed variants. Secret files must be regular files, readable only by
-  the runtime user, and remain outside the repository. Docker daemon/root administrators can still
-  inspect a running container's environment: treat Docker-host administration as privileged.
+- `APP_ENCRYPTION_KEY`, `OPENROUTER_API_KEY`, `GMAIL_CLIENT_SECRET`, `ADMIN_PASSWORD`,
+  `DATABASE_URL`, Telegram bot token, and Telegram webhook secret have file-backed variants.
+  Secret files must be regular files, readable only by the runtime user, and remain outside the
+  repository. Docker daemon/root administrators can still inspect a running container's
+  environment: treat Docker-host administration as privileged.
 
 ## Threat model and trust boundaries
 
@@ -24,6 +25,7 @@
 | RSS/YouTube URLs | SSRF, redirects/DNS rebinding to private addresses, hostile payload | strict URL allow-lists, production HTTPS/public DNS and connected-peer checks, redirect/timeout/size/item/XML bounds | compromised public sources remain untrusted input |
 | LLM prompts/Search | prompt injection, invented claims, over-sharing Gmail/history | untrusted JSON encoding, bounded content, source-locator plus lexical grounding, Gmail classification-only Search data, facts/inferences separated | grounding is conservative lexical evidence, not semantic proof; review provider policy |
 | Read-only Agent API | orchestration layer becomes a path to operational secrets, private email, or host control | disabled-by-default distinct bearer token, bounded projection/pagination/request-response sizes, rate limit, metadata-only audit, no-store response | process-local rate limit; multi-replica use needs shared limiting and any future write scope needs independent authorization design |
+| Telegram webhook | forged/replayed update, unauthorized chat, model-cost abuse, token/body logging | default-off HTTPS webhook, constant-time secret header, exact user/chat pairs, bounded JSON, durable update IDs, per-actor/global limits, plain-text replies, metadata-only records | process-local rate/concurrency and a bounded stale-claim recovery require a shared lease/limiter before multi-replica use |
 
 ## Admin and browser access
 - Development defaults keep `ADMIN_AUTH_ENABLED=false` for `localhost` only. Do not expose this
@@ -107,6 +109,11 @@ Log metadata (model, token usage, hash, latency, status), not sensitive prompt p
   reserved, or unspecified DNS results before each request and redirect, and verify the connected
   peer address after connection. Feed item counts/fields are bounded and DTD/entity declarations
   are rejected. Local development can explicitly retain private/HTTP fixture sources.
+- Telegram production traffic terminates at the existing trusted TLS proxy. The webhook accepts only
+  JSON POST requests at its fixed path, and the proxy must cap body size/rate/timeouts without
+  logging bodies or Telegram secret headers. The app sends Bot API requests only to Telegram's
+  HTTPS API through a bounded direct client; provider response descriptions are never logged or
+  returned. See `docs/TELEGRAM.md`.
 
 ## Future agent and coding-worker boundary
 

@@ -154,6 +154,34 @@ Acceptance:
 - Duplicate scheduled/manual completion cannot produce duplicate notification delivery.
 - Delivery failure does not roll back a persisted briefing or stop ingestion.
 
+## Stage 4A — Telegram bot interface
+
+**Planned milestone:** M22.1
+**Status:** authorized for implementation on the VDS deployment
+
+Integration shape:
+
+- Use Telegram as a thin, disabled-by-default interface over the existing briefing, Search, Ask,
+  interest-feedback, and provider-neutral notification services; do not create a second knowledge
+  pipeline or agent runtime.
+- Prefer direct bounded Bot API HTTP calls. Production receives updates through an HTTPS webhook
+  protected by Telegram's secret-token header and strict exact numeric user/chat pair allow-lists;
+  independent lists must not create an accidental cross-product authorization rule.
+- Provide Turkish-first `/ozet`, `/ara`, `/sor`, and `/durum`; preserve source citations, existing
+  model budgets, privacy boundaries, and deterministic pre-processing.
+- Deduplicate `update_id` durably before model calls or mutations; feedback writes and their receipt
+  must be atomic. Bound bodies, commands, replies, concurrency, timeouts, retries, and
+  per-identity rates; use literal text or fully escaped formatting and validate links.
+- Keep bot/webhook secrets in external production secret files. Tests use fake Telegram transport
+  and no paid provider; live acceptance is a separately recorded VDS smoke test.
+
+Acceptance:
+
+- Unauthorized identities receive no data and cannot trigger work; duplicate updates produce no
+  repeated model spend or feedback mutation.
+- Telegram outages cannot affect ingestion or the website, and approved commands reuse canonical
+  service behavior with bounded, sourced responses.
+
 ## Stage 5 — Document and personal-knowledge ingestion
 
 **Planned milestone:** M23, only after explicit feature approval  

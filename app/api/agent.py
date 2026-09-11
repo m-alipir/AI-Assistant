@@ -45,6 +45,7 @@ class AgentBriefingItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     section: str
+    event_id: str | None = None
     title: str
     summary: str
     what_changed: str | None = None

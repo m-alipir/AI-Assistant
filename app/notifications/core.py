@@ -85,24 +85,31 @@ def notification_key(kind: NotificationKind, identity: str) -> str:
 
 
 def database_dispatcher(
-    sessions: async_sessionmaker[AsyncSession], send: SendNotification
+    sessions: async_sessionmaker[AsyncSession], send: SendNotification, *, channel: str = "ntfy"
 ) -> NotificationDispatcher:
-    """Persist delivery state and permit only safe retries of a failed logical message."""
+    """Persist per-channel delivery state and permit safe retries of failed logical messages."""
+    allowed_characters = "abcdefghijklmnopqrstuvwxyz0123456789:_-"
+    if not channel or len(channel) > 32 or any(char not in allowed_characters for char in channel):
+        raise ValueError("notification channel must be a short safe identifier")
 
     async def claim(notification: Notification) -> bool:
         async with sessions.begin() as session:
             row = await session.execute(
                 text(
                     "INSERT INTO notification_deliveries "
-                    "(idempotency_key, kind, status, attempts) "
-                    "VALUES (:key, :kind, 'pending', 1) "
-                    "ON CONFLICT (idempotency_key) DO UPDATE "
+                    "(channel, idempotency_key, kind, status, attempts) "
+                    "VALUES (:channel, :key, :kind, 'pending', 1) "
+                    "ON CONFLICT (channel, idempotency_key) DO UPDATE "
                     "SET status = 'pending', attempts = notification_deliveries.attempts + 1, "
                     "failure_category = NULL, updated_at = now() "
                     "WHERE notification_deliveries.status = 'failed' "
                     "RETURNING idempotency_key"
                 ),
-                {"key": notification.idempotency_key, "kind": notification.kind.value},
+                {
+                    "channel": channel,
+                    "key": notification.idempotency_key,
+                    "kind": notification.kind.value,
+                },
             )
         return row.scalar_one_or_none() is not None
 
@@ -112,9 +119,10 @@ def database_dispatcher(
                 text(
                     "UPDATE notification_deliveries SET status = 'delivered', "
                     "delivered_at = now(), "
-                    "failure_category = NULL, updated_at = now() WHERE idempotency_key = :key"
+                    "failure_category = NULL, updated_at = now() WHERE channel = :channel "
+                    "AND idempotency_key = :key"
                 ),
-                {"key": notification.idempotency_key},
+                {"channel": channel, "key": notification.idempotency_key},
             )
 
     async def mark_failed(notification: Notification, category: str | None) -> None:
@@ -123,9 +131,9 @@ def database_dispatcher(
                 text(
                     "UPDATE notification_deliveries SET status = 'failed', "
                     "failure_category = :category, "
-                    "updated_at = now() WHERE idempotency_key = :key"
+                    "updated_at = now() WHERE channel = :channel AND idempotency_key = :key"
                 ),
-                {"key": notification.idempotency_key, "category": category},
+                {"channel": channel, "key": notification.idempotency_key, "category": category},
             )
 
     return NotificationDispatcher(send, claim, mark_delivered, mark_failed)

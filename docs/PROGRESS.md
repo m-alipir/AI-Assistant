@@ -1,8 +1,9 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M21 — Source expansion and evals (pilot observation continues)
-**Last updated:** 2026-09-10
+**Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
+observation continues independently)
+**Last updated:** 2026-09-11
 
 ## Rules for Codex
 - Read this file before every task.
@@ -471,6 +472,39 @@ failure cannot roll back a persisted briefing or stop ingestion; disabled defaul
 
 ---
 
+## M22.1 — Telegram bot interface
+**Status:** [~] IN PROGRESS — offline implementation complete; VDS smoke test pending
+
+- [x] add a disabled-by-default Telegram Bot API adapter without duplicating Search, Ask, briefing,
+  interest, or notification business logic
+- [x] use a production HTTPS webhook with Telegram's secret-token header; development polling, if
+  added at all, must be explicit and must never run beside the webhook
+- [x] require allow-listed numeric user and chat IDs before any command, model call, database read,
+  feedback mutation, or audit write; `/start` must not self-enrol a user
+- [x] support Turkish-first `/ozet`, `/ara <sorgu>`, `/sor <soru>`, and `/durum` commands through the
+  existing bounded services; `/sor` must retain current OpenRouter budgets and source citations
+- [x] add explicit feedback controls only through the existing stable interest-learning boundary;
+  do not create unrestricted tasks, shell access, browsing, or general agent actions
+- [x] optionally deliver the existing privacy-minimized notification kinds through Telegram with
+  per-channel idempotency; never send email bodies, credentials, raw source text, or exception data
+- [x] store the bot token and webhook secret only through absolute external secret files in
+  production; redact Telegram identifiers/content from logs and keep audit metadata minimal
+- [x] bound request size, message length, command/query length, concurrency, timeout, retry, and
+  per-user/chat rate; deduplicate webhook updates durably by `update_id`
+- [x] escape Telegram formatting and allow only validated HTTPS provenance/admin links; split long
+  replies safely within Telegram message limits
+- [x] add fake-transport unit/integration coverage with no live Telegram or paid-provider calls;
+  update production Compose, environment examples, security notes, and VDS runbook
+- [ ] complete an explicit VDS smoke test for webhook verification, unauthorized-user rejection,
+  duplicate-update suppression, all approved commands, safe failure behavior, and restart recovery
+
+**Acceptance:** only allow-listed identities can use the bot; duplicate Telegram updates cannot
+repeat a model call or feedback action; approved commands return bounded, sourced results using the
+canonical services; Telegram failure cannot affect ingestion/site availability; no secret or private
+content appears in Git, logs, callback responses, or notification history.
+
+---
+
 ## M20 — Full-article ingestion
 **Status:** [x] COMPLETE
 
@@ -510,13 +544,16 @@ and correlation keeps claims and inferences separate with bounded context.
 ## Approved implementation sequence after M19
 
 The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. M20 and M22 are complete;
-M21 is the active milestone and its pilot remains open. Future milestones are planned and their
-scope must not be pulled into the active work.
+M22.1 is the authorized implementation milestone while the M21 observation-only pilot remains
+open independently. Future milestones are planned and their scope must not be pulled into active
+work.
 
 - [x] **M20 — Full-article ingestion:** safe bounded article fetch plus Trafilatura extraction
 - [~] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
   regression harness
 - [x] **M22 — Notification delivery:** disabled-by-default, privacy-minimized ntfy adapter
+- [ ] **M22.1 — Telegram bot interface:** allow-listed, webhook-based access to existing bounded
+  briefing, Search, Ask, status, feedback, and notification services
 - [ ] **M23 — Document ingestion:** isolated Docling boundary, only after explicit feature approval
 - [ ] **M24 — User/mobile API and generated SDK:** stabilize the user API before OpenAPI Generator
 - [ ] **M25+ — Tasks, mobile sync, and actions:** TaskService/Vikunja decision, then client sync and
@@ -531,7 +568,7 @@ removable adapters/services, and the existing database and domain model remain c
 ## Backlog / explicitly out of current track
 - [ ] Gmail Pub/Sub push/watch if polling latency becomes a real issue
 - [ ] Audio download + STT fallback when no YouTube captions exist
-- [ ] Telegram/Discord richer interactive feedback buttons
+- [ ] Discord integration; Telegram is now authorized separately as M22.1
 - [ ] Qdrant migration only if pgvector scale proves inadequate
 - [ ] browser automation for non-RSS/paywalled/dynamic sources
 - [ ] Direct Reddit RSS decision: consider only as a separately approved `community/discovery`
@@ -545,6 +582,23 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-11: M22.1 callback completion validation: 209 passed, 0 skipped against a disposable
+  PostgreSQL instance migrated through `20260911_0020`. The integration check verifies both
+  Telegram tables and the channel-scoped notification primary key. Callback fake-transport tests
+  cover acknowledgement, expiry/actor binding, one-use and duplicate-update suppression, plus
+  Bot API error/timeout categories. Ruff, static Alembic SQL, synthetic Compose secret-mount
+  resolution, and `git diff --check` passed. No live Telegram, VDS, provider, or user-data request
+  was made.
+- 2026-09-11: M22.1 final offline validation: 199 passed, 2 PostgreSQL-integration tests skipped
+  because `SEARCH_INTEGRATION_DATABASE_URL` is unset. Ruff and generated Alembic SQL passed
+  through `20260911_0020`. Coverage includes disabled/default settings,
+  exact user/chat-pair authorization before persistence/model work, secret/content-type/body
+  guards, duplicate update model suppression, transient retry, safe provider failures, and
+  literal message splitting. No Bot API, OpenRouter, Gmail, source, scheduler, VDS, or user-data
+  request was made. Explicit VDS webhook smoke remains required.
+- 2026-09-11: Telegram M22.1 planning-only update; no runtime files changed and no tests were
+  required. Implementation acceptance requires offline fake-transport coverage plus an explicit
+  VDS webhook smoke test; neither is claimed by this planning entry.
 - 2026-09-10: Final pre-VDS release validation: 190 passed, 0 skipped against a disposable
   pgvector PostgreSQL migrated through `20260910_0019`; Ruff, uv lock consistency, Alembic static
   SQL, synthetic production Compose resolution, production Docker image build, dependency audit
@@ -813,6 +867,21 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-11: Completed the M22.1 callback acknowledgement boundary with bounded
+  `answerCallbackQuery` delivery after every accepted feedback callback. Existing actor-bound,
+  expiring one-use tokens and transactional feedback receipt remain intact; fake transport tests
+  cover safe success, invalid/expired/other-actor, repeated-button, duplicate-update, API-error,
+  and timeout paths. A disposable PostgreSQL database applied `20260911_0020` and passed the
+  zero-skip suite; live VDS/Telegram smoke verification remains open.
+- 2026-09-11: Implemented the offline M22.1 Telegram boundary. It uses direct bounded Bot API
+  calls, a secret-verified HTTPS webhook, exact user/chat-pair authorization, durable update
+  receipts, transaction-safe one-use feedback tokens, and plain-text safe replies over canonical
+  briefing/Search/Ask services. Telegram notifications now use channel-scoped idempotency beside
+  ntfy. Production secret mounts, VDS setup/smoke instructions, and the Telegram threat model are
+  documented; live Telegram/VDS verification remains open and no external call was made.
+- 2026-09-11: Authorized and specified M22.1 as the next implementation milestone. Telegram is an
+  allow-listed user interface over canonical services, not a second assistant stack; production
+  uses a secret-verified HTTPS webhook and all live Telegram/VDS evidence remains pending.
 - 2026-09-10: Prepared the security-remediated tree for VDS staging: refreshed the locked test
   toolchain after a current dependency audit, confirmed the production image builds, and removed
   generated pytest/Ruff caches from version control. No VDS connection or external application

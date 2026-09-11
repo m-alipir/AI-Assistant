@@ -1,0 +1,10 @@
+# Optional production-only Telegram secret mount. Use together with compose.production.yaml only
+# after TELEGRAM_ENABLED=true and the non-secret Telegram settings are in the protected env file.
+services:
+  app:
+    environment:
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET_FILE: /run/secrets/telegram_webhook_secret
+    volumes:
+      - "${TELEGRAM_BOT_TOKEN_HOST_FILE:?set TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro"
+      - "${TELEGRAM_WEBHOOK_SECRET_HOST_FILE:?set TELEGRAM_WEBHOOK_SECRET_HOST_FILE}:/run/secrets/telegram_webhook_secret:ro"

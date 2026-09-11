@@ -43,6 +43,14 @@ class RetentionJob:
                 "DELETE FROM notification_deliveries WHERE updated_at < :cutoff",
                 operational_cutoff,
             ),
+            "telegram_updates_deleted": (
+                "DELETE FROM telegram_updates WHERE updated_at < :cutoff",
+                operational_cutoff,
+            ),
+            "telegram_feedback_tokens_deleted": (
+                "DELETE FROM telegram_feedback_tokens WHERE expires_at < :now",
+                current,
+            ),
             "rsshub_metrics_deleted": (
                 "DELETE FROM rsshub_pilot_route_observations WHERE observed_at < :cutoff",
                 operational_cutoff,

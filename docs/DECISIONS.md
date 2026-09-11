@@ -288,4 +288,22 @@ validation. RSSHub remains absent from production deployment and isolated in its
 
 ---
 
+## D026 — Telegram is a paired-identity webhook boundary
+**Date:** 2026-09-11
+**Status:** Accepted
+
+Telegram uses a disabled-by-default direct Bot API adapter with an HTTPS webhook. Every command is
+authorized by an exact numeric user/chat pair after constant-time verification of Telegram's secret
+header. A durable update receipt prevents duplicate provider work; feedback writes occur in the same
+database transaction as its receipt. Short-lived, actor-bound feedback tokens avoid exposing briefing
+and event identifiers in Telegram callback payloads.
+
+Consequences: polling, self-enrollment, unrestricted group use, task/action/shell tools, raw
+Telegram content retention, and a second knowledge pipeline are excluded. `/ara` remains
+deterministic while `/sor` stays behind existing Ask budgets/cache. Notification idempotency is
+channel-scoped so ntfy and each hashed Telegram destination are isolated. Single-process limiting
+and stale read-only claim recovery must be redesigned before multi-replica deployment.
+
+---
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

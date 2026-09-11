@@ -40,6 +40,8 @@ async def test_retention_expires_raw_and_operational_data_without_deleting_knowl
         "events_raw_expired": 1,
         "agent_audit_deleted": 1,
         "notification_history_deleted": 1,
+        "telegram_updates_deleted": 1,
+        "telegram_feedback_tokens_deleted": 1,
         "rsshub_metrics_deleted": 1,
         "llm_metadata_deleted": 1,
     }

@@ -180,6 +180,14 @@ OAuth secrets/tokens must not be plaintext columns here.
 - `agent_api_audit_log`: time, endpoint category, outcome, and response byte count for the separate
   read-only Agent API only. It never stores agent identity/IP, token, question/filter, source text,
   response payload, provider metadata, or Gmail identity/body data.
+- `telegram_updates`: Telegram `update_id`, hashes of the authorized actor/chat, update kind, safe
+  outcome category, and timestamps only. No command, callback, reply, provider result, or raw
+  Telegram payload is retained. The update ID is the durable replay barrier before a model call or
+  feedback mutation.
+- `telegram_feedback_tokens`: short-lived random actor-bound tokens that map one rendered briefing
+  item to an allowed feedback action. Tokens expire after 24h and are deleted on use.
+- `notification_deliveries`: delivery idempotency is scoped by `channel` plus logical key, so a
+  Telegram destination and ntfy do not suppress each other.
 
 ## Retention defaults
 Configurable defaults:

@@ -63,6 +63,21 @@ def test_rsshub_is_not_in_production_and_cannot_reach_the_database_network() -> 
     }
 
 
+def test_telegram_production_override_mounts_only_read_only_secret_files() -> None:
+    telegram = yaml.safe_load(
+        (PROJECT_ROOT / "compose.telegram.production.yaml").read_text(encoding="utf-8")
+    )
+    app = telegram["services"]["app"]
+
+    assert app["environment"] == {
+        "TELEGRAM_BOT_TOKEN_FILE": "/run/secrets/telegram_bot_token",
+        "TELEGRAM_WEBHOOK_SECRET_FILE": "/run/secrets/telegram_webhook_secret",
+    }
+    assert all(volume.endswith(":ro") for volume in app["volumes"])
+    assert "TELEGRAM_BOT_TOKEN=" not in str(telegram)
+    assert "TELEGRAM_WEBHOOK_SECRET=" not in str(telegram)
+
+
 def test_backup_and_restore_scripts_encrypt_verify_and_require_isolation() -> None:
     backup = (PROJECT_ROOT / "ops/backup-postgres.sh").read_text(encoding="utf-8")
     restore = (PROJECT_ROOT / "ops/restore-postgres.sh").read_text(encoding="utf-8")

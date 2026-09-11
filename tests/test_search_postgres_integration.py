@@ -1,4 +1,4 @@
-"""Opt-in PostgreSQL integration regression for Search / Ask migrations 0013 and 0014.
+"""Opt-in PostgreSQL integration regression for Search / Ask and Telegram migrations.
 
 Set SEARCH_INTEGRATION_DATABASE_URL to a dedicated disposable database only. This test never
 contacts Gmail, YouTube, RSS, or an LLM provider.
@@ -37,7 +37,7 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
     try:
         async with engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "20260910_0019"
+            assert revision == "20260911_0020"
             await connection.execute(
                 text(
                     "INSERT INTO events (id, canonical_title, occurred_at, embedding_dimensions) "
@@ -139,6 +139,45 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
                 text("DELETE FROM events WHERE id IN (:event_id, :legacy_event_id)"),
                 {"event_id": event_id, "legacy_event_id": legacy_event_id},
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_telegram_migration_creates_replay_tables_and_channel_key() -> None:
+    """Validate the M22.1 schema against a real dedicated PostgreSQL database."""
+    assert DATABASE_URL is not None
+    engine = create_async_engine(DATABASE_URL)
+    try:
+        async with engine.connect() as connection:
+            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+            tables = set(
+                (
+                    await connection.scalars(
+                        text(
+                            "SELECT table_name FROM information_schema.tables "
+                            "WHERE table_schema = 'public' AND table_name IN "
+                            "('telegram_updates', 'telegram_feedback_tokens')"
+                        )
+                    )
+                ).all()
+            )
+            key_columns = (
+                await connection.scalars(
+                    text(
+                        "SELECT attribute.attname FROM pg_constraint AS constraint_row "
+                        "JOIN unnest(constraint_row.conkey) WITH ORDINALITY AS "
+                        "key_column(attnum, position) ON true "
+                        "JOIN pg_attribute AS attribute ON attribute.attrelid = "
+                        "constraint_row.conrelid AND attribute.attnum = key_column.attnum "
+                        "WHERE constraint_row.conrelid = 'notification_deliveries'::regclass "
+                        "AND constraint_row.contype = 'p' ORDER BY key_column.position"
+                    )
+                )
+            ).all()
+        assert revision == "20260911_0020"
+        assert tables == {"telegram_updates", "telegram_feedback_tokens"}
+        assert key_columns == ["channel", "idempotency_key"]
+    finally:
         await engine.dispose()
 
 

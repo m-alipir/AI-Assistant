@@ -50,6 +50,12 @@ stable Fernet key; changing it requires Gmail reauthorization. When Gmail is ena
 `GMAIL_OAUTH_REDIRECT_URI=https://intelligence.example.com/admin/gmail/callback` exactly in both
 this file and Google Cloud Console.
 
+Telegram remains disabled unless the separate M22.1 configuration is complete. Follow
+`docs/TELEGRAM.md`: keep its token and webhook secret in files owned by UID `10001`, add only the
+non-secret webhook URL and exact actor pairs to the protected environment file, then use
+`compose.telegram.production.yaml` as an explicit second Compose file. The reverse proxy must cap
+the webhook request body/rate/timeout and omit its body and secret header from access logs.
+
 4. Configure a TLS reverse proxy for `https://intelligence.example.com` to
    `http://127.0.0.1:8000`, preserve `Host`, and set `X-Forwarded-Proto: https`. Configure
    `TRUSTED_PROXY_IPS` with only the proxy's literal peer address; never trust forwarding headers
@@ -65,6 +71,10 @@ Run Compose with the same file used for interpolation and the app environment:
 docker compose --env-file /etc/personal-intelligence/app.env `
   -f compose.production.yaml up -d --build
 ```
+
+When Telegram is intentionally enabled, append `-f compose.telegram.production.yaml` to every
+production Compose command. Use the explicit post-start webhook setup and smoke procedure in
+`docs/TELEGRAM.md`; do not configure it automatically during deployment.
 
 Check `docker compose -f compose.production.yaml ps`, request `/health` through the proxy, and
 sign in to `/admin`. Production startup intentionally fails if admin authentication, HTTPS origin,
@@ -113,6 +123,8 @@ the Admin password, Docker socket, environment file, database URL, Gmail materia
 - Run migrations only through the dedicated one-shot migration service. Before an upgrade, make a
   tested backup; do not run destructive SQL manually. Roll back application images only after
   confirming migration compatibility.
+- Telegram webhook setup and its smoke test are separate VDS acceptance work. Do not enable polling,
+  broad group access, source ingestion, or scheduler work as a substitute for those checks.
 - RSSHub is not a production service and must not be merged into this deployment.
 - On suspected credential exposure, rotate the relevant secret, revoke Google access if relevant,
   inspect access logs, and reauthorize Gmail after a Fernet-key rotation. Do not paste logs or
