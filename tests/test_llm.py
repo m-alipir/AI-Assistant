@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.config.models import load_model_settings
 from app.llm.core import (
@@ -14,6 +14,7 @@ from app.llm.core import (
     BudgetPolicy,
     BudgetTracker,
     ExtractionFlow,
+    ExtractorResult,
     GatekeeperResult,
     InMemoryResultCache,
     LlmError,
@@ -276,6 +277,61 @@ async def test_mocked_extractor_returns_validated_claims() -> None:
     )
     result = await ExtractionFlow(router).extract("source content", "extract-digest")
     assert result.claims[0].statement == "A source fact."
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"compact_summary": "x" * 1001},
+        {"what_changed": "x" * 801},
+        {"briefing_title": "x" * 201},
+        {"claims": [{"statement": "fact", "source_locator": "paragraph 1"}] * 9},
+        {"claims": [{"statement": "x" * 601, "source_locator": "paragraph 1"}]},
+        {"entities": ["entity"] * 16},
+        {"topics": ["topic"] * 11},
+        {"uncertainty_markers": ["marker"] * 9},
+    ],
+)
+def test_extractor_result_enforces_compact_output_contract(updates: dict[str, object]) -> None:
+    payload: dict[str, object] = {
+        "compact_summary": "Summary.",
+        "what_changed": "Change.",
+        "briefing_title": "Title",
+        "claims": [],
+        "entities": [],
+        "topics": [],
+        "uncertainty_markers": [],
+    }
+    payload.update(updates)
+
+    with pytest.raises(ValidationError):
+        ExtractorResult.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_extractor_prompt_and_cache_versions_require_compact_output() -> None:
+    class CapturingRouter:
+        def __init__(self) -> None:
+            self.structured_args: tuple[object, ...] | None = None
+
+        def input_char_limit(self, role: str) -> int:
+            assert role == "extractor"
+            return 12_000
+
+        async def structured(self, *args: object) -> ExtractorResult:
+            self.structured_args = args
+            return ExtractorResult(compact_summary="Summary.", what_changed="Change.")
+
+    router = CapturingRouter()
+    result = await ExtractionFlow(router).extract("source content", "extract-digest")  # type: ignore[arg-type]
+
+    assert result.compact_summary == "Summary."
+    assert router.structured_args is not None
+    assert router.structured_args[4:6] == ("v4", "v3")
+    prompt = router.structured_args[1]
+    assert isinstance(prompt, str)
+    assert "not an article rewrite" in prompt
+    assert "at most 8 claims" in prompt
 
 
 @pytest.mark.asyncio

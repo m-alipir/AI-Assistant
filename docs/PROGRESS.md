@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
 observation continues independently)
-**Last updated:** 2026-09-11
+**Last updated:** 2026-09-12
 
 ## Rules for Codex
 - Read this file before every task.
@@ -582,6 +582,11 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-12: Extractor compact-output validation: 219 passed, 3 PostgreSQL integration tests
+  skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The strict extractor schema now
+  bounds summaries, titles, claims, and collection sizes; prompt and schema cache versions were
+  advanced so prior unbounded outputs cannot be reused. Ruff and `git diff --check` passed. No
+  provider, source, Telegram, VDS, or user-data request was made.
 - 2026-09-11: M22.1 polling validation: 213 passed, 0 skipped against disposable PostgreSQL
   migrated through `20260911_0021`. Fake Bot API coverage validates webhook removal, bounded
   getUpdates, cursor advancement, shared command routing, and polling-mode configuration. Ruff,
@@ -872,6 +877,11 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-12: Bounded the RSS extractor's strict structured output to prevent long source items
+  from consuming the configured response ceiling. The compact prompt now explicitly forbids
+  article rewrites, and prompt/schema cache versions isolate the new contract from old entries.
+  No same-model retry was added because a deterministic truncation retry would repeat provider
+  cost without improving recovery.
 - 2026-09-11: Added the M22.1 outbound-only polling mode. `TELEGRAM_MODE=webhook|polling` keeps
   webhook as the default and uses a separate hardened poller service in polling mode. The worker
   deletes any webhook without dropping pending updates, persists only its numeric offset, and routes
