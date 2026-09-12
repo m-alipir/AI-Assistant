@@ -582,6 +582,10 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-12: OpenRouter 4xx diagnostic validation: 222 passed, 3 PostgreSQL integration tests
+  skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake client covers one-attempt
+  4xx handling, bounded safe error metadata, and secret-like error-message redaction. Ruff and
+  `git diff --check` passed. No provider, source, Telegram, VDS, or user-data request was made.
 - 2026-09-12: Extractor reasoning-control validation: 220 passed, 3 PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake OpenRouter response covers
   the current completion parameter, explicit extractor reasoning disablement, strict provider
@@ -882,6 +886,10 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-12: Added bounded OpenRouter 4xx diagnostics without logging request payloads or
+  credentials. The current `openai/gpt-oss-120b` public model metadata requires reasoning and
+  advertises `max_tokens`, so production must use its supported low reasoning effort instead of
+  `none`; no model slug, Compose, environment, or database change was made.
 - 2026-09-12: Corrected the extractor's OpenRouter completion request after a production
   truncation diagnosis. DeepSeek V4 Flash defaults to high reasoning when no reasoning request is
   supplied; the extractor now opts out explicitly, uses the current completion-limit parameter,

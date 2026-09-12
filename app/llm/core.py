@@ -31,6 +31,31 @@ def _provider_cost(value: object) -> float | None:
     return cost if cost >= 0 else None
 
 
+def _safe_openrouter_error_metadata(response: httpx.Response) -> tuple[str, str, str]:
+    """Return bounded error metadata without retaining an OpenRouter response body."""
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return "unavailable", "unavailable", "unavailable"
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    if not isinstance(error, Mapping):
+        return "unavailable", "unavailable", "unavailable"
+
+    def safe_text(value: object) -> str:
+        if not isinstance(value, str):
+            return "unavailable"
+        compact = " ".join(value.split())
+        if not compact or re.search(
+            r"(?i)\b(?:bearer\s+|sk-[\w-]{8,}|authorization\b|api[_ -]?key\b)", compact
+        ):
+            return "redacted"
+        return compact[:300]
+
+    return safe_text(error.get("code")), safe_text(error.get("type")), safe_text(
+        error.get("message")
+    )
+
+
 class LlmError(RuntimeError):
     """Safe LLM boundary failure that never contains request content or credentials."""
 
@@ -200,7 +225,7 @@ class OpenRouterClient:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": config.temperature,
-            "max_completion_tokens": config.max_output_tokens,
+            "max_tokens": config.max_output_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "result", "strict": True, "schema": schema},
@@ -218,6 +243,20 @@ class OpenRouterClient:
                     response = await client.post(
                         f"{self._base_url}/chat/completions", json=body, headers=headers
                     )
+                    if 400 <= response.status_code < 500 and response.status_code != 429:
+                        error_code, error_type, error_message = _safe_openrouter_error_metadata(
+                            response
+                        )
+                        logger.warning(
+                            "OpenRouter request rejected: status=%s model=%s code=%s type=%s "
+                            "message=%s",
+                            response.status_code,
+                            model,
+                            error_code,
+                            error_type,
+                            error_message,
+                        )
+                        raise LlmError("OpenRouter request rejected")
                     if response.status_code >= 500:
                         raise httpx.HTTPStatusError(
                             "provider server error", request=response.request, response=response

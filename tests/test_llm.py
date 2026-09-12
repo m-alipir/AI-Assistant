@@ -210,12 +210,74 @@ async def test_structured_request_disables_reasoning_and_keeps_truncation_metada
         {"type": "object"},
     )
 
-    assert request_body["max_completion_tokens"] == 3000
-    assert "max_tokens" not in request_body
+    assert request_body["max_tokens"] == 3000
+    assert "max_completion_tokens" not in request_body
     assert request_body["reasoning"] == {"effort": "none", "exclude": True}
     assert request_body["provider"] == {"require_parameters": True}
     assert response.truncated
     assert response.usage.reasoning_tokens == 2800
+
+
+@pytest.mark.asyncio
+async def test_openrouter_4xx_logs_only_safe_error_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requests = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "unsupported_parameter",
+                    "type": "invalid_request_error",
+                    "message": "reasoning effort none is unsupported for this model",
+                }
+            },
+        )
+
+    client = OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler))
+    with pytest.raises(LlmError, match="rejected"):
+        await client.complete(
+            "openai/gpt-oss-120b",
+            "private article text",
+            RoleConfig(model="openai/gpt-oss-120b", reasoning_effort="none"),
+            {"type": "object"},
+        )
+
+    assert requests == 1
+    assert "status=400 model=openai/gpt-oss-120b code=unsupported_parameter" in caplog.text
+    assert "type=invalid_request_error" in caplog.text
+    assert "reasoning effort none is unsupported" in caplog.text
+    assert "private article text" not in caplog.text
+    assert "test-key" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_openrouter_4xx_redacts_sensitive_error_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "bad_request",
+                    "type": "invalid_request_error",
+                    "message": "Bearer sk-test-secret",
+                }
+            },
+        )
+
+    with pytest.raises(LlmError, match="rejected"):
+        await OpenRouterClient(
+            "test-key", "https://example.test", httpx.MockTransport(handler)
+        ).complete("fake/model", "prompt", RoleConfig(model="fake/model"), {"type": "object"})
+
+    assert "message=redacted" in caplog.text
+    assert "sk-test-secret" not in caplog.text
 
 
 def test_budget_enforces_role_and_total_limits_and_rolls_over_at_utc_midnight() -> None:
