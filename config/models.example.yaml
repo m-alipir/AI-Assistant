@@ -12,6 +12,7 @@ roles:
     model: deepseek/deepseek-v4-flash
     fallbacks: []
     require_structured_outputs: true
+    reasoning_effort: none
     temperature: 0.0
     max_output_tokens: 1800
     max_input_chars: 12000

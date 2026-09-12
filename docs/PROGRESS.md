@@ -582,6 +582,11 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-12: Extractor reasoning-control validation: 220 passed, 3 PostgreSQL integration tests
+  skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake OpenRouter response covers
+  the current completion parameter, explicit extractor reasoning disablement, strict provider
+  parameter routing, and safe finish/reasoning-token metadata parsing. Ruff and `git diff --check`
+  passed. No provider, source, Telegram, VDS, or user-data request was made.
 - 2026-09-12: Extractor compact-output validation: 219 passed, 3 PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The strict extractor schema now
   bounds summaries, titles, claims, and collection sizes; prompt and schema cache versions were
@@ -877,6 +882,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-12: Corrected the extractor's OpenRouter completion request after a production
+  truncation diagnosis. DeepSeek V4 Flash defaults to high reasoning when no reasoning request is
+  supplied; the extractor now opts out explicitly, uses the current completion-limit parameter,
+  requires structured-output parameter support from the selected provider, and safely observes
+  finish/reasoning-token metadata without retaining response content. A live provider/VDS
+  confirmation remains pending.
 - 2026-09-12: Bounded the RSS extractor's strict structured output to prevent long source items
   from consuming the configured response ceiling. The compact prompt now explicitly forbids
   article rewrites, and prompt/schema cache versions isolate the new contract from old entries.

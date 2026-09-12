@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from datetime import time as datetime_time
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
@@ -71,6 +71,9 @@ class RoleConfig(BaseModel):
     model: str
     fallbacks: list[str] = Field(default_factory=list)
     require_structured_outputs: bool = True
+    reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = None
     temperature: float = Field(default=0.0, ge=0, le=2)
     max_output_tokens: int = Field(default=1000, ge=1, le=10000)
     input_usd_per_million: float = Field(default=0.0, ge=0)
@@ -116,6 +119,7 @@ class Usage(BaseModel):
     model_id: str
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
     estimated_cost_usd: float = 0
     provider_cost_usd: float | None = None
     cost_status: str = "unavailable"
@@ -150,6 +154,15 @@ class OpenRouterResponse(BaseModel):
 
     content: str
     usage: Usage
+    finish_reason: str | None = None
+    native_finish_reason: str | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """Return whether the provider explicitly reported a completion-length stop."""
+        return self.finish_reason in {"length", "max_tokens", "max_completion_tokens"} or (
+            self.native_finish_reason in {"length", "max_tokens", "max_completion_tokens"}
+        )
 
 
 class EmbeddingResponse(BaseModel):
@@ -187,12 +200,16 @@ class OpenRouterClient:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": config.temperature,
-            "max_tokens": config.max_output_tokens,
+            "max_completion_tokens": config.max_output_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "result", "strict": True, "schema": schema},
             },
         }
+        if config.require_structured_outputs:
+            body["provider"] = {"require_parameters": True}
+        if config.reasoning_effort is not None:
+            body["reasoning"] = {"effort": config.reasoning_effort, "exclude": True}
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         started = time.perf_counter()
         for attempt in range(2):
@@ -207,16 +224,29 @@ class OpenRouterClient:
                         )
                     response.raise_for_status()
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                content = choice["message"]["content"]
                 raw_usage = data.get("usage", {})
+                completion_details = raw_usage.get("completion_tokens_details", {})
+                reasoning_tokens = (
+                    completion_details.get("reasoning_tokens", 0)
+                    if isinstance(completion_details, Mapping)
+                    else 0
+                )
                 usage = Usage(
                     model_id=model,
                     input_tokens=raw_usage.get("prompt_tokens", 0),
                     output_tokens=raw_usage.get("completion_tokens", 0),
+                    reasoning_tokens=reasoning_tokens,
                     latency_ms=round((time.perf_counter() - started) * 1000),
                     provider_cost_usd=_provider_cost(raw_usage.get("cost")),
                 )
-                return OpenRouterResponse(content=content, usage=usage)
+                return OpenRouterResponse(
+                    content=content,
+                    usage=usage,
+                    finish_reason=choice.get("finish_reason"),
+                    native_finish_reason=choice.get("native_finish_reason"),
+                )
             except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
                 if attempt:
                     raise LlmError("OpenRouter request failed") from error
@@ -523,6 +553,14 @@ class Router:
                     result = _validate_structured_content(result_type, response.content)
                 except ValidationError as error:
                     if response:
+                        logger.warning(
+                            "Structured LLM output rejected for role %s: truncated=%s "
+                            "output_tokens=%s reasoning_tokens=%s",
+                            role,
+                            response.truncated,
+                            response.usage.output_tokens,
+                            response.usage.reasoning_tokens,
+                        )
                         await self._record_attempt(
                             role, response.usage, "invalid_output", config, now
                         )

@@ -173,6 +173,51 @@ async def test_openrouter_provider_cost_is_recorded_when_present() -> None:
     assert router.calls[-1].cost_status == "provider_reported"
 
 
+@pytest.mark.asyncio
+async def test_structured_request_disables_reasoning_and_keeps_truncation_metadata() -> None:
+    request_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {"content": "{}"},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3000,
+                    "completion_tokens_details": {"reasoning_tokens": 2800},
+                },
+            },
+        )
+
+    response = await OpenRouterClient(
+        "test-key", "https://example.test", httpx.MockTransport(handler)
+    ).complete(
+        "deepseek/deepseek-v4-flash",
+        "prompt",
+        RoleConfig(
+            model="deepseek/deepseek-v4-flash",
+            max_output_tokens=3000,
+            reasoning_effort="none",
+        ),
+        {"type": "object"},
+    )
+
+    assert request_body["max_completion_tokens"] == 3000
+    assert "max_tokens" not in request_body
+    assert request_body["reasoning"] == {"effort": "none", "exclude": True}
+    assert request_body["provider"] == {"require_parameters": True}
+    assert response.truncated
+    assert response.usage.reasoning_tokens == 2800
+
+
 def test_budget_enforces_role_and_total_limits_and_rolls_over_at_utc_midnight() -> None:
     policy = BudgetPolicy(daily_soft_usd=0.5, daily_hard_usd=1, reserve_email_action_usd=0.1)
     role = RoleConfig(model="fake/model", daily_soft_usd=0.2, daily_hard_usd=0.3)
