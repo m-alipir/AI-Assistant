@@ -14,7 +14,18 @@ long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbo
 - `/sor <soru>` uses the existing bounded Ask route, including its configured provider budget,
   cache, source links, and fact/inference separation.
 - `/durum` returns only a compact readiness and last-run state.
+- `/kaynaklar` lists at most 30 database-managed sources with enabled and health state.
+- `/kaynak <id>` shows one source's endpoint, enabled state, health, and safe last-error category.
+- `/kaynak_ekle [rss|youtube] <endpoint> [name]` validates through the managed-source repository,
+  canonicalizes the endpoint, and adds the source enabled.
+- `/kaynak_ac <id>` and `/kaynak_kapat <id>` enable or disable one source.
+- `/kaynak_sil <id>` deletes only an already-disabled source.
 - `/start` provides a safe help message only after authorization; it never enrolls a user.
+
+Source commands are intentionally chat-first and reuse the same database repository as Admin and
+ingestion. Telegram has no YAML source read/write path. Duplicate, invalid, missing, unsafe-delete,
+and repository/database failures are returned as concise Turkish messages without database or
+provider details.
 
 Only a configured exact `user_id:chat_id` pair may use any command. The default deployment should
 use one private chat (`same user_id:chat_id`). Group chat use is an explicit additional pair, not a

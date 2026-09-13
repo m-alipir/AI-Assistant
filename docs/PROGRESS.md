@@ -582,6 +582,14 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 3 Telegram DB-managed source validation: focused Telegram/repository coverage
+  passed 30 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 235 tests
+  with 4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. Tests cover
+  canonicalized add, bounded list/detail health output, enable/disable, enabled-source delete
+  rejection, safe delete, concise invalid/duplicate/not-found/unavailable messages, and absence of
+  model work. Docker remained unavailable, so disposable PostgreSQL acceptance did not run. No
+  provider, live Telegram/source, production DB/deployment, import/export, or main-worktree
+  mutation occurred.
 - 2026-09-13: Stage 2 Admin DB-managed source validation: focused Admin/repository coverage passed
   26 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 233 tests with
   4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. CRUD,
@@ -901,6 +909,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 3 Telegram source management in the isolated
+  `feature/db-managed-sources` worktree. The allow-listed chat interface now uses the same database
+  repository as Admin and ingestion for source list/detail, validated add, enable/disable, and safe
+  delete. It exposes only compact health state and safe error categories in Turkish; Telegram has
+  no remaining source YAML path. Import/export, Control Center, onboarding, production deployment,
+  and the explicit one-time bootstrap lifecycle remain untouched.
 - 2026-09-13: Completed Stage 2 Admin source management in the isolated
   `feature/db-managed-sources` worktree. Admin dashboard/config reads plus get/list/create/update,
   enable-disable, and safe-delete operations now use the database repository as their only runtime

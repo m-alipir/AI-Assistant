@@ -13,6 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.briefing.presentation import safe_links
 from app.config.settings import Settings
+from app.config.source_repository import (
+    EnabledSourceDeleteBlocked,
+    ManagedSourceCreate,
+    SourceAlreadyExists,
+    SourceNotFound,
+    SourceRepository,
+)
 from app.interests.feedback import record_briefing_feedback
 from app.knowledge.search import SearchFilters
 from app.security import ProcessRateLimiter
@@ -99,6 +106,7 @@ class TelegramWebhookHandler:
         search: SearchCallback,
         ask: SearchCallback,
         status: StatusCallback,
+        source_repository: SourceRepository | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
@@ -107,6 +115,7 @@ class TelegramWebhookHandler:
         self._search = search
         self._ask = ask
         self._status = status
+        self._source_repository = source_repository
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
         self._global = ProcessRateLimiter(settings.telegram_global_rate_limit_per_minute)
         self._semaphore = asyncio.Semaphore(settings.telegram_max_concurrent_commands)
@@ -182,8 +191,11 @@ class TelegramWebhookHandler:
         if command == "start":
             await self._bot.send_message(
                 actor.chat_id,
-                TelegramMessage("Yetkili kullanıcılar için kişisel bilgi asistanı hazır."),
+                TelegramMessage(_help_text()),
             )
+            return
+        if command == "yardim":
+            await self._bot.send_message(actor.chat_id, TelegramMessage(_help_text()))
             return
         if command == "ozet":
             await self._send_briefing(actor)
@@ -201,9 +213,24 @@ class TelegramWebhookHandler:
                 actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
             )
             return
+        if command == "kaynaklar":
+            await self._send_sources(actor)
+            return
+        if command == "kaynak":
+            await self._show_source(actor, argument)
+            return
+        if command == "kaynak_ekle":
+            await self._add_source(actor, argument)
+            return
+        if command in {"kaynak_ac", "kaynak_kapat"}:
+            await self._set_source_enabled(actor, argument, command == "kaynak_ac")
+            return
+        if command == "kaynak_sil":
+            await self._delete_source(actor, argument)
+            return
         await self._bot.send_message(
             actor.chat_id,
-            TelegramMessage("Komut bulunamadı. /ozet, /ara, /sor veya /durum kullanın."),
+            TelegramMessage("Komut bulunamadı. Kullanılabilir komutlar için /yardim yazın."),
         )
 
     async def _send_briefing(self, actor: Actor) -> None:
@@ -265,6 +292,124 @@ class TelegramWebhookHandler:
         text_value = _search_text(result, label)
         await self._bot.send_messages(
             actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
+        )
+
+    async def _send_sources(self, actor: Actor) -> None:
+        repository = self._source_repository
+        if repository is None:
+            await self._send_source_reply(actor, _source_error_text(RuntimeError()))
+            return
+        try:
+            rows = await repository.list()
+        except Exception as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        if not rows:
+            await self._send_source_reply(actor, "Henüz takip edilen kaynak yok.")
+            return
+        lines = ["Takip edilen kaynaklar"]
+        for row in rows[:30]:
+            state = "aktif" if row.get("enabled") else "pasif"
+            health = _source_health_label(row.get("health_status"))
+            lines.append(
+                f"- {row.get('id')} · {row.get('kind')} · {row.get('name')} "
+                f"({state}, {health})"
+            )
+        await self._send_source_reply(actor, "\n".join(lines))
+
+    async def _show_source(self, actor: Actor, source_id: str) -> None:
+        if not source_id:
+            await self._send_source_reply(actor, "Kullanım: /kaynak <kaynak-kimliği>")
+            return
+        repository = self._source_repository
+        if repository is None:
+            await self._send_source_reply(actor, _source_error_text(RuntimeError()))
+            return
+        try:
+            row = await repository.get(source_id)
+            if row is None:
+                raise SourceNotFound
+        except Exception as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        state = "aktif" if row.get("enabled") else "pasif"
+        lines = [
+            str(row.get("name") or "Kaynak"),
+            f"Kimlik: {row.get('id')}",
+            f"Tür: {row.get('kind')}",
+            f"Durum: {state}",
+            f"Sağlık: {_source_health_label(row.get('health_status'))}",
+            f"Adres: {row.get('canonical_endpoint')}",
+        ]
+        error_category = row.get("last_error_category")
+        if error_category:
+            lines.append(f"Son hata: {error_category}")
+        await self._send_source_reply(actor, "\n".join(lines))
+
+    async def _add_source(self, actor: Actor, argument: str) -> None:
+        try:
+            parsed = _source_create(argument)
+        except (ValidationError, ValueError) as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        if parsed is None:
+            await self._send_source_reply(
+                actor,
+                "Kullanım: /kaynak_ekle [rss|youtube] <adres veya kanal-kimliği> [ad]",
+            )
+            return
+        repository = self._source_repository
+        if repository is None:
+            await self._send_source_reply(actor, _source_error_text(RuntimeError()))
+            return
+        try:
+            row = await repository.create(parsed)
+        except Exception as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        await self._send_source_reply(
+            actor,
+            f"{row['name']} eklendi ve aktif edildi. Kimlik: {row['id']}",
+        )
+
+    async def _set_source_enabled(
+        self, actor: Actor, source_id: str, enabled: bool
+    ) -> None:
+        if not source_id:
+            command = "/kaynak_ac" if enabled else "/kaynak_kapat"
+            await self._send_source_reply(actor, f"Kullanım: {command} <kaynak-kimliği>")
+            return
+        repository = self._source_repository
+        if repository is None:
+            await self._send_source_reply(actor, _source_error_text(RuntimeError()))
+            return
+        try:
+            if not await repository.set_enabled(source_id, enabled):
+                raise SourceNotFound
+        except Exception as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        state = "etkinleştirildi" if enabled else "devre dışı bırakıldı"
+        await self._send_source_reply(actor, f"Kaynak {state}.")
+
+    async def _delete_source(self, actor: Actor, source_id: str) -> None:
+        if not source_id:
+            await self._send_source_reply(actor, "Kullanım: /kaynak_sil <kaynak-kimliği>")
+            return
+        repository = self._source_repository
+        if repository is None:
+            await self._send_source_reply(actor, _source_error_text(RuntimeError()))
+            return
+        try:
+            await repository.delete(source_id)
+        except Exception as error:
+            await self._send_source_reply(actor, _source_error_text(error))
+            return
+        await self._send_source_reply(actor, "Kaynak silindi.")
+
+    async def _send_source_reply(self, actor: Actor, value: str) -> None:
+        await self._bot.send_messages(
+            actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(value)]
         )
 
     async def _claim_update(self, update_id: int, actor: Actor, kind: str) -> bool:
@@ -396,7 +541,20 @@ def _command(value: str | None, maximum: int) -> tuple[str, str] | None:
     if not command.startswith("/"):
         return None
     command = command[1:].partition("@")[0].casefold()
-    if command not in {"start", "ozet", "ara", "sor", "durum"}:
+    if command not in {
+        "start",
+        "yardim",
+        "ozet",
+        "ara",
+        "sor",
+        "durum",
+        "kaynaklar",
+        "kaynak",
+        "kaynak_ekle",
+        "kaynak_ac",
+        "kaynak_kapat",
+        "kaynak_sil",
+    }:
         return command, ""
     return command, argument.strip()
 
@@ -455,3 +613,67 @@ def _search_text(value: dict[str, object], label: str) -> str:
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _source_create(value: str) -> ManagedSourceCreate | None:
+    argument = " ".join(value.split())
+    if not argument:
+        return None
+    first, separator, remainder = argument.partition(" ")
+    if first.casefold() in {"rss", "youtube"}:
+        endpoint, endpoint_separator, name = remainder.partition(" ")
+        if not separator or not endpoint:
+            return None
+        return ManagedSourceCreate(
+            kind=first.casefold(),
+            endpoint=endpoint,
+            name=name.strip() if endpoint_separator else endpoint[:256],
+            enabled=True,
+        )
+    endpoint, name_separator, name = argument.partition(" ")
+    source_name = name.strip() if name_separator else endpoint[:256]
+    for kind in ("youtube", "rss"):
+        try:
+            return ManagedSourceCreate(
+                kind=kind,
+                endpoint=endpoint,
+                name=source_name,
+                enabled=True,
+            )
+        except ValidationError:
+            continue
+    raise ValueError("invalid source")
+
+
+def _source_health_label(value: object) -> str:
+    return {
+        "healthy": "sağlıklı",
+        "degraded": "sorunlu",
+        "unhealthy": "sağlıksız",
+    }.get(str(value), "bilinmiyor")
+
+
+def _source_error_text(error: Exception) -> str:
+    if isinstance(error, SourceAlreadyExists):
+        return "Bu kaynak zaten takip ediliyor."
+    if isinstance(error, SourceNotFound):
+        return "Kaynak bulunamadı. /kaynaklar ile kimliği kontrol edin."
+    if isinstance(error, EnabledSourceDeleteBlocked):
+        return "Aktif kaynak silinemez. Önce /kaynak_kapat <kaynak-kimliği> kullanın."
+    if isinstance(error, (ValidationError, ValueError)):
+        return (
+            "Kaynak bilgisi geçersiz. Geçerli bir RSS/Atom adresi veya "
+            "YouTube kanal kimliği yazın."
+        )
+    return "Kaynak yönetimi şu anda kullanılamıyor."
+
+
+def _help_text() -> str:
+    return (
+        "Kişisel bilgi asistanı\n"
+        "/ozet — son özet\n/ara <konu> — hafızada ara\n"
+        "/sor <soru> — kaynaklı soru sor\n/durum — sistem durumu\n"
+        "/kaynaklar — kaynakları göster\n/kaynak <kimlik> — kaynak durumu\n"
+        "/kaynak_ekle [rss|youtube] <adres> [ad]\n"
+        "/kaynak_ac <kimlik>\n/kaynak_kapat <kimlik>\n/kaynak_sil <kimlik>"
+    )

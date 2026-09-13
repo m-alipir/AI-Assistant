@@ -939,6 +939,7 @@ def create_app(
                 search=search_knowledge,
                 ask=ask_knowledge,
                 status=telegram_status,
+                source_repository=source_repository,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler

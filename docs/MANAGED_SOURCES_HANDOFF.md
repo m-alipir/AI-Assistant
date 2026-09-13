@@ -22,13 +22,17 @@ Make the database the runtime source-of-truth.
   remain compatibility wrappers over the same repository and no longer read or write YAML.
 - Admin maps invalid input to 422, canonical duplicate endpoints and unsafe enabled-source deletes
   to 409, missing rows to 404, and an unavailable repository to 503.
+- Telegram source commands now use the same `SourceRepository` for list/detail, validated add,
+  enable/disable, and safe delete. Source list/detail includes compact enabled and health state.
+- Telegram no longer has a source YAML mutation/read path. Repository failures are translated to
+  concise Turkish messages without exposing database or provider details.
 
 ## Not Finished
 
-- Telegram still mutates/reads YAML at runtime.
 - Source Pack, OPML, CSV/bulk import/export, Control Center updates, and onboarding are not
   implemented.
-- YAML is still read as a bootstrap seed on every runtime path; it is not yet example/bootstrap-only.
+- YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
+  not yet explicit example/bootstrap-only behavior.
 - The opt-in real PostgreSQL managed-source test has not run because
   `MANAGED_SOURCE_INTEGRATION_DATABASE_URL` was not supplied.
 
@@ -53,15 +57,15 @@ and timestamps. It has a unique `(kind, canonical_endpoint)` constraint.
 ## Runtime Flow
 
 Scheduler/ingestion and retry paths read the DB catalog after attempting an empty-DB YAML seed.
-Admin source management uses the database repository. Telegram source management still uses YAML,
-so YAML remains a runtime dependency until the Telegram cutover and bootstrap lifecycle are
-finished.
+Admin, Telegram, scheduler/ingestion, and retry source reads or mutations use the database
+repository. YAML remains only in the existing empty-database bootstrap call, but that bootstrap is
+still attempted on every ingestion/retry catalog load and needs an explicit lifecycle boundary.
 
 ## Next Recommended Step
 
-Telegram source management yollarını aynı `SourceRepository` CRUD katmanına geçir; YAML dosyasını
-yalnızca açık bootstrap/example yaşam döngüsünde bırak ve iki source-of-truth oluşmasını engelleyen
-regresyon testlerini ekle. Source Pack/OPML/CSV, Control Center ve onboarding bu adıma dahil değil.
+YAML bootstrap yaşam döngüsünü açık ve tek seferlik hale getir; normal ingestion/retry yollarından
+tekrarlanan seed-file okumasını kaldırırken boş veritabanı kurulumunda production source kaybını
+önle. Source Pack/OPML/CSV, Control Center ve onboarding ayrı sonraki aşamalardır.
 
 ## Do Not Break
 
@@ -89,3 +93,14 @@ regresyon testlerini ekle. Source Pack/OPML/CSV, Control Center ve onboarding bu
 - Docker daemon remained unavailable; the disposable PostgreSQL test was not run.
 - Admin source tests cover CRUD, canonical endpoint output, duplicate/invalid/not-found/unsafe-delete
   errors, repository-unavailable behavior, compatibility routes, and unchanged YAML fixtures.
+
+### Stage 3 Telegram verification
+
+- Focused Telegram/repository suite: 30 passed, 1 opt-in PostgreSQL test skipped.
+- Full offline suite: 235 passed, 4 opt-in PostgreSQL tests skipped.
+- Full Ruff and `git diff --check` passed.
+- Docker daemon remained unavailable; the disposable PostgreSQL test was not run.
+- Telegram tests cover canonicalized add, list/detail health output, enable/disable, safe delete,
+  invalid/duplicate/not-found/unsafe-delete errors, and repository/database unavailability.
+- No source YAML operation, provider request, live Telegram call, deployment, or main-worktree
+  mutation occurred.

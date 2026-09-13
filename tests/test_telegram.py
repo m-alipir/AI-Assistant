@@ -11,6 +11,12 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config.settings import Settings
+from app.config.source_repository import (
+    EnabledSourceDeleteBlocked,
+    ManagedSourceCreate,
+    SourceAlreadyExists,
+    SourceNotFound,
+)
 from app.telegram.api import router
 from app.telegram.core import (
     TelegramBotClient,
@@ -19,10 +25,74 @@ from app.telegram.core import (
     split_plain_text,
 )
 from app.telegram.poller import TelegramPoller
-from app.telegram.service import Actor, TelegramWebhookHandler, _search_text
+from app.telegram.service import Actor, TelegramUpdate, TelegramWebhookHandler, _search_text
 
 TOKEN = "123456789:telegram-token-for-offline-tests"
 SECRET = "telegram_webhook_secret_with_adequate_entropy_123"
+
+
+def _managed_source_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": "source-1",
+        "kind": "rss",
+        "name": "Fixture Feed",
+        "canonical_endpoint": "https://example.test/feed.xml",
+        "stream": "tech",
+        "enabled": False,
+        "priority": 0,
+        "category": None,
+        "language": None,
+        "freshness_hours": None,
+        "health_status": "healthy",
+        "last_error_category": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class _SourceRepository:
+    def __init__(self, rows: list[dict[str, object]] | None = None) -> None:
+        self.rows = {str(row["id"]): dict(row) for row in rows or []}
+        self.created = 0
+
+    async def list(self) -> list[dict[str, object]]:
+        return list(self.rows.values())
+
+    async def get(self, source_id: str) -> dict[str, object] | None:
+        row = self.rows.get(source_id)
+        return dict(row) if row is not None else None
+
+    async def create(self, source: ManagedSourceCreate) -> dict[str, object]:
+        if any(
+            row["kind"] == source.kind and row["canonical_endpoint"] == source.endpoint
+            for row in self.rows.values()
+        ):
+            raise SourceAlreadyExists
+        self.created += 1
+        row = _managed_source_row(
+            id=f"source-{self.created}",
+            kind=source.kind,
+            name=source.name,
+            canonical_endpoint=source.endpoint,
+            enabled=source.enabled,
+        )
+        self.rows[str(row["id"])] = row
+        return dict(row)
+
+    async def set_enabled(self, source_id: str, enabled: bool) -> bool:
+        row = self.rows.get(source_id)
+        if row is None:
+            return False
+        row["enabled"] = enabled
+        return True
+
+    async def delete(self, source_id: str) -> None:
+        row = self.rows.get(source_id)
+        if row is None:
+            raise SourceNotFound
+        if row["enabled"]:
+            raise EnabledSourceDeleteBlocked
+        del self.rows[source_id]
 
 
 def _settings(**overrides: object) -> Settings:
@@ -170,6 +240,91 @@ def test_plain_text_split_preserves_literal_content_without_format_mode() -> Non
     assert len(parts) == 2
     assert parts[0].startswith("*not markdown*")
     assert all(len(part) <= 4_000 for part in parts)
+
+
+@pytest.mark.asyncio
+async def test_telegram_source_commands_complete_chat_first_safe_crud() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("source commands must not invoke a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, finished = _handler(ask=ask, claim=claim)
+    repository = _SourceRepository()
+    handler._source_repository = repository  # type: ignore[assignment]
+
+    commands = [
+        "/kaynak_ekle rss HTTPS://Example.Test:443/feed.xml#ignored Example Feed",
+        "/kaynaklar",
+        "/kaynak source-1",
+        "/kaynak_sil source-1",
+        "/kaynak_kapat source-1",
+        "/kaynak_ac source-1",
+        "/kaynak_kapat source-1",
+        "/kaynak_sil source-1",
+    ]
+    for update_id, command in enumerate(commands, start=60):
+        await handler.process_update(
+            TelegramUpdate.model_validate(_payload(update_id, text=command))
+        )
+
+    messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
+    assert messages[0] == "Example Feed eklendi ve aktif edildi. Kimlik: source-1"
+    assert "source-1 · rss · Example Feed (aktif, sağlıklı)" in messages[1]
+    assert "Adres: https://example.test/feed.xml" in messages[2]
+    assert messages[3].startswith("Aktif kaynak silinemez.")
+    assert messages[4:] == [
+        "Kaynak devre dışı bırakıldı.",
+        "Kaynak etkinleştirildi.",
+        "Kaynak devre dışı bırakıldı.",
+        "Kaynak silindi.",
+    ]
+    assert repository.rows == {}
+    assert finished == [(update_id, "completed") for update_id in range(60, 68)]
+
+
+@pytest.mark.asyncio
+async def test_telegram_source_failures_have_concise_turkish_messages() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("source commands must not invoke a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+    handler._source_repository = _SourceRepository(  # type: ignore[assignment]
+        [_managed_source_row(id="existing", enabled=True)]
+    )
+    commands = [
+        "/kaynak_ekle rss not-a-url Invalid",
+        "/kaynak_ekle rss https://example.test/feed.xml Duplicate",
+        "/kaynak missing",
+        "/kaynak_sil existing",
+    ]
+    for update_id, command in enumerate(commands, start=80):
+        await handler.process_update(
+            TelegramUpdate.model_validate(_payload(update_id, text=command))
+        )
+    handler._source_repository = None
+    await handler.process_update(TelegramUpdate.model_validate(_payload(84, text="/kaynaklar")))
+
+    class UnavailableRepository:
+        async def list(self) -> list[dict[str, object]]:
+            raise RuntimeError("database details must not reach Telegram")
+
+    handler._source_repository = UnavailableRepository()  # type: ignore[assignment]
+    await handler.process_update(TelegramUpdate.model_validate(_payload(85, text="/kaynaklar")))
+
+    messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
+    assert messages == [
+        "Kaynak bilgisi geçersiz. Geçerli bir RSS/Atom adresi veya YouTube kanal kimliği yazın.",
+        "Bu kaynak zaten takip ediliyor.",
+        "Kaynak bulunamadı. /kaynaklar ile kimliği kontrol edin.",
+        "Aktif kaynak silinemez. Önce /kaynak_kapat <kaynak-kimliği> kullanın.",
+        "Kaynak yönetimi şu anda kullanılamıyor.",
+        "Kaynak yönetimi şu anda kullanılamıyor.",
+    ]
 
 
 def test_search_output_only_keeps_safe_https_provenance_links() -> None:
