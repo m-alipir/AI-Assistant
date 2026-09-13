@@ -109,7 +109,7 @@ def parse_source_pack(content: str) -> ParsedSourcePack:
     exclude = _term_list(raw.get("exclude", []), "exclude")
     return ParsedSourcePack(
         name=name,
-        sources=tuple(_parse_source(index, row) for index, row in enumerate(source_rows, 1)),
+        sources=tuple(parse_source_record(index, row) for index, row in enumerate(source_rows, 1)),
         interests=interests,
         exclude=exclude,
     )
@@ -197,7 +197,8 @@ class SourcePackService:
         return items
 
 
-def _parse_source(index: int, raw: object) -> ParsedSource:
+def parse_source_record(index: int, raw: object) -> ParsedSource:
+    """Normalize one external source mapping through the repository input model."""
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         return ParsedSource(index=index, source=None, error="source_must_be_a_mapping")
     if set(raw) - _SOURCE_FIELDS:
@@ -229,9 +230,12 @@ def _parse_source(index: int, raw: object) -> ParsedSource:
 def _priority(value: object) -> object:
     if isinstance(value, str):
         normalized = value.strip().casefold()
-        if normalized not in _PRIORITIES:
-            raise ValueError("invalid priority")
-        return _PRIORITIES[normalized]
+        if normalized in _PRIORITIES:
+            return _PRIORITIES[normalized]
+        try:
+            return int(normalized)
+        except ValueError as error:
+            raise ValueError("invalid priority") from error
     if isinstance(value, bool):
         raise ValueError("invalid priority")
     return value

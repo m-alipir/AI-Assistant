@@ -38,10 +38,15 @@ Make the database the runtime source-of-truth.
   duplicates deterministically, and persists only valid new feeds through `SourceRepository`.
 - Admin exposes `/admin/opml/preview` and `/admin/opml/import`; imported OPML feeds default to
   disabled and repeated imports are idempotent.
+- CSV and pasted bulk URL preview/import now use the same Source Pack row normalizer and shared
+  batch workflow. They report invalid/internal/existing duplicates deterministically, create only
+  valid new sources as disabled, and remain idempotent on retry.
+- Admin exposes `/admin/csv/preview`, `/admin/csv/import`, `/admin/bulk-urls/preview`, and
+  `/admin/bulk-urls/import` without writing uploaded content to disk.
 
 ## Not Finished
 
-- CSV/bulk URL import/export, Control Center updates, and onboarding are not implemented.
+- Control Center updates and onboarding are not implemented. Source export is not implemented.
 - YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
   not yet explicit example/bootstrap-only behavior.
 
@@ -51,6 +56,8 @@ Make the database the runtime source-of-truth.
 - `app/config/source_repository.py`
 - `app/config/source_pack.py`
 - `app/config/opml.py`
+- `app/config/csv_import.py`
+- `app/config/bulk_urls.py`
 - `app/main.py`
 - `app/api/admin.py`
 - `app/telegram/service.py`
@@ -58,8 +65,8 @@ Make the database the runtime source-of-truth.
 - `app/jobs/youtube_runtime.py`
 - `app/config/sources.py`
 - `tests/test_admin.py`, `tests/test_source_pack.py`, `tests/test_rss_runtime.py`,
-  `tests/test_opml.py`, `tests/test_telegram.py`
-- `docs/SOURCE_PACKS.md`, `docs/OPML.md`
+  `tests/test_opml.py`, `tests/test_csv_bulk_urls.py`, `tests/test_telegram.py`
+- `docs/SOURCE_PACKS.md`, `docs/OPML.md`, `docs/CSV_AND_BULK_URLS.md`
 
 ## Database Schema
 
@@ -76,9 +83,9 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 ## Next Recommended Step
 
-CSV önizleme/içe aktarma adaptörünü, doğrulanmış girdiyi mevcut ortak kaynak batch sözleşmesine
-dönüştürecek şekilde ekle. Bulk URL paste, Control Center, onboarding ve production deployment bu
-adıma dahil edilmemelidir.
+Mevcut Admin kaynak ve import endpoint’lerini kullanan küçük bir Control Center kaynak yönetimi
+arayüzü ekle; doğrulama, canonicalization veya persistence kurallarını UI içine taşıma. Onboarding,
+source export ve production deployment bu adıma dahil edilmemelidir.
 
 ## Do Not Break
 
@@ -145,4 +152,20 @@ adıma dahil edilmemelidir.
   nested RSS/Atom extraction, canonical in-file and database duplicates, invalid rows, preview
   non-mutation, filtered/idempotent import, Admin HTTP errors, and repository unavailability.
 - No CSV/bulk URL, Control Center, onboarding, production deployment, live provider, ingestion
+  behavior, or main-worktree change occurred.
+
+### Stage 6 CSV and bulk URL verification
+
+- Focused CSV/bulk URL suite: 16 passed.
+- CSV/bulk URL plus Source Pack, OPML, and relevant repository/Admin suite: 64 passed, 1 opt-in
+  PostgreSQL test skipped.
+- Full offline suite: 273 passed, 4 opt-in PostgreSQL tests skipped.
+- Disposable PostgreSQL managed-source acceptance: 1 passed after migration to
+  `20260913_0024`; the uniquely named container and anonymous volume were removed.
+- Full Ruff and `git diff --check` passed.
+- Tests cover strict CSV parsing and headers, numeric/named priority normalization, size/count
+  bounds, one-URL-per-line parsing, invalid rows, canonical input/DB duplicates, preview
+  non-mutation, disabled creation, filtered/idempotent import, Admin HTTP errors, and repository
+  unavailability.
+- No Control Center, onboarding, source export, production deployment, live provider, ingestion
   behavior, or main-worktree change occurred.

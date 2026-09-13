@@ -25,6 +25,19 @@ from app.briefing.presentation import (
     safe_links,
     shown_because,
 )
+from app.config.bulk_urls import (
+    BulkUrlLimitExceeded,
+    BulkUrlRepositoryUnavailable,
+    BulkUrlService,
+    InvalidBulkUrlStructure,
+)
+from app.config.csv_import import (
+    CsvImportService,
+    CsvLimitExceeded,
+    CsvRepositoryUnavailable,
+    InvalidCsvStructure,
+    MalformedCsv,
+)
 from app.config.opml import (
     InvalidOpmlStructure,
     MalformedOpml,
@@ -112,6 +125,14 @@ class OpmlUpload(BaseModel):
     opml: str = Field(min_length=1)
 
 
+class CsvUpload(BaseModel):
+    csv: str = Field(min_length=1)
+
+
+class BulkUrlUpload(BaseModel):
+    urls: str = Field(min_length=1)
+
+
 class BriefingFeedback(BaseModel):
     """One intentionally small, safe preference signal from a rendered briefing item."""
 
@@ -194,6 +215,18 @@ def _raise_opml_http_error(error: Exception) -> None:
     if isinstance(error, InvalidOpmlStructure):
         raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
     if isinstance(error, OpmlRepositoryUnavailable):
+        raise HTTPException(503, "managed source repository is unavailable") from error
+    raise error
+
+
+def _raise_delimited_import_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedCsv):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (CsvLimitExceeded, BulkUrlLimitExceeded)):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (InvalidCsvStructure, InvalidBulkUrlStructure)):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (CsvRepositoryUnavailable, BulkUrlRepositoryUnavailable)):
         raise HTTPException(503, "managed source repository is unavailable") from error
     raise error
 
@@ -569,6 +602,42 @@ async def import_opml(upload: OpmlUpload, request: Request) -> dict[str, object]
         return await OpmlService(_source_repository(request)).import_opml(upload.opml)
     except Exception as error:
         _raise_opml_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/csv/preview")
+async def preview_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
+    try:
+        return await CsvImportService(_source_repository(request)).preview(upload.csv)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/csv/import")
+async def import_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
+    try:
+        return await CsvImportService(_source_repository(request)).import_csv(upload.csv)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/bulk-urls/preview")
+async def preview_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await BulkUrlService(_source_repository(request)).preview(upload.urls)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/bulk-urls/import")
+async def import_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await BulkUrlService(_source_repository(request)).import_urls(upload.urls)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
         raise AssertionError("unreachable") from error
 
 

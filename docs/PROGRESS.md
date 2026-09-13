@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 6 CSV and bulk URL validation: focused adapter coverage passed 16 tests; CSV and
+  bulk URL plus Source Pack, OPML, and relevant repository/Admin coverage passed 64 tests with 1
+  opt-in PostgreSQL test skipped. The full offline suite passed 273 tests with 4 opt-in PostgreSQL
+  tests skipped. Full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL
+  container passed the managed-source acceptance test (1 test) and was removed with its anonymous
+  volume. Coverage includes strict CSV/header parsing, bounds, shared normalization, pasted URL
+  lines, invalid rows, existing/internal canonical duplicates, preview non-mutation, disabled
+  creation, filtered/idempotent import, Admin errors, and unavailable repositories. No provider,
+  Control Center, onboarding, export, deployment, or main-worktree mutation occurred.
 - 2026-09-13: Stage 5 OPML validation: focused OPML coverage passed 11 tests; OPML plus
   Source Pack and relevant repository/Admin coverage passed 48 tests with 1 opt-in PostgreSQL test
   skipped. Coverage includes safe XML and DTD/entity rejection, root/body validation,
@@ -927,6 +936,11 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 6 CSV and bulk URL preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added bounded CSV and one-URL-per-line adapters, reused the
+  shared Source Pack row/batch workflow, exposed four minimal Admin endpoints, forced disabled
+  creation, and documented the formats in `docs/CSV_AND_BULK_URLS.md`. Control Center, onboarding,
+  source export, production deployment, and ingestion behavior remain untouched.
 - 2026-09-13: Completed Stage 5 OPML preview/import in the isolated
   `feature/db-managed-sources` worktree. Added a safe bounded OPML adapter, shared Source Pack batch
   analysis/import reuse, minimal Admin transport, deterministic row/count results, and focused
