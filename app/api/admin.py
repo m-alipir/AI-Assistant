@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -45,6 +45,7 @@ from app.config.opml import (
     OpmlRepositoryUnavailable,
     OpmlService,
 )
+from app.config.source_export import SourceExportRepositoryUnavailable, SourceExportService
 from app.config.source_pack import (
     InvalidSourcePackStructure,
     MalformedSourcePack,
@@ -563,6 +564,51 @@ async def override(subject: str, direction: str, request: Request) -> dict[str, 
 @router.get("/sources")
 async def sources(request: Request) -> dict[str, object]:
     return {"items": await _admin_sources(request)}
+
+
+def _export_response(content: str, *, filename: str, media_type: str) -> PlainTextResponse:
+    return PlainTextResponse(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _export(request: Request, format_name: str) -> str:
+    service = SourceExportService(_source_repository(request))
+    try:
+        if format_name == "source-pack":
+            return await service.source_pack_yaml()
+        if format_name == "opml":
+            return await service.opml()
+        return await service.csv()
+    except SourceExportRepositoryUnavailable:
+        raise HTTPException(503, "managed source repository is unavailable") from None
+
+
+@router.get("/source-packs/export")
+async def export_source_pack(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "source-pack"),
+        filename="managed-sources.yaml",
+        media_type="application/x-yaml",
+    )
+
+
+@router.get("/opml/export")
+async def export_opml(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "opml"),
+        filename="managed-rss-sources.opml",
+        media_type="application/xml",
+    )
+
+
+@router.get("/csv/export")
+async def export_csv(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "csv"), filename="managed-sources.csv", media_type="text/csv"
+    )
 
 
 @router.post("/source-packs/preview")

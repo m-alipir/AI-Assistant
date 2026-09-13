@@ -43,10 +43,14 @@ Make the database the runtime source-of-truth.
   valid new sources as disabled, and remain idempotent on retry.
 - Admin exposes `/admin/csv/preview`, `/admin/csv/import`, `/admin/bulk-urls/preview`, and
   `/admin/bulk-urls/import` without writing uploaded content to disk.
+- Database-managed sources can be exported deterministically through Admin as Source Pack YAML,
+  OPML, or CSV. Every export reads the repository only and includes disabled rows; Source Pack
+  retains all import-supported source metadata, while OPML and CSV retain only their documented
+  format-supported fields.
 
 ## Not Finished
 
-- Control Center updates and onboarding are not implemented. Source export is not implemented.
+- Control Center updates and onboarding are not implemented.
 - YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
   not yet explicit example/bootstrap-only behavior.
 
@@ -58,6 +62,7 @@ Make the database the runtime source-of-truth.
 - `app/config/opml.py`
 - `app/config/csv_import.py`
 - `app/config/bulk_urls.py`
+- `app/config/source_export.py`
 - `app/main.py`
 - `app/api/admin.py`
 - `app/telegram/service.py`
@@ -65,7 +70,8 @@ Make the database the runtime source-of-truth.
 - `app/jobs/youtube_runtime.py`
 - `app/config/sources.py`
 - `tests/test_admin.py`, `tests/test_source_pack.py`, `tests/test_rss_runtime.py`,
-  `tests/test_opml.py`, `tests/test_csv_bulk_urls.py`, `tests/test_telegram.py`
+  `tests/test_opml.py`, `tests/test_csv_bulk_urls.py`, `tests/test_source_export.py`,
+  `tests/test_telegram.py`
 - `docs/SOURCE_PACKS.md`, `docs/OPML.md`, `docs/CSV_AND_BULK_URLS.md`
 
 ## Database Schema
@@ -85,7 +91,7 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 Mevcut Admin kaynak ve import endpoint’lerini kullanan küçük bir Control Center kaynak yönetimi
 arayüzü ekle; doğrulama, canonicalization veya persistence kurallarını UI içine taşıma. Onboarding,
-source export ve production deployment bu adıma dahil edilmemelidir.
+production deployment bu adıma dahil edilmemelidir.
 
 ## Do Not Break
 
@@ -169,3 +175,18 @@ source export ve production deployment bu adıma dahil edilmemelidir.
   unavailability.
 - No Control Center, onboarding, source export, production deployment, live provider, ingestion
   behavior, or main-worktree change occurred.
+
+### Stage 7 Source export verification
+
+- Focused export suite: 4 passed.
+- Export plus Source Pack, OPML, CSV, Admin, and repository suite: 68 passed, 1 opt-in PostgreSQL
+  test skipped.
+- Full offline suite: 277 passed, 4 opt-in PostgreSQL tests skipped.
+- Disposable PostgreSQL managed-source acceptance: 1 passed after migration to
+  `20260913_0024`; the uniquely named container and anonymous volume were removed.
+- Full Ruff and `git diff --check` passed.
+- Tests cover deterministic canonical Source Pack/OPML/CSV output, disabled-source inclusion,
+  Source Pack state round-trip, documented OPML/CSV format limits, Admin attachment responses, and
+  repository-unavailable handling.
+- No Control Center, onboarding, production deployment, live provider, ingestion behavior, or
+  main-worktree change occurred.

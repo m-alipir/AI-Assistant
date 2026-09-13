@@ -23,6 +23,7 @@ Admin endpoints accept JSON shaped as `{"csv": "<CSV text>"}`:
 
 - `POST /admin/csv/preview`
 - `POST /admin/csv/import`
+- `GET /admin/csv/export`
 
 ## Bulk URLs
 
@@ -39,3 +40,8 @@ Both formats return `valid_new`, `existing_duplicate`, `duplicate_in_pack`, and 
 during preview. Import changes successfully persisted `valid_new` entries to `created`. Malformed
 CSV returns HTTP 400, invalid input structure returns 422, bounds violations return 413, and an
 unavailable repository returns 503. Input bodies are neither logged nor written to disk.
+
+CSV export is a deterministic read-only snapshot of all managed RSS and YouTube sources, including
+disabled ones. It preserves canonical endpoint, name, kind, category, priority, stream, language,
+and freshness metadata. CSV import intentionally disables every row, so enabled state and
+operational health/timestamps are not round-tripped; use Source Pack YAML when enabled state matters.

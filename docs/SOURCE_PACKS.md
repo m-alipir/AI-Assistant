@@ -45,6 +45,7 @@ slice does not mutate the interest profile.
 
 - `POST /admin/source-packs/preview`
 - `POST /admin/source-packs/import`
+- `GET /admin/source-packs/export`
 
 Both accept JSON shaped as `{"yaml": "<Source Pack YAML>"}`. Preview source statuses are
 `valid_new`, `existing_duplicate`, `duplicate_in_pack`, and `invalid_source`. Import replaces
@@ -57,3 +58,7 @@ inside the normal 200 preview/import response.
 
 Input is limited to 256 KiB, 500 sources, and 200 entries in each interest/exclude list. YAML uses
 safe loading, aliases are rejected, and uploaded content is neither logged nor written to disk.
+
+The export is a deterministic read-only database snapshot. It includes enabled and disabled RSS and
+YouTube sources, uses canonical endpoints, and preserves every Source Pack-supported source field.
+It deliberately omits operational health/timestamps and profile-only `interests`/`exclude` data.

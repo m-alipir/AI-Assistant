@@ -8,6 +8,7 @@ Source Packs. It extracts RSS/Atom feed outlines, validates and canonicalizes ev
 
 - `POST /admin/opml/preview`
 - `POST /admin/opml/import`
+- `GET /admin/opml/export`
 
 Both accept JSON shaped as `{"opml": "<OPML XML>"}`. Preview never changes the database. Its
 source statuses are `valid_new`, `existing_duplicate`, `duplicate_in_pack`, and `invalid_source`.
@@ -24,3 +25,8 @@ normal 200 response as `invalid_source` rows.
 
 Input is limited to 256 KiB, 2,000 outlines, 500 feed rows, and 20 outline levels. DTD and entity
 declarations are rejected before XML parsing. OPML content is neither logged nor written to disk.
+
+The export is a deterministic read-only snapshot of all managed RSS sources, including disabled
+ones. Standard OPML can retain each canonical feed URL and name only, so YouTube sources, enabled
+state, and managed-source metadata are intentionally not represented. Use Source Pack YAML for a
+full-fidelity backup.

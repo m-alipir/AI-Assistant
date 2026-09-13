@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 7 source export validation: focused export coverage passed 4 tests; export plus
+  Source Pack, OPML, CSV, Admin, and repository coverage passed 68 tests with 1 opt-in PostgreSQL
+  test skipped. The full offline suite passed 277 tests with 4 opt-in PostgreSQL tests skipped.
+  Full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL container passed the
+  managed-source acceptance test (1 test) and was removed with its anonymous volume. Coverage
+  includes deterministic canonical Source Pack/OPML/CSV output, disabled-source inclusion, Source
+  Pack round-trip state, documented format limits, Admin attachment responses, and unavailable
+  repositories. No provider, Control Center, onboarding, deployment, ingestion, or main-worktree
+  mutation occurred.
 - 2026-09-13: Stage 6 CSV and bulk URL validation: focused adapter coverage passed 16 tests; CSV and
   bulk URL plus Source Pack, OPML, and relevant repository/Admin coverage passed 64 tests with 1
   opt-in PostgreSQL test skipped. The full offline suite passed 273 tests with 4 opt-in PostgreSQL
@@ -936,6 +945,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 7 deterministic database-managed source export in the isolated
+  `feature/db-managed-sources` worktree. Added a read-only exporter and minimal Admin download
+  endpoints for Source Pack YAML, OPML, and CSV; exports include disabled rows and canonical
+  endpoints. Source Pack preserves all import-supported source metadata; OPML and CSV explicitly
+  document their format limits. Control Center, onboarding, deployment, ingestion behavior, and
+  main-worktree changes remain untouched.
 - 2026-09-13: Completed Stage 6 CSV and bulk URL preview/import in the isolated
   `feature/db-managed-sources` worktree. Added bounded CSV and one-URL-per-line adapters, reused the
   shared Source Pack row/batch workflow, exposed four minimal Admin endpoints, forced disabled
