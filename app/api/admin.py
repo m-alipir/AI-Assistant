@@ -25,6 +25,13 @@ from app.briefing.presentation import (
     safe_links,
     shown_because,
 )
+from app.config.opml import (
+    InvalidOpmlStructure,
+    MalformedOpml,
+    OpmlLimitExceeded,
+    OpmlRepositoryUnavailable,
+    OpmlService,
+)
 from app.config.source_pack import (
     InvalidSourcePackStructure,
     MalformedSourcePack,
@@ -101,6 +108,10 @@ class SourcePackUpload(BaseModel):
     yaml: str = Field(min_length=1)
 
 
+class OpmlUpload(BaseModel):
+    opml: str = Field(min_length=1)
+
+
 class BriefingFeedback(BaseModel):
     """One intentionally small, safe preference signal from a rendered briefing item."""
 
@@ -171,6 +182,18 @@ def _raise_source_pack_http_error(error: Exception) -> None:
     if isinstance(error, InvalidSourcePackStructure):
         raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
     if isinstance(error, SourcePackRepositoryUnavailable):
+        raise HTTPException(503, "managed source repository is unavailable") from error
+    raise error
+
+
+def _raise_opml_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedOpml):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, OpmlLimitExceeded):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, InvalidOpmlStructure):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, OpmlRepositoryUnavailable):
         raise HTTPException(503, "managed source repository is unavailable") from error
     raise error
 
@@ -528,6 +551,24 @@ async def import_source_pack(
         return await SourcePackService(_source_repository(request)).import_pack(upload.yaml)
     except Exception as error:
         _raise_source_pack_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/opml/preview")
+async def preview_opml(upload: OpmlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await OpmlService(_source_repository(request)).preview(upload.opml)
+    except Exception as error:
+        _raise_opml_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/opml/import")
+async def import_opml(upload: OpmlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await OpmlService(_source_repository(request)).import_opml(upload.opml)
+    except Exception as error:
+        _raise_opml_http_error(error)
         raise AssertionError("unreachable") from error
 
 

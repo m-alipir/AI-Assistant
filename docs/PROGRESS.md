@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 5 OPML validation: focused OPML coverage passed 11 tests; OPML plus
+  Source Pack and relevant repository/Admin coverage passed 48 tests with 1 opt-in PostgreSQL test
+  skipped. Coverage includes safe XML and DTD/entity rejection, root/body validation,
+  size/source/depth bounds, nested RSS/Atom extraction, mixed invalid rows, existing/internal
+  canonical duplicates, preview non-mutation, filtered/idempotent import, Admin HTTP failures, and
+  unavailable repositories. The full offline suite passed 257 tests with 4 opt-in PostgreSQL tests
+  skipped; full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL container
+  passed the managed-source acceptance test (1 test) and was removed with its anonymous volume.
+  No provider, CSV/bulk URL, production deployment, or main-worktree mutation occurred.
 - 2026-09-13: Stage 4 Source Pack YAML validation: focused Source Pack coverage passed 11 tests;
   Source Pack plus relevant repository/Admin coverage passed 37 tests with 1 opt-in PostgreSQL test
   skipped; the full offline suite passed 246 tests with 4 opt-in PostgreSQL tests skipped. A
@@ -918,6 +927,11 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 5 OPML preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added a safe bounded OPML adapter, shared Source Pack batch
+  analysis/import reuse, minimal Admin transport, deterministic row/count results, and focused
+  tests. CSV/bulk URL, Control Center, onboarding, production deployment, and ingestion behavior
+  remain untouched.
 - 2026-09-13: Completed Stage 4 Source Pack YAML preview/import in the isolated
   `feature/db-managed-sources` worktree. Added a reusable safe/bounded parser and service, a minimal
   Admin transport, deterministic per-source/aggregate results, repository-only persistence, and

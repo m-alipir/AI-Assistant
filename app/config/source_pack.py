@@ -122,12 +122,18 @@ class SourcePackService:
         self._repository = repository
 
     async def preview(self, content: str) -> dict[str, object]:
-        pack = parse_source_pack(content)
+        return await self.preview_parsed(parse_source_pack(content))
+
+    async def preview_parsed(self, pack: ParsedSourcePack) -> dict[str, object]:
+        """Preview an already parsed source batch without mutating the repository."""
         items = await self._analyze(pack)
         return _result(pack, items, import_result=False)
 
     async def import_pack(self, content: str) -> dict[str, object]:
-        pack = parse_source_pack(content)
+        return await self.import_parsed(parse_source_pack(content))
+
+    async def import_parsed(self, pack: ParsedSourcePack) -> dict[str, object]:
+        """Import an already parsed source batch through repository create operations."""
         items = await self._analyze(pack)
         candidates = {row.index: row.source for row in pack.sources if row.source is not None}
         for item in items:

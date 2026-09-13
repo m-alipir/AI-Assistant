@@ -33,10 +33,15 @@ Make the database the runtime source-of-truth.
   sources to disabled, retain deterministic input order/counts, and are safe to retry.
 - Source Pack `interests` and `exclude` lists are represented in results only; they do not mutate
   the existing interest profile.
+- OPML RSS/Atom preview/import now uses the same parsed-source batch workflow as Source Pack.
+  It rejects DTD/entities, applies bounded XML traversal, reports invalid/internal/existing
+  duplicates deterministically, and persists only valid new feeds through `SourceRepository`.
+- Admin exposes `/admin/opml/preview` and `/admin/opml/import`; imported OPML feeds default to
+  disabled and repeated imports are idempotent.
 
 ## Not Finished
 
-- OPML, CSV/bulk URL import/export, Control Center updates, and onboarding are not implemented.
+- CSV/bulk URL import/export, Control Center updates, and onboarding are not implemented.
 - YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
   not yet explicit example/bootstrap-only behavior.
 
@@ -45,6 +50,7 @@ Make the database the runtime source-of-truth.
 - `migrations/versions/20260913_0024_managed_sources.py`
 - `app/config/source_repository.py`
 - `app/config/source_pack.py`
+- `app/config/opml.py`
 - `app/main.py`
 - `app/api/admin.py`
 - `app/telegram/service.py`
@@ -52,8 +58,8 @@ Make the database the runtime source-of-truth.
 - `app/jobs/youtube_runtime.py`
 - `app/config/sources.py`
 - `tests/test_admin.py`, `tests/test_source_pack.py`, `tests/test_rss_runtime.py`,
-  `tests/test_telegram.py`
-- `docs/SOURCE_PACKS.md`
+  `tests/test_opml.py`, `tests/test_telegram.py`
+- `docs/SOURCE_PACKS.md`, `docs/OPML.md`
 
 ## Database Schema
 
@@ -70,8 +76,8 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 ## Next Recommended Step
 
-OPML önizleme/içe aktarma adaptörünü, doğrulanmış girdiyi mevcut Source Pack servis sözleşmesine
-dönüştürecek şekilde ekle. CSV/bulk URL, Control Center, onboarding ve production deployment bu
+CSV önizleme/içe aktarma adaptörünü, doğrulanmış girdiyi mevcut ortak kaynak batch sözleşmesine
+dönüştürecek şekilde ekle. Bulk URL paste, Control Center, onboarding ve production deployment bu
 adıma dahil edilmemelidir.
 
 ## Do Not Break
@@ -125,3 +131,18 @@ adıma dahil edilmemelidir.
   import idempotency, Admin HTTP errors, and repository unavailability.
 - No OPML/CSV/bulk URL, interest mutation, Control Center, onboarding, production deployment, live
   provider, ingestion behavior, or main-worktree change occurred.
+
+### Stage 5 OPML verification
+
+- Focused OPML suite: 11 passed.
+- OPML plus Source Pack and relevant repository/Admin suite: 48 passed, 1 opt-in PostgreSQL test
+  skipped.
+- Full offline suite: 257 passed, 4 opt-in PostgreSQL tests skipped.
+- Disposable PostgreSQL managed-source acceptance: 1 passed after migration to
+  `20260913_0024`; the uniquely named container and anonymous volume were removed.
+- Full Ruff and `git diff --check` passed.
+- Tests cover malformed XML, invalid root/body, DTD/entity rejection, size/source/depth bounds,
+  nested RSS/Atom extraction, canonical in-file and database duplicates, invalid rows, preview
+  non-mutation, filtered/idempotent import, Admin HTTP errors, and repository unavailability.
+- No CSV/bulk URL, Control Center, onboarding, production deployment, live provider, ingestion
+  behavior, or main-worktree change occurred.

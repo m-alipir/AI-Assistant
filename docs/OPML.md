@@ -1,0 +1,26 @@
+# OPML Feed Import
+
+OPML preview/import is a bounded adapter over the same managed-source batch workflow used by
+Source Packs. It extracts RSS/Atom feed outlines, validates and canonicalizes every URL through
+`ManagedSourceCreate`, and persists only through `SourceRepository`.
+
+## Admin API
+
+- `POST /admin/opml/preview`
+- `POST /admin/opml/import`
+
+Both accept JSON shaped as `{"opml": "<OPML XML>"}`. Preview never changes the database. Its
+source statuses are `valid_new`, `existing_duplicate`, `duplicate_in_pack`, and `invalid_source`.
+Import changes `valid_new` to `created`, skips all other rows, and is safe to retry.
+
+Feed outlines may use `type="rss"`, `type="atom"`, `type="feed"`, or omit `type` when `xmlUrl` is
+present. The source name comes from `title`, then `text`, then the feed URL. Folder outlines and
+unrelated link outlines are ignored. Imported feeds default to the `tech` stream and remain
+disabled until explicitly enabled.
+
+Malformed XML returns HTTP 400, invalid OPML structure returns 422, bounds violations return 413,
+and an unavailable repository returns 503. Individual malformed feed outlines remain in the
+normal 200 response as `invalid_source` rows.
+
+Input is limited to 256 KiB, 2,000 outlines, 500 feed rows, and 20 outline levels. DTD and entity
+declarations are rejected before XML parsing. OPML content is neither logged nor written to disk.
