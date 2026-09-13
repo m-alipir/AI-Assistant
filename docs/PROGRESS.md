@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
 observation continues independently)
-**Last updated:** 2026-09-12
+**Last updated:** 2026-09-13
 
 ## Rules for Codex
 - Read this file before every task.
@@ -582,6 +582,21 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 2 Admin DB-managed source validation: focused Admin/repository coverage passed
+  26 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 233 tests with
+  4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. CRUD,
+  canonicalization visibility, duplicate/invalid/not-found/unsafe-delete HTTP mapping,
+  repository-unavailable behavior, compatibility routes, and zero source-YAML mutation are
+  covered. Docker remained unavailable, so disposable PostgreSQL acceptance did not run. No
+  provider, live source, production DB/deployment, Telegram source-management, or main-worktree
+  mutation occurred.
+- 2026-09-13: Managed-source repository CRUD/health validation: full Ruff and
+  `git diff --check` passed; Alembic static SQL emitted `20260913_0024`; the focused suite passed
+  29 tests with only its opt-in PostgreSQL persistence test skipped, and the full offline suite
+  passed 232 tests with 4 opt-in PostgreSQL tests skipped. RSS/YouTube fakes verify success and
+  safe feed-access failure persistence. No provider, live source, production DB, deployment, or
+  main-worktree mutation occurred. Docker daemon was unavailable, so the new disposable
+  PostgreSQL acceptance test remains opt-in and unexecuted.
 - 2026-09-12: OpenRouter 4xx diagnostic validation: 222 passed, 3 PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake client covers one-attempt
   4xx handling, bounded safe error metadata, and secret-like error-message redaction. Ruff and
@@ -886,6 +901,22 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 2 Admin source management in the isolated
+  `feature/db-managed-sources` worktree. Admin dashboard/config reads plus get/list/create/update,
+  enable-disable, and safe-delete operations now use the database repository as their only runtime
+  source of truth; legacy Admin UI routes are repository-backed compatibility wrappers. Admin has
+  no remaining source YAML read/write path. Telegram and all later source-import/UI/onboarding work
+  remain untouched and are the next separate stages.
+- 2026-09-13: Completed the handoff's recommended managed-source repository slice in the isolated
+  `feature/db-managed-sources` worktree. Create/get/list/update/enable/disable/safe-delete,
+  canonical endpoint validation, duplicate mapping, and RSS/YouTube discovery health persistence
+  are implemented and covered offline. Admin/Telegram still use YAML and remain the next cutover;
+  do not merge or deploy until that single-source-of-truth transition and real disposable-DB
+  acceptance are complete.
+- 2026-09-13: Isolated branch `feature/db-managed-sources` / worktree
+  `AI-Personal-Assistant-db-managed-sources` started the managed-source cutover. Migration
+  `20260913_0024` and DB runtime lookup bootstrap exist; Admin/Telegram CRUD, imports, health
+  wiring, UI, and tests remain unfinished. Do not merge or deploy this worktree yet.
 - 2026-09-12: Added bounded OpenRouter 4xx diagnostics without logging request payloads or
   credentials. The current `openai/gpt-oss-120b` public model metadata requires reasoning and
   advertises `max_tokens`, so production must use its supported low reasoning effort instead of

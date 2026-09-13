@@ -13,6 +13,7 @@ from app.collectors.youtube import (
     parse_webvtt,
     select_preferred_track,
 )
+from app.config.source_repository import SourceRepository
 from app.config.sources import SourceCatalog, YouTubeSourceConfig
 from app.dedup.cache import InMemoryDedupCache
 from app.ingestion.pipeline import DeterministicIngestionPipeline
@@ -97,6 +98,7 @@ class YouTubeRuntimeJob:
         discovery: YouTubeDiscovery | None = None,
         subtitles: SubtitleFetcher | None = None,
         clock: Callable[[], datetime] | None = None,
+        source_repository: SourceRepository | None = None,
     ) -> None:
         self._catalog = catalog
         self._flow = flow
@@ -108,6 +110,7 @@ class YouTubeRuntimeJob:
         self._discovery = discovery or YouTubeDiscovery(HttpFeedFetcher())
         self._subtitles = subtitles or YtDlpSubtitleFetcher()
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._source_repository = source_repository
 
     async def run(
         self, retry_item: tuple[YouTubeSourceConfig, SourceItem] | None = None
@@ -272,6 +275,22 @@ class YouTubeRuntimeJob:
                 run.failed += 1
                 run.youtube_feed_access_errors += 1
                 run.errors.append(f"{source.name}: youtube_feed_access_error")
+                if self._source_repository is not None and source.managed_source_id:
+                    try:
+                        await self._source_repository.record_failure(
+                            source.managed_source_id,
+                            error_category="youtube_feed_access_error",
+                        )
+                    except Exception:
+                        run.errors.append(f"{source.name}: source_health_persistence_error")
+            else:
+                if self._source_repository is not None and source.managed_source_id:
+                    try:
+                        await self._source_repository.record_success(
+                            source.managed_source_id, strategy="youtube_atom"
+                        )
+                    except Exception:
+                        run.errors.append(f"{source.name}: source_health_persistence_error")
         return run
 
 

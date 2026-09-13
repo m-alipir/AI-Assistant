@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from inspect import isawaitable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -24,6 +24,14 @@ from app.briefing.presentation import (
     legacy_sections,
     safe_links,
     shown_because,
+)
+from app.config.source_repository import (
+    EnabledSourceDeleteBlocked,
+    ManagedSourceCreate,
+    ManagedSourceUpdate,
+    SourceAlreadyExists,
+    SourceNotFound,
+    SourceRepository,
 )
 from app.email.oauth import OAuthErrorCategory, OAuthFlowError
 from app.interests.feedback import record_briefing_feedback
@@ -73,21 +81,13 @@ def _oauth_failure_response(category: OAuthErrorCategory) -> HTMLResponse:
     )
 
 
-class SourceCreate(BaseModel):
-    kind: str
-    name: str = Field(min_length=1, max_length=256)
-    endpoint: str = Field(min_length=1, max_length=2048)
-    stream: str = "tech"
-    language: str | None = Field(default=None, max_length=8)
-
-
 class ModelUpdate(BaseModel):
     role: str
     model: str = Field(min_length=1, max_length=256)
 
 
 class YouTubeLanguageUpdate(BaseModel):
-    language: str | None = Field(default=None, max_length=8)
+    language: Literal["tr", "en"] | None = None
 
 
 class BriefingFeedback(BaseModel):
@@ -107,61 +107,58 @@ def _save_yaml(path: Path, data: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
-def _source_id(kind: str, name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
-    return f"{kind}-{slug or 'source'}"
+def _source_repository(request: Request) -> SourceRepository:
+    repository = getattr(request.app.state, "source_repository", None)
+    if repository is None:
+        raise HTTPException(503, "managed source repository is unavailable")
+    return repository
 
 
-def _configured_sources(path: Path) -> list[dict[str, Any]]:
-    data = _load_yaml(path)
-    result: list[dict[str, Any]] = []
-    for kind in ("rss", "youtube"):
-        for entry in data.get(kind, []):
-            if isinstance(entry, dict):
-                name = str(entry.get("name", "Unnamed source"))
-                result.append(
-                    {
-                        "id": _source_id(kind, name),
-                        "kind": kind,
-                        "name": name,
-                        "stream": entry.get("stream", "personalized"),
-                        "enabled": bool(entry.get("enabled", False)),
-                        "endpoint": entry.get("url") or entry.get("channel_id", ""),
-                        "language": entry.get("language"),
-                    }
-                )
-    return result
+def _source_view(row: dict[str, object]) -> dict[str, object]:
+    """Expose only the non-secret managed-source projection used by Admin."""
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "name": row["name"],
+        "endpoint": row["canonical_endpoint"],
+        "stream": row["stream"],
+        "enabled": row["enabled"],
+        "priority": row["priority"],
+        "category": row["category"],
+        "language": row["language"],
+        "freshness_hours": row["freshness_hours"],
+        "health_status": row["health_status"],
+        "last_attempt_at": row["last_attempt_at"],
+        "last_success_at": row["last_success_at"],
+        "consecutive_failures": row["consecutive_failures"],
+        "last_error_category": row["last_error_category"],
+        "next_retry_at": row["next_retry_at"],
+        "last_successful_strategy": row["last_successful_strategy"],
+        "detected_language": row["detected_language"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
-def _set_source_enabled(path: Path, source_id: str, enabled: bool) -> None:
-    data = _load_yaml(path)
-    for kind in ("rss", "youtube"):
-        for entry in data.get(kind, []):
-            if (
-                isinstance(entry, dict)
-                and _source_id(kind, str(entry.get("name", ""))) == source_id
-            ):
-                entry["enabled"] = enabled
-                _save_yaml(path, data)
-                return
-    data.setdefault("admin_enabled", {})[source_id] = enabled
-    _save_yaml(path, data)
+def _raise_source_http_error(error: Exception) -> None:
+    if isinstance(error, SourceAlreadyExists):
+        raise HTTPException(409, "source endpoint is already managed") from error
+    if isinstance(error, SourceNotFound):
+        raise HTTPException(404, "managed source not found") from error
+    if isinstance(error, EnabledSourceDeleteBlocked):
+        raise HTTPException(409, "disable the source before deleting it") from error
+    if isinstance(error, ValueError):
+        raise HTTPException(422, str(error)) from error
+    raise error
 
 
-def _set_youtube_language(path: Path, source_id: str, language: str | None) -> None:
-    data = _load_yaml(path)
-    for entry in data.get("youtube", []):
-        if (
-            isinstance(entry, dict)
-            and _source_id("youtube", str(entry.get("name", ""))) == source_id
-        ):
-            if language is None:
-                entry.pop("language", None)
-            else:
-                entry["language"] = language
-            _save_yaml(path, data)
-            return
-    raise HTTPException(404, "YouTube source not found")
+async def _admin_sources(request: Request) -> list[dict[str, object]]:
+    repository = _source_repository(request)
+    try:
+        rows = await repository.list()
+    except Exception:
+        raise HTTPException(503, "managed source repository is unavailable") from None
+    return [_source_view(row) for row in rows]
 
 
 async def _database_details(request: Request) -> dict[str, Any]:
@@ -278,7 +275,12 @@ async def _database_details(request: Request) -> dict[str, Any]:
 
 
 async def _dashboard_context(request: Request) -> dict[str, Any]:
-    sources = _configured_sources(request.app.state.sources_path)
+    try:
+        sources = await _admin_sources(request)
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        sources = []
     models = _load_yaml(request.app.state.models_path)
     roles = models.get("roles", {}) if isinstance(models.get("roles"), dict) else {}
     database_ready = await request.app.state.readiness_check()
@@ -448,7 +450,7 @@ async def retry_blocked_rss(content_hash: str, request: Request) -> dict[str, ob
 @router.get("/config")
 async def config(request: Request) -> dict[str, object]:
     return {
-        "sources": _load_yaml(request.app.state.sources_path),
+        "sources": {"items": await _admin_sources(request)},
         "models": _load_yaml(request.app.state.models_path),
         "interests": _load_yaml(request.app.state.interests_path),
     }
@@ -481,81 +483,80 @@ async def override(subject: str, direction: str, request: Request) -> dict[str, 
 
 @router.get("/sources")
 async def sources(request: Request) -> dict[str, object]:
-    return _load_yaml(request.app.state.sources_path)
+    return {"items": await _admin_sources(request)}
+
+
+@router.get("/sources/{source_id}")
+async def get_source(source_id: str, request: Request) -> dict[str, object]:
+    row = await _source_repository(request).get(source_id)
+    if row is None:
+        raise HTTPException(404, "managed source not found")
+    return _source_view(row)
+
+
+@router.post("/sources", status_code=201)
+async def create_source(
+    source: ManagedSourceCreate, request: Request
+) -> dict[str, object]:
+    try:
+        row = await _source_repository(request).create(source)
+    except Exception as error:
+        _raise_source_http_error(error)
+        raise AssertionError("unreachable") from error
+    return _source_view(row)
+
+
+@router.patch("/sources/{source_id}")
+async def update_source(
+    source_id: str, update: ManagedSourceUpdate, request: Request
+) -> dict[str, object]:
+    try:
+        row = await _source_repository(request).update(source_id, update)
+    except Exception as error:
+        _raise_source_http_error(error)
+        raise AssertionError("unreachable") from error
+    return _source_view(row)
 
 
 @router.post("/sources/{source_id}/{enabled}")
 async def toggle_source(source_id: str, enabled: bool, request: Request) -> dict[str, object]:
-    _set_source_enabled(request.app.state.sources_path, source_id, enabled)
+    changed = await _source_repository(request).set_enabled(source_id, enabled)
+    if not changed:
+        raise HTTPException(404, "managed source not found")
     return {"source_id": source_id, "enabled": enabled}
 
 
+@router.delete("/sources/{source_id}")
+async def remove_source(source_id: str, request: Request) -> dict[str, str]:
+    try:
+        await _source_repository(request).delete(source_id)
+    except Exception as error:
+        _raise_source_http_error(error)
+    return {"status": "deleted"}
+
+
 @router.post("/ui/sources")
-async def add_source(source: SourceCreate, request: Request) -> dict[str, object]:
-    kind = source.kind.casefold()
-    if kind not in {"rss", "youtube"}:
-        raise HTTPException(422, "kind must be rss or youtube")
-    data = _load_yaml(request.app.state.sources_path)
-    entries = data.setdefault(kind, [])
-    source_id = _source_id(kind, source.name)
-    if any(
-        isinstance(item, dict) and _source_id(kind, str(item.get("name", ""))) == source_id
-        for item in entries
-    ):
-        raise HTTPException(409, "a source with this name already exists")
-    if kind == "rss":
-        if not source.endpoint.startswith(("https://", "http://")):
-            raise HTTPException(422, "RSS feed URL must be an absolute HTTP(S) URL")
-        entries.append(
-            {"name": source.name, "url": source.endpoint, "stream": source.stream, "enabled": False}
-        )
-    else:
-        channel_id = source.endpoint.split("channel_id=")[-1].split("&")[0]
-        if not channel_id or channel_id.startswith("http"):
-            raise HTTPException(422, "enter a YouTube channel ID or Atom feed URL")
-        language = source.language.strip().casefold() if source.language else None
-        if language not in {None, "tr", "en"}:
-            raise HTTPException(422, "YouTube language must be tr or en when specified")
-        entries.append(
-            {
-                "name": source.name,
-                "channel_id": channel_id,
-                "stream": source.stream,
-                "enabled": False,
-                "language": language,
-            }
-        )
-    _save_yaml(request.app.state.sources_path, data)
-    return {"source_id": source_id, "enabled": False}
+async def add_source(source: ManagedSourceCreate, request: Request) -> dict[str, object]:
+    created = await create_source(source, request)
+    return {"source_id": created["id"], "enabled": created["enabled"]}
 
 
 @router.delete("/ui/sources/{source_id}")
 async def delete_source(source_id: str, request: Request) -> dict[str, str]:
-    data = _load_yaml(request.app.state.sources_path)
-    for kind in ("rss", "youtube"):
-        entries = data.get(kind, [])
-        retained = [
-            item
-            for item in entries
-            if not isinstance(item, dict)
-            or _source_id(kind, str(item.get("name", ""))) != source_id
-        ]
-        if len(retained) != len(entries):
-            data[kind] = retained
-            _save_yaml(request.app.state.sources_path, data)
-            return {"status": "deleted"}
-    raise HTTPException(404, "source not found")
+    return await remove_source(source_id, request)
 
 
 @router.post("/ui/sources/{source_id}/language")
 async def update_youtube_language(
     source_id: str, update: YouTubeLanguageUpdate, request: Request
 ) -> dict[str, str | None]:
-    language = update.language.strip().casefold() if update.language else None
-    if language not in {None, "tr", "en"}:
-        raise HTTPException(422, "YouTube language must be tr or en when specified")
-    _set_youtube_language(request.app.state.sources_path, source_id, language)
-    return {"source_id": source_id, "language": language}
+    try:
+        await _source_repository(request).update(
+            source_id, ManagedSourceUpdate(language=update.language)
+        )
+    except Exception as error:
+        _raise_source_http_error(error)
+    return {"source_id": source_id, "language": update.language}
 
 
 @router.post("/ui/models")

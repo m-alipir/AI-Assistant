@@ -1,9 +1,119 @@
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.config.source_repository import (
+    EnabledSourceDeleteBlocked,
+    ManagedSourceCreate,
+    ManagedSourceUpdate,
+    SourceAlreadyExists,
+    SourceNotFound,
+    canonicalize_endpoint,
+)
 from app.knowledge.search import KnowledgeSearchError
 from app.main import create_app
+
+
+def _source_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": "source-1",
+        "kind": "rss",
+        "name": "Fixture Feed",
+        "canonical_endpoint": "https://example.test/feed.xml",
+        "stream": "tech",
+        "enabled": False,
+        "priority": 0,
+        "category": None,
+        "language": None,
+        "freshness_hours": None,
+        "health_status": "healthy",
+        "last_attempt_at": None,
+        "last_success_at": None,
+        "consecutive_failures": 0,
+        "last_error_category": None,
+        "next_retry_at": None,
+        "last_successful_strategy": None,
+        "detected_language": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class FakeSourceRepository:
+    def __init__(self, rows: list[dict[str, object]] | None = None) -> None:
+        self.rows = {str(row["id"]): dict(row) for row in rows or []}
+        self.created = 0
+
+    async def list(self) -> list[dict[str, object]]:
+        return list(self.rows.values())
+
+    async def get(self, source_id: str) -> dict[str, object] | None:
+        row = self.rows.get(source_id)
+        return dict(row) if row is not None else None
+
+    async def create(self, source: ManagedSourceCreate) -> dict[str, object]:
+        if any(
+            row["kind"] == source.kind and row["canonical_endpoint"] == source.endpoint
+            for row in self.rows.values()
+        ):
+            raise SourceAlreadyExists
+        self.created += 1
+        row = _source_row(
+            id=f"created-{self.created}",
+            kind=source.kind,
+            name=source.name,
+            canonical_endpoint=source.endpoint,
+            stream=source.stream.value,
+            enabled=source.enabled,
+            priority=source.priority,
+            category=source.category,
+            language=source.language,
+            freshness_hours=source.freshness_hours,
+        )
+        self.rows[str(row["id"])] = row
+        return dict(row)
+
+    async def update(
+        self, source_id: str, update: ManagedSourceUpdate
+    ) -> dict[str, object]:
+        row = self.rows.get(source_id)
+        if row is None:
+            raise SourceNotFound
+        values: dict[str, Any] = update.model_dump(exclude_unset=True)
+        if "endpoint" in values:
+            endpoint = canonicalize_endpoint(row["kind"], values.pop("endpoint"))
+            if any(
+                other_id != source_id
+                and other["kind"] == row["kind"]
+                and other["canonical_endpoint"] == endpoint
+                for other_id, other in self.rows.items()
+            ):
+                raise SourceAlreadyExists
+            values["canonical_endpoint"] = endpoint
+        if "stream" in values:
+            values["stream"] = values["stream"].value
+        if row["kind"] == "rss" and values.get("language") is not None:
+            raise ValueError("language preference is supported only for YouTube sources")
+        row.update(values)
+        return dict(row)
+
+    async def set_enabled(self, source_id: str, enabled: bool) -> bool:
+        row = self.rows.get(source_id)
+        if row is None:
+            return False
+        row["enabled"] = enabled
+        return True
+
+    async def delete(self, source_id: str) -> None:
+        row = self.rows.get(source_id)
+        if row is None:
+            raise SourceNotFound
+        if row["enabled"]:
+            raise EnabledSourceDeleteBlocked
+        del self.rows[source_id]
 
 
 def test_admin_run_callback():
@@ -81,14 +191,11 @@ def test_manual_run_reports_when_no_runtime_job_is_connected():
     assert "No ingestion job" in app.state.last_run_details["message"]
 
 
-def test_source_toggle_persists(tmp_path: Path):
-    path = tmp_path / "sources.yaml"
-    path.write_text("sources: []\n")
+def test_source_endpoints_fail_deterministically_without_database_repository() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
-    app.state.sources_path = path
     with TestClient(app) as client:
-        assert client.post("/admin/sources/a/false").json()["enabled"] is False
-    assert "admin_enabled" in path.read_text()
+        assert client.get("/admin/sources").status_code == 503
+        assert client.post("/admin/sources/a/false").status_code == 503
 
 
 def test_status_uses_metrics_provider():
@@ -118,8 +225,11 @@ def test_config_and_interest_override_use_configured_temp_paths(tmp_path: Path):
         models,
         interests,
     )
+    app.state.source_repository = FakeSourceRepository()
     with TestClient(app) as client:
-        assert client.get("/admin/config").json()["models"] == {"roles": {}}
+        config = client.get("/admin/config").json()
+        assert config["sources"] == {"items": []}
+        assert config["models"] == {"roles": {}}
         assert client.post("/admin/interests/amd/more").json()["delta"] == 1
         assert client.post("/admin/interests/not%20valid/more").status_code == 422
     assert "admin_overrides" in interests.read_text()
@@ -251,13 +361,13 @@ def test_dashboard_explains_per_run_llm_provider_and_cache_breakdown(tmp_path: P
     assert "completed_noop means this deployment" not in response.text
 
 
-def test_dashboard_source_and_model_actions_persist(tmp_path: Path):
+def test_admin_source_crud_uses_repository_and_never_mutates_yaml(tmp_path: Path) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
         tmp_path / "interests.yaml",
     )
-    sources.write_text("rss: []\nyoutube: []\n")
+    sources.write_text("bootstrap-only: unchanged\n")
     models.write_text("roles: {}\n")
     interests.write_text("profile: {}\n")
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
@@ -265,34 +375,95 @@ def test_dashboard_source_and_model_actions_persist(tmp_path: Path):
     app.state.sources_path = sources
     app.state.models_path = models
     app.state.interests_path = interests
+    repository = FakeSourceRepository()
+    app.state.source_repository = repository
     with TestClient(app) as client:
         added = client.post(
-            "/admin/ui/sources",
+            "/admin/sources",
             json={
                 "kind": "rss",
                 "name": "Test Feed",
-                "endpoint": "https://example.test/feed.xml",
+                "endpoint": "HTTPS://Example.Test:443/feed.xml#ignored",
                 "stream": "tech",
             },
         )
-        assert added.status_code == 200
-        source_id = added.json()["source_id"]
+        assert added.status_code == 201
+        source_id = added.json()["id"]
+        assert added.json()["endpoint"] == "https://example.test/feed.xml"
+        assert client.get("/admin/sources").json()["items"][0]["id"] == source_id
+        assert client.get(f"/admin/sources/{source_id}").json()["name"] == "Test Feed"
+        updated = client.patch(
+            f"/admin/sources/{source_id}",
+            json={"name": "Updated Feed", "priority": 20, "freshness_hours": 24},
+        )
+        assert updated.json()["name"] == "Updated Feed"
+        assert updated.json()["priority"] == 20
+        assert updated.json()["freshness_hours"] == 24
         assert client.post(f"/admin/sources/{source_id}/true").json()["enabled"] is True
+        assert client.delete(f"/admin/sources/{source_id}").status_code == 409
+        assert client.post(f"/admin/sources/{source_id}/false").json()["enabled"] is False
+        assert client.delete(f"/admin/sources/{source_id}").json() == {"status": "deleted"}
+        assert client.get(f"/admin/sources/{source_id}").status_code == 404
         assert client.post(
             "/admin/ui/models", json={"role": "gatekeeper", "model": "vendor/model"}
         ).json() == {"role": "gatekeeper", "model": "vendor/model"}
-        assert client.delete(f"/admin/ui/sources/{source_id}").json() == {"status": "deleted"}
     assert "vendor/model" in models.read_text()
-    assert "Test Feed" not in sources.read_text()
+    assert sources.read_text() == "bootstrap-only: unchanged\n"
 
 
-def test_youtube_language_add_and_edit_persist_to_yaml(tmp_path: Path) -> None:
+def test_admin_source_failures_map_to_deterministic_http_errors() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    app.state.source_repository = FakeSourceRepository()
+    with TestClient(app) as client:
+        first = client.post(
+            "/admin/sources",
+            json={
+                "kind": "rss",
+                "name": "First",
+                "endpoint": "https://example.test/first.xml",
+            },
+        )
+        first_id = first.json()["id"]
+        duplicate = client.post(
+            "/admin/sources",
+            json={
+                "kind": "rss",
+                "name": "Duplicate",
+                "endpoint": "https://EXAMPLE.test:443/first.xml#fragment",
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "source endpoint is already managed"
+
+        assert client.post(
+            "/admin/sources",
+            json={"kind": "rss", "name": "Invalid", "endpoint": "not-a-feed-url"},
+        ).status_code == 422
+        invalid_update = client.patch(
+            f"/admin/sources/{first_id}", json={"endpoint": "not-a-feed-url"}
+        )
+        assert invalid_update.status_code == 422
+        assert "absolute HTTP(S) URL" in invalid_update.json()["detail"]
+        assert client.patch(
+            f"/admin/sources/{first_id}", json={"language": "en"}
+        ).status_code == 422
+
+        missing = "missing-source"
+        assert client.get(f"/admin/sources/{missing}").status_code == 404
+        assert client.patch(
+            f"/admin/sources/{missing}", json={"name": "Missing"}
+        ).status_code == 404
+        assert client.post(f"/admin/sources/{missing}/true").status_code == 404
+        assert client.delete(f"/admin/sources/{missing}").status_code == 404
+
+
+def test_legacy_admin_source_actions_use_repository_without_yaml_writes(tmp_path: Path) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
         tmp_path / "interests.yaml",
     )
-    sources.write_text("rss: []\nyoutube: []\n")
+    sources.write_text("bootstrap-only: unchanged\n")
     models.write_text("roles: {}\n")
     interests.write_text("profile: {}\n")
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
@@ -302,13 +473,14 @@ def test_youtube_language_add_and_edit_persist_to_yaml(tmp_path: Path) -> None:
         models,
         interests,
     )
+    app.state.source_repository = FakeSourceRepository()
     with TestClient(app) as client:
         added = client.post(
             "/admin/ui/sources",
             json={
                 "kind": "youtube",
                 "name": "Turkish Fixture Channel",
-                "endpoint": "UCfixture",
+                "endpoint": "UCVBX2n_5egE9XuJL8NUS0Xg",
                 "stream": "tech",
                 "language": "tr",
             },
@@ -323,7 +495,8 @@ def test_youtube_language_add_and_edit_persist_to_yaml(tmp_path: Path) -> None:
             ).status_code
             == 422
         )
-    assert "language: en" in sources.read_text()
+        assert client.delete(f"/admin/ui/sources/{source_id}").json() == {"status": "deleted"}
+    assert sources.read_text() == "bootstrap-only: unchanged\n"
 
 
 def test_blocked_youtube_retry_endpoint_allows_only_one_claimed_attempt() -> None:

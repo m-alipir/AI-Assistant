@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.briefing.core import BriefingItem, build_sections, render_preview
 from app.collectors.article import ArticleContent, ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
+from app.config.source_repository import SourceRepository
 from app.config.sources import SourceCatalog
 from app.correlation.core import CorrelationResult, MemoryEvent
 from app.correlation.runtime import CorrelationRuntime, correlation_content_hash
@@ -109,6 +110,7 @@ class RssRuntimeJob:
         has_pending_briefing: HasPendingBriefing | None = None,
         correlate_event: CorrelateEvent | None = None,
         article_fetcher: ArticleFetcher | None = None,
+        source_repository: SourceRepository | None = None,
     ) -> None:
         self._catalog = catalog
         self._flow = flow
@@ -123,6 +125,7 @@ class RssRuntimeJob:
         self._has_pending_briefing = has_pending_briefing or _no_pending_briefing
         self._correlate_event = correlate_event or _ignore_correlation
         self._article_fetcher = article_fetcher or ArticleFetcher()
+        self._source_repository = source_repository
 
     async def run(
         self,
@@ -255,6 +258,21 @@ class RssRuntimeJob:
                 except Exception as error:
                     counts.failed += 1
                     counts.errors.append(f"{source.name}: {type(error).__name__}")
+                    if self._source_repository is not None and source.managed_source_id:
+                        try:
+                            await self._source_repository.record_failure(
+                                source.managed_source_id, error_category="rss_feed_access_error"
+                            )
+                        except Exception:
+                            counts.errors.append(f"{source.name}: source_health_persistence_error")
+                else:
+                    if self._source_repository is not None and source.managed_source_id:
+                        try:
+                            await self._source_repository.record_success(
+                                source.managed_source_id, strategy="rss_atom"
+                            )
+                        except Exception:
+                            counts.errors.append(f"{source.name}: source_health_persistence_error")
 
         if briefing_items or await self._has_pending_briefing():
             try:

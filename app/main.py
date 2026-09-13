@@ -35,6 +35,7 @@ from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
 from app.config.settings import Settings, get_settings
+from app.config.source_repository import SourceRepository
 from app.config.sources import SourceCatalog, YouTubeSourceConfig, load_source_catalog
 from app.db.session import check_database_ready, create_engine, create_session_factory
 from app.email.core import TokenCipher
@@ -223,6 +224,8 @@ def create_app(
     app.state.gmail_encryption_configuration_error = False
     if engine is not None:
         sessions = create_session_factory(engine)
+        source_repository = SourceRepository(sessions)
+        app.state.source_repository = source_repository
         app.state.sessions = sessions
 
         async def write_agent_api_audit(endpoint: str, outcome: str, response_bytes: int) -> None:
@@ -573,7 +576,9 @@ def create_app(
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
+            await source_repository.bootstrap_yaml(yaml_seed)
+            catalog = await source_repository.load_catalog(yaml_seed)
             job = RssRuntimeJob(
                 catalog,
                 ExtractionFlow(router),
@@ -599,6 +604,7 @@ def create_app(
                     active_settings.allow_private_source_urls,
                     active_settings.allow_insecure_source_urls,
                 ),
+                source_repository=source_repository,
             )
             gmail_job = GmailRuntimeJob(
                 gmail_accounts,
@@ -624,6 +630,7 @@ def create_app(
                         allow_insecure_http=active_settings.allow_insecure_source_urls,
                     )
                 ),
+                source_repository=source_repository,
             ).run()
             youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
             rss_call_start = len(router.calls)
@@ -943,7 +950,9 @@ def create_app(
                 return {"status": "retry_not_available"}
             source_name = record.get("source_name")
             video_url = record.get("canonical_url")
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
+            await source_repository.bootstrap_yaml(yaml_seed)
+            catalog = await source_repository.load_catalog(yaml_seed)
             source = next(
                 (entry for entry in catalog.youtube if entry.name == source_name and entry.enabled),
                 None,
@@ -1024,7 +1033,9 @@ def create_app(
             record = await claim_blocked_item(content_hash, "rss")
             if record is None:
                 return {"status": "retry_not_available"}
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
+            await source_repository.bootstrap_yaml(yaml_seed)
+            catalog = await source_repository.load_catalog(yaml_seed)
             source_name = record.get("source_name")
             source = next(
                 (entry for entry in catalog.rss if entry.name == source_name and entry.enabled),
