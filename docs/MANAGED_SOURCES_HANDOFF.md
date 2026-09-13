@@ -47,10 +47,14 @@ Make the database the runtime source-of-truth.
   OPML, or CSV. Every export reads the repository only and includes disabled rows; Source Pack
   retains all import-supported source metadata, while OPML and CSV retain only their documented
   format-supported fields.
+- The focused Control Center now has a shared shell, a small source-status dashboard, and a
+  Sources page. Its source list/create/enable-disable/safe-delete and Source Pack/OPML/CSV
+  preview/import/export entry points call the existing Admin API; no validation,
+  canonicalization, or persistence rules are duplicated in browser code.
 
 ## Not Finished
 
-- Control Center updates and onboarding are not implemented.
+- Onboarding is not implemented.
 - YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
   not yet explicit example/bootstrap-only behavior.
 
@@ -65,6 +69,8 @@ Make the database the runtime source-of-truth.
 - `app/config/source_export.py`
 - `app/main.py`
 - `app/api/admin.py`
+- `app/templates/admin_shell.html`, `app/templates/admin_dashboard.html`,
+  `app/templates/admin_sources.html`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
@@ -89,9 +95,8 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 ## Next Recommended Step
 
-Mevcut Admin kaynak ve import endpoint’lerini kullanan küçük bir Control Center kaynak yönetimi
-arayüzü ekle; doğrulama, canonicalization veya persistence kurallarını UI içine taşıma. Onboarding,
-production deployment bu adıma dahil edilmemelidir.
+Onboarding veya production deployment ayrı bir onay gerektirir. Önce YAML bootstrap yaşam döngüsü
+example/bootstrap-only olarak açıkça tanımlanmalıdır; mevcut Control Center bu adıma dahil değildir.
 
 ## Do Not Break
 
@@ -190,3 +195,15 @@ production deployment bu adıma dahil edilmemelidir.
   repository-unavailable handling.
 - No Control Center, onboarding, production deployment, live provider, ingestion behavior, or
   main-worktree change occurred.
+
+### Stage 8 Control Center verification
+
+- Focused Control Center/import/export suite: 61 passed.
+- Full offline suite: 278 passed, 4 opt-in PostgreSQL tests skipped; full Ruff and
+  `git diff --check` passed.
+- A uniquely named disposable pgvector container was migrated to `20260913_0024`, passed the
+  managed-source PostgreSQL acceptance test (1 test), and was removed with its anonymous volume.
+- The UI renders untrusted source fields through Jinja escaping and dynamic result/error text only
+  through DOM `textContent`; it does not write uploaded content to disk.
+- No provider, live source, production database, deployment, onboarding, or main-worktree mutation
+  occurred.

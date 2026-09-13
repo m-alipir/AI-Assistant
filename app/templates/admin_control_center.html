@@ -1,0 +1,20 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Dashboard</h1>
+      <p class="muted">A small local control surface for database-managed sources. Source validation, canonicalization, and persistence remain in the Admin API.</p>
+      <div class="grid">
+        <div class="card">Database<br><b class="{{ 'ok' if database_ready else 'bad' }}">{{ 'ready' if database_ready else 'not ready' }}</b></div>
+        <div class="card">Source repository<br><b class="{{ 'ok' if sources_available else 'bad' }}">{{ 'available' if sources_available else 'unavailable' }}</b></div>
+        <div class="card">Enabled sources<br><b>{{ active_sources }}</b></div>
+        <div class="card">Disabled sources<br><b>{{ disabled_sources }}</b></div>
+      </div>
+    </section>
+    <section>
+      <h2>Manage sources</h2>
+      <p>Review, add, disable, remove, import, or export managed RSS and YouTube sources. Imports are previewed first and new sources stay disabled until you enable them.</p>
+      <p><a href="/admin/sources/ui">Open Sources</a></p>
+    </section>
+  </main>
+{% endblock %}

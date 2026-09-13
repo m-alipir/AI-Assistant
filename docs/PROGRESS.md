@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Stage 8 Control Center validation: focused Control Center/import/export suite passed
+  61 tests. The complete offline suite passed 278 tests with 4 opt-in PostgreSQL tests skipped;
+  full Ruff with `--no-cache` and `git diff --check` passed. A uniquely named disposable pgvector
+  container was migrated to `20260913_0024`, passed the managed-source PostgreSQL acceptance test
+  (1 test), and was removed with its anonymous volume. Coverage includes the narrow shell and
+  dashboard, repository availability, escaped untrusted source values, API-driven CRUD controls,
+  all four import entry points, downloads, and text-node result/error rendering. No provider, live
+  source, production database, deployment, onboarding, ingestion, or main-worktree mutation
+  occurred.
 - 2026-09-13: Stage 7 source export validation: focused export coverage passed 4 tests; export plus
   Source Pack, OPML, CSV, Admin, and repository coverage passed 68 tests with 1 opt-in PostgreSQL
   test skipped. The full offline suite passed 277 tests with 4 opt-in PostgreSQL tests skipped.
@@ -945,6 +954,16 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed Stage 8 Control Center foundation in the isolated
+  `feature/db-managed-sources` worktree. Added a shared shell at `/admin/control-center`,
+  a narrow source-status Dashboard, and a database-backed Sources page for list/create,
+  enable-disable, safe-delete, Source Pack/OPML/CSV preview/import, and deterministic
+  Source Pack/OPML/CSV downloads. Browser code delegates all validation, canonicalization, and
+  persistence to existing Admin endpoints; the existing `/admin` operational page remains
+  available, and untrusted values/errors are escaped or set via text
+  nodes. Onboarding, Gmail/scheduler/briefing/memory/search/budget/model UI, deployment, ingestion,
+  and the main worktree remain untouched. Full evidence: 61 focused tests, 278 offline tests with
+  4 opt-in PostgreSQL skips, one disposable PostgreSQL acceptance test, Ruff, and diff check.
 - 2026-09-13: Completed Stage 7 deterministic database-managed source export in the isolated
   `feature/db-managed-sources` worktree. Added a read-only exporter and minimal Admin download
   endpoints for Source Pack YAML, OPML, and CSV; exports include disabled rows and canonical

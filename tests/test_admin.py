@@ -136,7 +136,7 @@ def test_admin_awaits_runtime_callback_and_returns_its_counts():
     assert response.json()["message"] == "RSS run completed."
 
 
-def test_search_endpoint_uses_injected_safe_callback_and_dashboard_renders_search() -> None:
+def test_search_endpoint_uses_injected_safe_callback() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
 
     async def ask(filters):
@@ -153,10 +153,7 @@ def test_search_endpoint_uses_injected_safe_callback_and_dashboard_renders_searc
     app.state.ask_callback = ask
     with TestClient(app) as client:
         response = client.post("/admin/search", json={"question": "NVIDIA ne oldu?"})
-        dashboard = client.get("/admin")
     assert response.json()["answer_tr"] == "Bir kaynak bulundu."
-    assert "Search / Ask" in dashboard.text
-    assert "Gmail gövdeleri kullanılmaz" in dashboard.text
 
 
 def test_search_endpoint_returns_safe_migration_guidance_instead_of_500() -> None:
@@ -235,7 +232,9 @@ def test_config_and_interest_override_use_configured_temp_paths(tmp_path: Path):
     assert "admin_overrides" in interests.read_text()
 
 
-def test_dashboard_renders_setup_banner_without_exposing_key(tmp_path: Path, monkeypatch):
+def test_control_center_dashboard_is_narrow_and_never_exposes_environment_values(
+    tmp_path: Path, monkeypatch
+) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
@@ -251,14 +250,15 @@ def test_dashboard_renders_setup_banner_without_exposing_key(tmp_path: Path, mon
     app.state.models_path = models
     app.state.interests_path = interests
     with TestClient(app) as client:
-        response = client.get("/admin")
+        response = client.get("/admin/control-center")
     assert response.status_code == 200
-    assert "System ready for first real test" in response.text
-    assert "OpenRouter: <b" in response.text
+    assert "Control Center" in response.text
+    assert "Dashboard" in response.text
+    assert "Sources" in response.text
     assert "secret-must-not-render" not in response.text
 
 
-def test_dashboard_renders_safe_last_gmail_counts(tmp_path: Path) -> None:
+def test_control_center_dashboard_omits_unrelated_runtime_controls(tmp_path: Path) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
@@ -310,17 +310,17 @@ def test_dashboard_renders_safe_last_gmail_counts(tmp_path: Path) -> None:
         }
     }
     with TestClient(app) as client:
-        response = client.get("/admin")
-    assert "Last Gmail sync" in response.text
-    assert "fetched: 2" in response.text
-    assert "Last YouTube sync" in response.text
-    assert "captions: 1" in response.text
-    assert "preferred-language captions: 1" in response.text
-    assert "yt-dlp caption access: 0" in response.text
-    assert "event persistence: 0" in response.text
+        response = client.get("/admin/control-center")
+        operations = client.get("/admin")
+    assert "Gmail" not in response.text
+    assert "Last YouTube sync" not in response.text
+    assert "Manual Run" not in response.text
+    assert "Last Gmail sync" in operations.text
+    assert "Last YouTube sync" in operations.text
+    assert "Manual Run" in operations.text
 
 
-def test_dashboard_explains_per_run_llm_provider_and_cache_breakdown(tmp_path: Path) -> None:
+def test_control_center_dashboard_omits_model_and_budget_controls(tmp_path: Path) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
@@ -353,12 +353,33 @@ def test_dashboard_explains_per_run_llm_provider_and_cache_breakdown(tmp_path: P
         }
     }
     with TestClient(app) as client:
-        response = client.get("/admin")
-    assert (
-        "Provider LLM calls for this run: 0; cache hits (no provider request): 2." in response.text
+        response = client.get("/admin/control-center")
+        operations = client.get("/admin")
+    assert "Model Configuration" not in response.text
+    assert "Provider LLM calls" not in response.text
+    assert "briefing_editor" not in response.text
+    assert "Model Configuration" in operations.text
+    assert "Provider LLM calls for this run: 0" in operations.text
+
+
+def test_sources_page_uses_admin_api_entry_points_and_escapes_source_content() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    app.state.source_repository = FakeSourceRepository(
+        [_source_row(name="<script>alert(1)</script>", enabled=True)]
     )
-    assert "briefing_editor" in response.text
-    assert "completed_noop means this deployment" not in response.text
+
+    with TestClient(app) as client:
+        response = client.get("/admin/sources/ui")
+
+    assert response.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "<script>alert(1)</script>" not in response.text
+    assert "/admin/sources/" in response.text
+    assert "/admin/source-packs/" in response.text
+    assert "/admin/opml/" in response.text
+    assert "/admin/csv/" in response.text
+    assert '"bulk-urls"' not in response.text
+    assert "textContent" in response.text
 
 
 def test_admin_source_crud_uses_repository_and_never_mutates_yaml(tmp_path: Path) -> None:

@@ -409,6 +409,27 @@ async def _dashboard_context(request: Request) -> dict[str, Any]:
     }
 
 
+async def _control_center_context(request: Request) -> dict[str, Any]:
+    """Build the small, non-sensitive context shared by Control Center pages."""
+    try:
+        sources = await _admin_sources(request)
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        sources = []
+        sources_available = False
+    else:
+        sources_available = True
+    return {
+        "request": request,
+        "sources": sources,
+        "database_ready": await request.app.state.readiness_check(),
+        "sources_available": sources_available,
+        "active_sources": sum(item["enabled"] for item in sources),
+        "disabled_sources": sum(not item["enabled"] for item in sources),
+    }
+
+
 @router.get("/status")
 async def status(request: Request) -> dict[str, object]:
     metrics = await request.app.state.metrics_provider()
@@ -543,6 +564,26 @@ async def page(request: Request) -> HTMLResponse:
         name="admin_dashboard.html",
         context=await _dashboard_context(request),
     )
+
+
+@router.get("/control-center", response_class=HTMLResponse)
+async def control_center_page(request: Request) -> HTMLResponse:
+    """Render the focused, source-only Control Center dashboard."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Dashboard", "active_page": "dashboard"})
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_control_center.html",
+        context=context,
+    )
+
+
+@router.get("/sources/ui", response_class=HTMLResponse)
+async def sources_page(request: Request) -> HTMLResponse:
+    """Render the database-backed source-management Control Center page."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Sources", "active_page": "sources"})
+    return templates.TemplateResponse(request=request, name="admin_sources.html", context=context)
 
 
 @router.get("/interests")
