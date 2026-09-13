@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Stage 4 Source Pack YAML validation: focused Source Pack coverage passed 11 tests;
+  Source Pack plus relevant repository/Admin coverage passed 37 tests with 1 opt-in PostgreSQL test
+  skipped; the full offline suite passed 246 tests with 4 opt-in PostgreSQL tests skipped. A
+  disposable migrated PostgreSQL container then passed the managed-source acceptance test (1 test)
+  and was removed with its anonymous volume. Full Ruff and `git diff --check` passed. Coverage
+  includes safe YAML/malformed input, pack structure and bounds, normalized fields, mixed invalid
+  rows, existing/internal canonical duplicates, preview non-mutation, filtered/idempotent import,
+  Admin HTTP failures, and unavailable repositories. No provider, interest mutation, OPML/CSV,
+  production deployment, or main-worktree mutation occurred.
 - 2026-09-13: Stage 3 Telegram DB-managed source validation: focused Telegram/repository coverage
   passed 30 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 235 tests
   with 4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. Tests cover
@@ -909,6 +918,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed Stage 4 Source Pack YAML preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added a reusable safe/bounded parser and service, a minimal
+  Admin transport, deterministic per-source/aggregate results, repository-only persistence, and
+  retry-safe duplicate handling. Interests/exclude are preview metadata only. The schema/API is
+  documented in `docs/SOURCE_PACKS.md`; OPML/CSV/bulk URL, Control Center, onboarding, production
+  deployment, and the bootstrap lifecycle remain untouched.
 - 2026-09-13: Completed Stage 3 Telegram source management in the isolated
   `feature/db-managed-sources` worktree. The allow-listed chat interface now uses the same database
   repository as Admin and ingestion for source list/detail, validated add, enable/disable, and safe

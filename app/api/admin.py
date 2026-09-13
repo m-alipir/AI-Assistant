@@ -25,6 +25,13 @@ from app.briefing.presentation import (
     safe_links,
     shown_because,
 )
+from app.config.source_pack import (
+    InvalidSourcePackStructure,
+    MalformedSourcePack,
+    SourcePackLimitExceeded,
+    SourcePackRepositoryUnavailable,
+    SourcePackService,
+)
 from app.config.source_repository import (
     EnabledSourceDeleteBlocked,
     ManagedSourceCreate,
@@ -90,6 +97,10 @@ class YouTubeLanguageUpdate(BaseModel):
     language: Literal["tr", "en"] | None = None
 
 
+class SourcePackUpload(BaseModel):
+    yaml: str = Field(min_length=1)
+
+
 class BriefingFeedback(BaseModel):
     """One intentionally small, safe preference signal from a rendered briefing item."""
 
@@ -149,6 +160,18 @@ def _raise_source_http_error(error: Exception) -> None:
         raise HTTPException(409, "disable the source before deleting it") from error
     if isinstance(error, ValueError):
         raise HTTPException(422, str(error)) from error
+    raise error
+
+
+def _raise_source_pack_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedSourcePack):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, SourcePackLimitExceeded):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, InvalidSourcePackStructure):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, SourcePackRepositoryUnavailable):
+        raise HTTPException(503, "managed source repository is unavailable") from error
     raise error
 
 
@@ -484,6 +507,28 @@ async def override(subject: str, direction: str, request: Request) -> dict[str, 
 @router.get("/sources")
 async def sources(request: Request) -> dict[str, object]:
     return {"items": await _admin_sources(request)}
+
+
+@router.post("/source-packs/preview")
+async def preview_source_pack(
+    upload: SourcePackUpload, request: Request
+) -> dict[str, object]:
+    try:
+        return await SourcePackService(_source_repository(request)).preview(upload.yaml)
+    except Exception as error:
+        _raise_source_pack_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/source-packs/import")
+async def import_source_pack(
+    upload: SourcePackUpload, request: Request
+) -> dict[str, object]:
+    try:
+        return await SourcePackService(_source_repository(request)).import_pack(upload.yaml)
+    except Exception as error:
+        _raise_source_pack_http_error(error)
+        raise AssertionError("unreachable") from error
 
 
 @router.get("/sources/{source_id}")

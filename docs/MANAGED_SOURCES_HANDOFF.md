@@ -26,27 +26,34 @@ Make the database the runtime source-of-truth.
   enable/disable, and safe delete. Source list/detail includes compact enabled and health state.
 - Telegram no longer has a source YAML mutation/read path. Repository failures are translated to
   concise Turkish messages without exposing database or provider details.
+- Source Pack YAML is now the canonical bounded bulk-source format. A reusable service safely
+  parses and normalizes packs, previews valid/duplicate/invalid rows without writes, and imports
+  only valid new rows through `SourceRepository`.
+- Admin exposes `/admin/source-packs/preview` and `/admin/source-packs/import`. Imports default
+  sources to disabled, retain deterministic input order/counts, and are safe to retry.
+- Source Pack `interests` and `exclude` lists are represented in results only; they do not mutate
+  the existing interest profile.
 
 ## Not Finished
 
-- Source Pack, OPML, CSV/bulk import/export, Control Center updates, and onboarding are not
-  implemented.
+- OPML, CSV/bulk URL import/export, Control Center updates, and onboarding are not implemented.
 - YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
   not yet explicit example/bootstrap-only behavior.
-- The opt-in real PostgreSQL managed-source test has not run because
-  `MANAGED_SOURCE_INTEGRATION_DATABASE_URL` was not supplied.
 
 ## Important Files
 
 - `migrations/versions/20260913_0024_managed_sources.py`
 - `app/config/source_repository.py`
+- `app/config/source_pack.py`
 - `app/main.py`
 - `app/api/admin.py`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
 - `app/config/sources.py`
-- `tests/test_admin.py`, `tests/test_rss_runtime.py`, `tests/test_telegram.py`
+- `tests/test_admin.py`, `tests/test_source_pack.py`, `tests/test_rss_runtime.py`,
+  `tests/test_telegram.py`
+- `docs/SOURCE_PACKS.md`
 
 ## Database Schema
 
@@ -63,9 +70,9 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 ## Next Recommended Step
 
-YAML bootstrap yaşam döngüsünü açık ve tek seferlik hale getir; normal ingestion/retry yollarından
-tekrarlanan seed-file okumasını kaldırırken boş veritabanı kurulumunda production source kaybını
-önle. Source Pack/OPML/CSV, Control Center ve onboarding ayrı sonraki aşamalardır.
+OPML önizleme/içe aktarma adaptörünü, doğrulanmış girdiyi mevcut Source Pack servis sözleşmesine
+dönüştürecek şekilde ekle. CSV/bulk URL, Control Center, onboarding ve production deployment bu
+adıma dahil edilmemelidir.
 
 ## Do Not Break
 
@@ -104,3 +111,17 @@ tekrarlanan seed-file okumasını kaldırırken boş veritabanı kurulumunda pro
   invalid/duplicate/not-found/unsafe-delete errors, and repository/database unavailability.
 - No source YAML operation, provider request, live Telegram call, deployment, or main-worktree
   mutation occurred.
+
+### Stage 4 Source Pack verification
+
+- Focused Source Pack suite: 11 passed.
+- Source Pack plus relevant repository/Admin suite: 37 passed, 1 opt-in PostgreSQL test skipped.
+- Full offline suite: 246 passed, 4 opt-in PostgreSQL tests skipped.
+- Disposable PostgreSQL managed-source acceptance: 1 passed after migration to
+  `20260913_0024`; the uniquely named container and anonymous volume were removed.
+- Full Ruff and `git diff --check` passed.
+- Tests cover malformed YAML, invalid pack structure, aliases and size/count bounds, mixed rows,
+  database and canonical in-pack duplicates, preview non-mutation, import filtering, repeated
+  import idempotency, Admin HTTP errors, and repository unavailability.
+- No OPML/CSV/bulk URL, interest mutation, Control Center, onboarding, production deployment, live
+  provider, ingestion behavior, or main-worktree change occurred.
