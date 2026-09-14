@@ -489,6 +489,47 @@ def _control_center_briefing_view(row: Mapping[str, object]) -> dict[str, object
     }
 
 
+def _control_center_search_event_view(event: object) -> dict[str, object]:
+    """Prepare the existing compact search projection for escaped Control Center rendering."""
+    occurred_at = getattr(event, "occurred_at", None)
+    return {
+        "id": str(getattr(event, "event_id", "")),
+        "title": str(getattr(event, "title", "")),
+        "occurred_at": format_istanbul(occurred_at) if isinstance(occurred_at, datetime) else None,
+        "source_links": safe_links(list(getattr(event, "source_links", []))),
+        "verified_facts": list(getattr(event, "verified_facts", [])),
+        "stored_inferences": list(getattr(event, "stored_inferences", [])),
+        "category_paths": list(getattr(event, "category_paths", [])),
+        "entities": list(getattr(event, "entities", [])),
+        "topics": list(getattr(event, "topics", [])),
+    }
+
+
+async def _control_center_search_event(request: Request, event_id: str) -> dict[str, object]:
+    """Read a single previously retrieved event without running search or a model."""
+    callback = getattr(request.app.state, "search_event_detail_callback", None)
+    if not callable(callback):
+        return {"item": None, "error": "unavailable"}
+    try:
+        event = await callback(event_id)
+    except KnowledgeSearchError as error:
+        logger.warning(
+            "control_center_memory_detail_read_failed",
+            extra={"search_error_category": error.category},
+        )
+        return {"item": None, "error": "unavailable"}
+    except Exception:
+        logger.exception(
+            "control_center_memory_detail_read_failed",
+            extra={"search_error_category": "search_unexpected_error"},
+        )
+        return {"item": None, "error": "unavailable"}
+    return {
+        "item": _control_center_search_event_view(event) if event is not None else None,
+        "error": None,
+    }
+
+
 async def _control_center_briefing_history(request: Request) -> dict[str, object]:
     """Read a small, newest-first history without invoking briefing generation."""
     engine = getattr(request.app.state, "engine", None)
@@ -578,6 +619,26 @@ async def search_ask(filters: SearchFilters, request: Request) -> dict[str, obje
             "knowledge_search_failed", extra={"search_error_category": "search_unexpected_error"}
         )
         return _search_unavailable_response("search_unexpected_error")
+
+
+@router.post("/search/retrieve")
+async def search_retrieve(filters: SearchFilters, request: Request) -> dict[str, object]:
+    """Return existing deterministic memory retrieval without a provider call."""
+    callback = getattr(request.app.state, "search_callback", None)
+    if not callable(callback):
+        raise HTTPException(503, "memory search is unavailable in this deployment")
+    try:
+        return await callback(filters)
+    except KnowledgeSearchError as error:
+        logger.warning(
+            "admin_memory_search_failed", extra={"search_error_category": error.category}
+        )
+        raise HTTPException(503, "memory search is temporarily unavailable") from None
+    except Exception:
+        logger.exception(
+            "admin_memory_search_failed", extra={"search_error_category": "search_unexpected_error"}
+        )
+        raise HTTPException(503, "memory search is temporarily unavailable") from None
 
 
 def _search_unavailable_response(category: str) -> dict[str, object]:
@@ -706,6 +767,50 @@ async def control_center_briefings_page(request: Request) -> HTMLResponse:
         name="admin_briefings.html",
         context=context,
         status_code=503 if history["error"] else 200,
+    )
+
+
+@router.get("/control-center/search", response_class=HTMLResponse)
+async def control_center_search_page(request: Request) -> HTMLResponse:
+    """Render the read-only Control Center memory search page."""
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_search.html",
+        context={"request": request, "page_title": "Search / Memory", "active_page": "search"},
+    )
+
+
+@router.get("/control-center/search/{event_id}", response_class=HTMLResponse)
+async def control_center_search_detail_page(event_id: str, request: Request) -> HTMLResponse:
+    """Render one compact, persisted knowledge result."""
+    if not event_id or len(event_id) > 128:
+        raise HTTPException(422, "invalid event id")
+    result = await _control_center_search_event(request, event_id)
+    if result["error"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_search_detail.html",
+            context={
+                "request": request,
+                "event": None,
+                "unavailable": True,
+                "page_title": "Memory result",
+                "active_page": "search",
+            },
+            status_code=503,
+        )
+    if result["item"] is None:
+        raise HTTPException(404, "memory result not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_search_detail.html",
+        context={
+            "request": request,
+            "event": result["item"],
+            "unavailable": False,
+            "page_title": "Memory result",
+            "active_page": "search",
+        },
     )
 
 

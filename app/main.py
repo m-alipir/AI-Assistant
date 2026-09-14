@@ -55,6 +55,7 @@ from app.knowledge.search import (
     SearchResponse,
     answer_question,
     fetch_sql_candidates,
+    fetch_sql_event,
 )
 from app.llm.core import (
     BudgetTracker,
@@ -743,6 +744,12 @@ def create_app(
             ).model_dump(mode="json")
 
         app.state.search_callback = search_knowledge
+
+        async def search_event_detail(event_id: str):
+            """Read one persisted search result without invoking a provider."""
+            return await fetch_sql_event(engine, event_id)
+
+        app.state.search_event_detail_callback = search_event_detail
 
         async def agent_briefing_items(
             briefing_id: str, rendered: str

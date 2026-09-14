@@ -1,0 +1,22 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Search / Memory</h1>
+      <p class="muted">Searches read previously retained knowledge only. “Ask from memory” may use the configured model to summarize the same bounded results.</p>
+      <form id="memory-search" class="row">
+        <label for="memory-question">Question</label>
+        <input id="memory-question" name="question" required maxlength="500" size="48" autocomplete="off" placeholder="What changed with NVIDIA?">
+        <button type="submit" data-mode="retrieve">Search memory</button>
+        <button type="submit" data-mode="ask">Ask from memory</button>
+      </form>
+    </section>
+    <section aria-live="polite"><div id="memory-results" class="muted">Enter a question to search retained knowledge.</div></section>
+  </main>
+  <script nonce="{{ request.state.csp_nonce }}">
+    const form=document.querySelector('#memory-search'),out=document.querySelector('#memory-results');
+    const dateLabel=value=>/([zZ]|[+-]\d\d:\d\d)$/.test(value||'')?new Intl.DateTimeFormat('tr-TR',{dateStyle:'medium',timeStyle:'short',timeZone:'Europe/Istanbul'}).format(new Date(value)):'Timestamp unavailable';
+    const add=(parent,tag,value,className='')=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;parent.append(node);return node};
+    form.addEventListener('submit',async event=>{event.preventDefault();const question=document.querySelector('#memory-question').value.trim(),mode=event.submitter?.dataset.mode;if(!question){out.textContent='Enter a question between 1 and 500 characters.';out.className='bad';return}out.textContent='Searching retained knowledge…';out.className='muted';try{const response=await fetch(mode==='ask'?'/admin/search':'/admin/search/retrieve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})}),body=await response.json().catch(()=>({}));if(!response.ok)throw Error(body.detail||'Memory search is temporarily unavailable.');out.replaceChildren();out.className='';add(out,'h2',body.answer_tr||'Search results');if(body.status==='insufficient_sources')return;(body.events||[]).forEach(item=>{const card=document.createElement('article');card.className='result';add(card,'h3',item.title||'Saved event');add(card,'p',dateLabel(item.occurred_at),'muted');add(card,'p',(item.verified_facts||[]).join(' · ')||'No retained source-backed claim.');const link=document.createElement('a');link.href=`/admin/control-center/search/${encodeURIComponent(item.event_id)}`;link.textContent='Open detail';card.append(link);out.append(card)});(body.emails||[]).forEach(item=>add(out,'p',`Gmail (${item.classification}): ${item.action_summary||'No safe summary available.'}`));}catch(error){out.textContent=error.message;out.className='bad'}});
+  </script>
+{% endblock %}

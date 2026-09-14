@@ -15,7 +15,7 @@ from app.config.source_repository import (
     canonicalize_endpoint,
 )
 from app.jobs.scheduler import DailyScheduler
-from app.knowledge.search import KnowledgeSearchError
+from app.knowledge.search import KnowledgeSearchError, SearchEvent
 from app.main import create_app
 
 
@@ -183,6 +183,98 @@ def test_search_endpoint_returns_safe_migration_guidance_instead_of_500() -> Non
 
     assert response.status_code == 200
     assert "migration ve veritabanı" in response.json()["answer_tr"]
+
+
+def test_control_center_memory_search_reuses_retrieval_and_ask_callbacks() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    async def retrieve(filters):
+        assert filters.question == "NVIDIA ne oldu?"
+        return {
+            "status": "ok",
+            "answer_tr": "Kaynaklar aşağıda listelenmiştir.",
+            "events": [],
+            "emails": [],
+            "model_inferences": [],
+            "llm": {"provider_calls": 0, "cache_hits": 0, "by_role": {}},
+        }
+
+    async def ask(filters):
+        assert filters.question == "NVIDIA ne oldu?"
+        return {
+            "status": "ok",
+            "answer_tr": "Bir kaynak bulundu.",
+            "events": [],
+            "emails": [],
+            "model_inferences": [],
+            "llm": {"provider_calls": 0, "cache_hits": 0, "by_role": {}},
+        }
+
+    app.state.search_callback = retrieve
+    app.state.ask_callback = ask
+    with TestClient(app) as client:
+        page = client.get("/admin/control-center/search")
+        retrieved = client.post("/admin/search/retrieve", json={"question": "NVIDIA ne oldu?"})
+        answered = client.post("/admin/search", json={"question": "NVIDIA ne oldu?"})
+        invalid = client.post("/admin/search/retrieve", json={"question": ""})
+
+    assert page.status_code == 200
+    assert "/admin/search/retrieve" in page.text
+    assert "/admin/search" in page.text
+    assert "innerHTML" not in page.text
+    assert "Timestamp unavailable" in page.text
+    assert retrieved.json()["answer_tr"] == "Kaynaklar aşağıda listelenmiştir."
+    assert answered.json()["answer_tr"] == "Bir kaynak bulundu."
+    assert invalid.status_code == 422
+
+
+def test_control_center_memory_detail_handles_result_missing_and_unavailable() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    async def detail(event_id):
+        if event_id == "saved-event":
+            return SearchEvent(
+                event_id=event_id,
+                title="Saved <script>alert(1)</script> event",
+                occurred_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+                source_links=["https://example.test/source", "javascript:alert(1)"],
+                verified_facts=["A source-backed fact."],
+                stored_inferences=["A stored inference."],
+            )
+        return None
+
+    app.state.search_event_detail_callback = detail
+    with TestClient(app) as client:
+        saved = client.get("/admin/control-center/search/saved-event")
+        missing = client.get("/admin/control-center/search/missing-event")
+
+    assert saved.status_code == 200
+    assert "14.09.2026 15:00" in saved.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in saved.text
+    assert "https://example.test/source" in saved.text
+    assert "javascript:alert(1)" not in saved.text
+    assert missing.status_code == 404
+
+    async def unavailable(_event_id):
+        raise KnowledgeSearchError("search_sql_error")
+
+    app.state.search_event_detail_callback = unavailable
+    with TestClient(app) as client:
+        response = client.get("/admin/control-center/search/saved-event")
+    assert response.status_code == 503
+    assert "temporarily unavailable" in response.text
+
+
+def test_control_center_memory_view_does_not_shift_naive_timestamp() -> None:
+    aware = SearchEvent(
+        event_id="aware",
+        title="Aware",
+        occurred_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+    )
+    naive = SearchEvent(event_id="naive", title="Naive", occurred_at=datetime(2026, 9, 14, 12))
+
+    assert admin._control_center_search_event_view(aware)["occurred_at"] == "14.09.2026 15:00"
+    assert admin._control_center_search_event_view(naive)["occurred_at"] is None
 
 
 def test_briefing_template_uses_fixed_sections_and_safe_feedback_controls() -> None:

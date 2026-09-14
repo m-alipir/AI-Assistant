@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 12 implementation: complete
+- Stage 13 implementation: complete
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -80,6 +80,11 @@ Make the database the runtime source-of-truth.
   content, distinguishes saved from incomplete rows, and converts only timezone-aware timestamps
   to Istanbul time; naive legacy timestamps remain unavailable rather than receiving an assumed
   offset.
+- The Control Center Search / Memory page at `/admin/control-center/search` reuses the existing
+  deterministic bounded retrieval callback and shows compact retained event/Gmail results. Its
+  optional Ask action reuses the existing bounded synthesis callback; neither path mutates stored
+  knowledge. Result details read one compact persisted event, retain source-backed facts separate
+  from stored inferences, and render only timezone-aware timestamps in Istanbul time.
 
 ## Important Files
 
@@ -94,7 +99,8 @@ Make the database the runtime source-of-truth.
 - `app/api/admin.py`
 - `app/templates/admin_shell.html`, `app/templates/admin_control_center.html`,
   `app/templates/admin_sources.html`, `app/templates/admin_briefings.html`,
-  `app/templates/admin_briefing_detail.html`, `app/templates/admin_dashboard.html`
+  `app/templates/admin_briefing_detail.html`, `app/templates/admin_search.html`,
+  `app/templates/admin_search_detail.html`, `app/templates/admin_dashboard.html`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
@@ -119,9 +125,9 @@ after it completes, runtime catalog loads are database-only.
 
 ## Next Recommended Step
 
-No follow-on slice is authorized. Do not start production deployment automation without a new
-explicit request. Local or disposable-PostgreSQL success is not production migration/deployment
-acceptance.
+No follow-on slice is authorized. Do not start advanced Scheduler UI, AI settings, Search/Memory
+expansion, or production deployment automation without a new explicit request. Local or
+disposable-PostgreSQL success is not production migration/deployment acceptance.
 
 ## Working Notes For The Next Agent
 
@@ -303,4 +309,17 @@ acceptance.
   rendering, then the container and anonymous volume were removed.
 - Full Ruff with `--no-cache` and `git diff --check` passed.
 - No schema, provider, live source, production database, deployment, or briefing mutation was
+  added.
+
+### Stage 13 Search / Memory verification
+
+- Focused Admin/Search coverage passed 34 tests.
+- Full offline suite passed 287 tests with 6 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026`; the
+  real Search integration suite passed 3 tests, including the compact event detail query, then
+  its container and anonymous volume were removed.
+- Full Ruff with `--no-cache` and `git diff --check` passed. The local browser-server smoke could
+  not start because the configured PostgreSQL endpoint refused the connection; TestClient page and
+  endpoint coverage passed without contacting a provider.
+- No schema, provider, live source, production database, deployment, or knowledge mutation was
   added.

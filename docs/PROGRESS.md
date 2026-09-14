@@ -582,6 +582,14 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 13 Control Center Search / Memory: focused Admin/Search
+  coverage passed 34 tests; the full offline suite passed 287 tests with 6 opt-in PostgreSQL
+  skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
+  the real Search integration suite passed 3 tests, including compact event detail retrieval;
+  its container and anonymous volume were removed. Full Ruff with `--no-cache` and
+  `git diff --check` passed. The configured local PostgreSQL endpoint was unavailable for a
+  browser-server smoke, while TestClient page and endpoint coverage passed. No provider, live
+  source, production database, deployment automation, or knowledge mutation occurred.
 - 2026-09-14: Managed-source Stage 12 Control Center Briefings history/detail: focused Admin and
   briefing coverage passed 30 tests; the full offline suite passed 284 tests with 6 opt-in
   PostgreSQL skips. A uniquely named disposable pgvector PostgreSQL database migrated to
@@ -985,6 +993,14 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed the isolated Control Center Search / Memory slice in
+  `feature/db-managed-sources`. The new read-only page reuses existing deterministic retrieval
+  and optional bounded Ask callbacks, displays safe compact source/title/date snippets, and opens
+  escaped persisted-event detail views. Empty, invalid, unavailable, and missing-result states are
+  handled without copying retrieval logic into the browser. Istanbul display converts only
+  timezone-aware timestamps; naive legacy values remain unavailable rather than being shifted.
+  Existing `/admin`, Briefings, scheduler, AI settings, and main-worktree behavior remain
+  untouched.
 - 2026-09-14: Completed the isolated Control Center Briefings history and detail slice in
   `feature/db-managed-sources`. The read-only pages list the newest 50 persisted briefings with
   status and summary, render complete escaped generated content, and distinguish empty,

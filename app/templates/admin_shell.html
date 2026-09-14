@@ -9,7 +9,7 @@
   </style>
 </head>
 <body>
-  <header class="shell"><a class="brand" href="/admin/control-center">Control Center</a><nav class="nav" aria-label="Control Center"><a href="/admin/control-center" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a><a href="/admin/control-center/briefings" {% if active_page == 'briefings' %}aria-current="page"{% endif %}>Briefings</a><a href="/admin/onboarding" {% if active_page == 'onboarding' %}aria-current="page"{% endif %}>Setup</a><a href="/admin/sources/ui" {% if active_page == 'sources' %}aria-current="page"{% endif %}>Sources</a><a href="/admin">Operations</a></nav></header>
+  <header class="shell"><a class="brand" href="/admin/control-center">Control Center</a><nav class="nav" aria-label="Control Center"><a href="/admin/control-center" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a><a href="/admin/control-center/search" {% if active_page == 'search' %}aria-current="page"{% endif %}>Search / Memory</a><a href="/admin/control-center/briefings" {% if active_page == 'briefings' %}aria-current="page"{% endif %}>Briefings</a><a href="/admin/onboarding" {% if active_page == 'onboarding' %}aria-current="page"{% endif %}>Setup</a><a href="/admin/sources/ui" {% if active_page == 'sources' %}aria-current="page"{% endif %}>Sources</a><a href="/admin">Operations</a></nav></header>
   <p id="notice" class="notice" role="status" aria-live="polite"></p>
   {% block content %}{% endblock %}
 </body>
