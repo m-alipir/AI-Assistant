@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+import app.api.admin as admin
 from app.config.onboarding import SchedulerPreference
 from app.config.source_repository import (
     EnabledSourceDeleteBlocked,
@@ -272,7 +273,9 @@ def test_control_center_dashboard_is_narrow_and_never_exposes_environment_values
     assert "secret-must-not-render" not in response.text
 
 
-def test_control_center_dashboard_omits_unrelated_runtime_controls(tmp_path: Path) -> None:
+def test_control_center_dashboard_shows_safe_operational_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
         tmp_path / "models.yaml",
@@ -288,6 +291,20 @@ def test_control_center_dashboard_omits_unrelated_runtime_controls(tmp_path: Pat
         models,
         interests,
     )
+    app.state.source_repository = FakeSourceRepository(
+        [
+            _source_row(enabled=True),
+            _source_row(
+                id="source-2",
+                name="Cooling feed",
+                health_status="degraded",
+                last_error_category="rss_feed_access_error",
+                last_attempt_at="2026-09-14T08:00:00+00:00",
+                next_retry_at="2026-09-14T08:15:00+00:00",
+            ),
+        ]
+    )
+    app.state.last_run = "completed_with_errors"
     app.state.last_run_details = {
         "counts": {
             "gmail": {
@@ -323,10 +340,36 @@ def test_control_center_dashboard_omits_unrelated_runtime_controls(tmp_path: Pat
             },
         }
     }
+
+    async def details(_request):
+        return {
+            "migration": "20260914_0026",
+            "events": [],
+            "interest_rows": [],
+            "llm_recent": [],
+            "briefings": [
+                {"id": "briefing-1", "created_at": "2026-09-14", "rendered": "Safe summary"}
+            ],
+            "gmail_accounts": [],
+            "blocked_youtube": [],
+            "scheduled_runs": [],
+            "error": None,
+        }
+
+    async def metrics():
+        return {"llm_calls": 3, "llm_cost_usd": 0.12, "recent_briefings": []}
+
+    monkeypatch.setattr(admin, "_database_details", details)
+    app.state.metrics_provider = metrics
     with TestClient(app) as client:
         response = client.get("/admin/control-center")
         operations = client.get("/admin")
-    assert "Gmail" not in response.text
+    assert "completed_with_errors" in response.text
+    assert "Cooling feed" in response.text
+    assert "rss_feed_access_error" in response.text
+    assert "Safe summary" in response.text
+    assert "Provider calls" in response.text
+    assert "Gmail" in response.text
     assert "Last YouTube sync" not in response.text
     assert "Manual Run" not in response.text
     assert "Last Gmail sync" in operations.text

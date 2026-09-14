@@ -582,6 +582,14 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 11 Control Center operational dashboard: focused Admin
+  coverage passed 20 tests and the full offline suite passed 281 tests with 6 opt-in PostgreSQL
+  skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
+  passed 11 focused onboarding/source-repository tests before its container and anonymous volume
+  were removed. Full Ruff with `--no-cache` and `git diff --check` passed. Coverage proves
+  server-rendered operational status, source health/failure display, latest briefing and provider
+  usage fallbacks, and preserved `/admin` operations. No provider,
+  live source, production database, deployment automation, or main-worktree mutation occurred.
 - 2026-09-14: Managed-source Stage 10 Control Center onboarding: focused Admin/scheduler coverage
   passed 26 tests. The full offline suite passed 281 tests with 6 opt-in PostgreSQL skips. A
   uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and passed
@@ -970,6 +978,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Implemented the isolated Control Center operational dashboard in
+  `feature/db-managed-sources`. It presents database/source health, last ingestion and next
+  briefing status, source counts and recent failures, the latest briefing, Telegram/Gmail/provider
+  readiness, available provider usage, and links to Sources, setup, and Operations. It reuses the
+  existing Admin/runtime services and preserves `/admin`, `/admin/control-center`, and source
+  management behavior; no backend operational logic was copied into browser code.
 - 2026-09-14: Completed the isolated first-run Control Center onboarding flow in
   `feature/db-managed-sources`. The optional Setup page guides Telegram status/setup, Gmail
   connect-or-skip, managed source add/import, interest overrides, daily briefing schedule choice,

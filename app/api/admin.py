@@ -422,13 +422,45 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
     else:
         sources_available = True
     scheduler = getattr(request.app.state, "scheduler", None)
+    database_ready = await request.app.state.readiness_check()
+    details = await _database_details(request)
+    try:
+        metrics = await request.app.state.metrics_provider()
+    except Exception:
+        metrics = {"llm_calls": None, "llm_cost_usd": None, "recent_briefings": []}
+    failures = sorted(
+        (source for source in sources if source["last_error_category"]),
+        key=lambda source: str(source["last_attempt_at"] or ""),
+        reverse=True,
+    )[:5]
+    latest_briefing = details["briefings"][0] if details["briefings"] else None
+    source_counts = {
+        "total": len(sources),
+        "enabled": sum(item["enabled"] for item in sources),
+        "unhealthy": sum(item["health_status"] != "healthy" for item in sources),
+        "cooling_down": sum(item["next_retry_at"] is not None for item in sources),
+    }
     return {
         "request": request,
         "sources": sources,
-        "database_ready": await request.app.state.readiness_check(),
+        "database_ready": database_ready,
         "sources_available": sources_available,
-        "active_sources": sum(item["enabled"] for item in sources),
-        "disabled_sources": sum(not item["enabled"] for item in sources),
+        "active_sources": source_counts["enabled"],
+        "disabled_sources": source_counts["total"] - source_counts["enabled"],
+        "source_counts": source_counts,
+        "recent_source_failures": failures,
+        "details": details,
+        "latest_briefing": latest_briefing,
+        "provider_usage": {
+            "llm_calls": metrics.get("llm_calls"),
+            "llm_cost_usd": metrics.get("llm_cost_usd"),
+        },
+        "provider_configured": bool(getattr(request.app.state, "openrouter_configured", False)),
+        "last_run": getattr(request.app.state, "last_run", "idle"),
+        "last_run_details": getattr(request.app.state, "last_run_details", None),
+        "overall_status": "ready"
+        if database_ready and sources_available and source_counts["enabled"]
+        else "attention",
         "telegram_configured": bool(
             getattr(request.app.state, "telegram_webhook_handler", None)
             or getattr(request.app.state, "telegram_polling", None)

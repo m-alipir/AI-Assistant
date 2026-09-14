@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 10 implementation commit: pending one focused onboarding commit
+- Stage 11 implementation: complete
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -72,6 +72,9 @@ Make the database the runtime source-of-truth.
 - The optional Control Center onboarding starts at `/admin/onboarding`. It reuses the existing
   Gmail OAuth, source, and interest endpoints, keeps browser-only skip progress resumable, and
   persists only the non-secret daily scheduler preference in `control_center_settings`.
+- The Control Center dashboard at `/admin/control-center` is an operational read-only view over
+  existing Admin/runtime data: health, latest run and briefing, scheduler state, source health,
+  connection readiness, and available provider usage. It adds no source-management rules or API.
 
 ## Important Files
 
@@ -273,3 +276,14 @@ acceptance.
   removed.
 - The wizard does not render or store Telegram/Gmail/provider secrets. Telegram configuration
   remains an external protected-runtime prerequisite; Gmail remains explicitly optional.
+
+### Stage 11 operational dashboard verification
+
+- Focused Admin dashboard coverage passed 20 tests.
+- Full offline suite passed 281 tests with 6 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL container migrated to `20260914_0026`; focused
+  onboarding/source-repository persistence acceptance passed 11 tests and the container was
+  removed with its anonymous volume.
+- Full Ruff with `--no-cache` and `git diff --check` passed.
+- The dashboard uses the existing Admin/runtime services only; no new endpoint, schema, provider,
+  live source, production database, deployment, or source-management behavior was added.
