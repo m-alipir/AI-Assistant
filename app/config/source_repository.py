@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Literal
@@ -12,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config.sources import RssSourceConfig, SourceCatalog, YouTubeSourceConfig
+from app.config.sources import RssSourceConfig, SourceCatalog, SourceDefaults, YouTubeSourceConfig
 from app.ingestion.schemas import SourceStream
 
 SourceKind = Literal["rss", "youtube"]
@@ -149,11 +150,19 @@ class SourceRepository:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
 
-    async def bootstrap_yaml(self, seed: SourceCatalog) -> None:
-        """Seed an empty database; after the first row exists, database rows always win."""
+    async def bootstrap_yaml(self, seed: SourceCatalog) -> bool:
+        """Explicitly seed a pristine database once; existing rows are never changed."""
         async with self._sessions.begin() as session:
+            completed = await session.scalar(
+                text("SELECT completed_at FROM managed_source_bootstrap WHERE id FOR UPDATE")
+            )
+            if completed is not None:
+                return False
             if await session.scalar(text("SELECT 1 FROM managed_sources LIMIT 1")):
-                return
+                await session.execute(
+                    text("UPDATE managed_source_bootstrap SET completed_at = now() WHERE id")
+                )
+                return False
             for source in seed.rss:
                 await self._insert_seed(
                     session,
@@ -176,9 +185,36 @@ class SourceRepository:
                     language=source.language,
                     freshness_hours=source.freshness_hours,
                 )
+            await session.execute(
+                text(
+                    "UPDATE managed_source_bootstrap SET completed_at = now(), "
+                    "defaults = CAST(:defaults AS json) WHERE id"
+                ),
+                {"defaults": json.dumps(seed.defaults.model_dump(mode="json"))},
+            )
+        return True
 
-    async def load_catalog(self, seed: SourceCatalog) -> SourceCatalog:
+    async def needs_yaml_bootstrap(self) -> bool:
+        """Claim the explicit lifecycle or mark pre-existing database sources complete."""
+        async with self._sessions.begin() as session:
+            completed = await session.scalar(
+                text("SELECT completed_at FROM managed_source_bootstrap WHERE id FOR UPDATE")
+            )
+            if completed is not None:
+                return False
+            if not await session.scalar(text("SELECT 1 FROM managed_sources LIMIT 1")):
+                return True
+            await session.execute(
+                text("UPDATE managed_source_bootstrap SET completed_at = now() WHERE id")
+            )
+            return False
+
+    async def load_catalog(self) -> SourceCatalog:
+        """Load runtime sources exclusively from the database."""
         async with self._sessions() as session:
+            defaults = await session.scalar(
+                text("SELECT defaults FROM managed_source_bootstrap WHERE id")
+            )
             rows = (
                 (
                     await session.execute(
@@ -191,8 +227,9 @@ class SourceRepository:
                 .mappings()
                 .all()
             )
+        default_values = json.loads(defaults) if isinstance(defaults, str) else defaults or {}
         return SourceCatalog(
-            defaults=seed.defaults,
+            defaults=SourceDefaults.model_validate(default_values),
             rss=[
                 RssSourceConfig(
                     name=str(row["name"]),

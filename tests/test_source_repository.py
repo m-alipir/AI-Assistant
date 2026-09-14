@@ -16,7 +16,7 @@ from app.config.source_repository import (
     SourceRepository,
     canonicalize_endpoint,
 )
-from app.config.sources import RssSourceConfig
+from app.config.sources import RssSourceConfig, SourceCatalog, SourceDefaults
 from app.ingestion.schemas import SourceStream
 
 
@@ -97,7 +97,7 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
     try:
         async with engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260913_0024"
+        assert revision == "20260914_0025"
 
         created = await repository.create(
             ManagedSourceCreate(
@@ -162,4 +162,73 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
                 await connection.execute(
                     text("DELETE FROM managed_sources WHERE id = :id"), {"id": source_id}
                 )
+        await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not DATABASE_URL,
+    reason="set MANAGED_SOURCE_INTEGRATION_DATABASE_URL to a disposable migrated PostgreSQL DB",
+)
+@pytest.mark.asyncio
+async def test_yaml_bootstrap_is_one_time_and_runtime_catalog_is_database_only() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    repository = SourceRepository(sessions)
+    suffix = uuid.uuid4().hex
+    first_endpoint = f"https://example.test/{suffix}/first.xml"
+    duplicate_endpoint = first_endpoint + "#ignored"
+    second_endpoint = f"https://example.test/{suffix}/second.xml"
+    existing_endpoint = f"https://example.test/{suffix}/existing.xml"
+    try:
+        assert not await repository.list(), "use a disposable empty integration database"
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE managed_source_bootstrap SET completed_at = NULL WHERE id")
+            )
+
+        seed = SourceCatalog(
+            defaults=SourceDefaults(news_freshness_hours=12),
+            rss=[
+                RssSourceConfig(name="First", url=first_endpoint, stream=SourceStream.TECH),
+                RssSourceConfig(name="Duplicate", url=duplicate_endpoint, stream=SourceStream.TECH),
+            ]
+        )
+        assert await repository.bootstrap_yaml(seed)
+        assert not await repository.needs_yaml_bootstrap()
+        catalog = await repository.load_catalog()
+        assert [source.url for source in catalog.rss] == [first_endpoint]
+        assert catalog.defaults.news_freshness_hours == 12
+
+        changed_seed = SourceCatalog(
+            rss=[RssSourceConfig(name="Second", url=second_endpoint, stream=SourceStream.WORLD)]
+        )
+        assert not await repository.bootstrap_yaml(changed_seed)
+        assert [source.url for source in (await repository.load_catalog()).rss] == [first_endpoint]
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM managed_sources WHERE canonical_endpoint = :endpoint"),
+                {"endpoint": first_endpoint},
+            )
+            await connection.execute(
+                text("UPDATE managed_source_bootstrap SET completed_at = NULL WHERE id")
+            )
+        await repository.create(
+            ManagedSourceCreate(kind="rss", name="Existing", endpoint=existing_endpoint)
+        )
+        assert not await repository.bootstrap_yaml(seed)
+        assert not await repository.needs_yaml_bootstrap()
+        catalog = await repository.load_catalog()
+        assert [source.url for source in catalog.rss] == [existing_endpoint]
+    finally:
+        async with engine.begin() as connection:
+            for endpoint in (first_endpoint, second_endpoint, existing_endpoint):
+                await connection.execute(
+                    text("DELETE FROM managed_sources WHERE canonical_endpoint = :endpoint"),
+                    {"endpoint": endpoint},
+                )
+            await connection.execute(
+                text("UPDATE managed_source_bootstrap SET completed_at = NULL WHERE id")
+            )
         await engine.dispose()

@@ -101,6 +101,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
+        if active_settings.managed_sources_bootstrap:
+            repository = getattr(lifespan_app.state, "source_repository", None)
+            if repository is None:
+                raise RuntimeError("managed source bootstrap requires a database")
+            if await repository.needs_yaml_bootstrap():
+                seed = load_source_catalog(active_settings.admin_sources_path)
+                await repository.bootstrap_yaml(seed)
         scheduler = getattr(lifespan_app.state, "scheduler", None)
         retention_scheduler = getattr(lifespan_app.state, "retention_scheduler", None)
         if scheduler:
@@ -576,9 +583,7 @@ def create_app(
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
-            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
-            await source_repository.bootstrap_yaml(yaml_seed)
-            catalog = await source_repository.load_catalog(yaml_seed)
+            catalog = await source_repository.load_catalog()
             job = RssRuntimeJob(
                 catalog,
                 ExtractionFlow(router),
@@ -951,9 +956,7 @@ def create_app(
                 return {"status": "retry_not_available"}
             source_name = record.get("source_name")
             video_url = record.get("canonical_url")
-            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
-            await source_repository.bootstrap_yaml(yaml_seed)
-            catalog = await source_repository.load_catalog(yaml_seed)
+            catalog = await source_repository.load_catalog()
             source = next(
                 (entry for entry in catalog.youtube if entry.name == source_name and entry.enabled),
                 None,
@@ -1034,9 +1037,7 @@ def create_app(
             record = await claim_blocked_item(content_hash, "rss")
             if record is None:
                 return {"status": "retry_not_available"}
-            yaml_seed = load_source_catalog(active_settings.admin_sources_path)
-            await source_repository.bootstrap_yaml(yaml_seed)
-            catalog = await source_repository.load_catalog(yaml_seed)
+            catalog = await source_repository.load_catalog()
             source_name = record.get("source_name")
             source = next(
                 (entry for entry in catalog.rss if entry.name == source_name and entry.enabled),

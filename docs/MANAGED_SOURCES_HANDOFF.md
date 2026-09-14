@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 8 implementation commit: `44afab6 feat: add managed sources control center`
+- Stage 9 implementation commit: pending one focused bootstrap-lifecycle commit
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -63,12 +63,16 @@ Make the database the runtime source-of-truth.
 - The focused Control Center starts at `/admin/control-center`; `/admin/sources/ui` is its Sources
   page. The pre-existing broad operational page remains available at `/admin`. Do not remove or
   silently change those existing operations while implementing later Control Center slices.
+- Migration `20260914_0025_managed_source_bootstrap` records one completed bootstrap lifecycle.
+  `MANAGED_SOURCES_BOOTSTRAP=true` is an explicit startup-only development fixture path: it seeds
+  only a pristine database, marks an existing database complete without changing its rows, and
+  never rereads YAML after completion. It persists validated source freshness defaults with an
+  empty-DB seed; pre-existing databases use built-in defaults. Scheduler, ingestion, and both
+  retry paths load only the database catalog.
 
 ## Not Finished
 
 - Onboarding is not implemented.
-- YAML is still read as a bootstrap seed on every ingestion/retry runtime path; its lifecycle is
-  not yet explicit example/bootstrap-only behavior.
 
 ## Important Files
 
@@ -100,28 +104,15 @@ and timestamps. It has a unique `(kind, canonical_endpoint)` constraint.
 
 ## Runtime Flow
 
-Scheduler/ingestion and retry paths read the DB catalog after attempting an empty-DB YAML seed.
 Admin, Telegram, scheduler/ingestion, and retry source reads or mutations use the database
-repository. YAML remains only in the existing empty-database bootstrap call, but that bootstrap is
-still attempted on every ingestion/retry catalog load and needs an explicit lifecycle boundary.
+repository. YAML is loaded only by the opt-in startup bootstrap while its lifecycle is pending;
+after it completes, runtime catalog loads are database-only.
 
 ## Next Recommended Step
 
-Implement the explicit YAML bootstrap lifecycle as the next isolated slice.
-
-- Make YAML an explicit one-time bootstrap/development-fixture path instead of attempting it on
-  every ingestion and retry catalog load.
-- Keep `SourceRepository` and the database as the only runtime source-of-truth after bootstrap.
-- Preserve current Admin, Telegram, Control Center, source import/export, canonicalization,
-  health/cooldown, and resilient ingestion behavior.
-- Define deterministic behavior for an empty database, an already-seeded database, a missing or
-  invalid bootstrap fixture, and repository/database unavailability.
-- Add focused repository/runtime/bootstrap tests, then run the full offline suite, Ruff,
-  `git diff --check`, and the opt-in disposable PostgreSQL acceptance test when Docker is available.
-- Update this handoff and `docs/PROGRESS.md`, and create one focused commit if clean.
-
-Do not start onboarding or production deployment without a new explicit request. Do not infer
-that local or disposable-PostgreSQL success means production migration/deployment acceptance.
+No follow-on source-management slice is authorized. Do not start onboarding or production
+deployment without a new explicit request. Local or disposable-PostgreSQL success is not
+production migration/deployment acceptance.
 
 ## Working Notes For The Next Agent
 
@@ -260,3 +251,15 @@ that local or disposable-PostgreSQL success means production migration/deploymen
   anonymous volume were removed.
 - Full Ruff with `--no-cache` and `git diff --check` passed; no separate frontend package/checker
   exists.
+
+### Stage 9 one-time YAML bootstrap verification
+
+- Focused bootstrap/repository/runtime suite: 30 passed, 2 opt-in PostgreSQL tests skipped.
+- Full offline suite: 279 passed, 5 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL container migrated to `20260914_0025`; the
+  complete managed-source repository suite passed 10 tests and the container/anonymous volume were
+  removed.
+- Coverage includes empty-DB seeding, repeat idempotency, canonical seed duplicates, existing-row
+  preservation, non-default seed defaults, startup fixture loading only while explicitly pending,
+  and DB-only normal runtime.
+- Full Ruff with `--no-cache` and `git diff --check` passed after documentation changes.

@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
 observation continues independently)
-**Last updated:** 2026-09-13
+**Last updated:** 2026-09-14
 
 ## Rules for Codex
 - Read this file before every task.
@@ -582,6 +582,15 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 9 one-time YAML bootstrap lifecycle: focused bootstrap,
+  repository, RSS, and YouTube runtime coverage passed 30 tests with 2 opt-in PostgreSQL skips.
+  The full offline suite passed 279 tests with 5 opt-in PostgreSQL skips. A uniquely named
+  disposable pgvector PostgreSQL database migrated to `20260914_0025` and passed all 10
+  managed-source repository tests; its container and anonymous volume were removed. Coverage
+  proves explicit empty-DB bootstrap, repeated/idempotent and canonical duplicate handling,
+  non-default seed-default persistence, pre-existing-row preservation, and that completed/default
+  startup does not load YAML while runtime/retry catalog reads remain database-only. No provider,
+  live source, production database, deployment, onboarding, or main-worktree mutation occurred.
 - 2026-09-14: Stage 8 Control Center validation: focused Control Center/import/export suite passed
   61 tests. The complete offline suite passed 278 tests with 4 opt-in PostgreSQL tests skipped;
   full Ruff with `--no-cache` and `git diff --check` passed. A uniquely named disposable pgvector
@@ -954,6 +963,14 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed the isolated managed-source one-time YAML bootstrap lifecycle in
+  `feature/db-managed-sources`. `MANAGED_SOURCES_BOOTSTRAP` is default-off and is checked only at
+  startup; `20260914_0025` records lifecycle completion. An explicit bootstrap seeds only an empty
+  database, persists validated seed defaults, recognizes existing sources without altering them,
+  and never rereads YAML after completion. Scheduler/ingestion and blocked RSS/YouTube retries now
+  load only the database catalog. Added focused lifecycle and PostgreSQL acceptance coverage;
+  onboarding, deployment, source-management UI/API behavior, and the main worktree remain
+  untouched.
 - 2026-09-14: Refreshed the managed-source continuation handoff after Stage 8. The next isolated
   slice is the explicit one-time YAML bootstrap/development-fixture lifecycle; onboarding and
   production deployment still require a separate explicit request. Recorded the clean baseline

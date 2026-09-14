@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     admin_sources_path: Path = Field(
         default=Path("config/sources.example.yaml"), validation_alias="ADMIN_SOURCES_PATH"
     )
+    managed_sources_bootstrap: bool = Field(
+        default=False, validation_alias="MANAGED_SOURCES_BOOTSTRAP"
+    )
     admin_models_path: Path = Field(
         default=Path("config/models.example.yaml"), validation_alias="ADMIN_MODELS_PATH"
     )
