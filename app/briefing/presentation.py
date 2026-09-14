@@ -72,6 +72,9 @@ def safe_links(values: object) -> list[str]:
         parsed = urlparse(candidate)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             continue
+        host = parsed.hostname.casefold().rstrip(".")
+        if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+            continue
         try:
             address = ipaddress.ip_address(parsed.hostname)
         except ValueError:

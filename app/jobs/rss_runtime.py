@@ -1,5 +1,6 @@
 """The small RSS-only runtime path used by the local admin manual trigger."""
 
+import asyncio
 import json
 import math
 import uuid
@@ -19,6 +20,13 @@ from app.correlation.runtime import CorrelationRuntime, correlation_content_hash
 from app.dedup.cache import InMemoryDedupCache
 from app.ingestion.pipeline import DeterministicIngestionPipeline
 from app.ingestion.schemas import SourceItem
+from app.ingestion.source_health import (
+    SourceFailure,
+    SourceReady,
+    SourceSuccess,
+    SourceValidators,
+    SourceValidatorsSave,
+)
 from app.knowledge.clustering import ClusterCandidate, find_cluster
 from app.llm.core import BudgetExceeded, ExtractionFlow, ProviderBusy, Router
 
@@ -26,6 +34,7 @@ from app.llm.core import BudgetExceeded, ExtractionFlow, ProviderBusy, Router
 @dataclass
 class RunCounts:
     fetched: int = 0
+    not_modified: int = 0
     stale: int = 0
     future_filtered: int = 0
     duplicates: int = 0
@@ -48,6 +57,7 @@ class RunCounts:
             "status": "completed" if not self.errors else "completed_with_errors",
             "counts": {
                 "fetched": self.fetched,
+                "not_modified": self.not_modified,
                 "stale": self.stale,
                 "future_filtered": self.future_filtered,
                 "duplicates": self.duplicates,
@@ -109,6 +119,12 @@ class RssRuntimeJob:
         has_pending_briefing: HasPendingBriefing | None = None,
         correlate_event: CorrelateEvent | None = None,
         article_fetcher: ArticleFetcher | None = None,
+        source_ready: SourceReady | None = None,
+        source_succeeded: SourceSuccess | None = None,
+        source_failed: SourceFailure | None = None,
+        source_validators: SourceValidators | None = None,
+        save_source_validators: SourceValidatorsSave | None = None,
+        max_concurrent_fetches: int = 3,
     ) -> None:
         self._catalog = catalog
         self._flow = flow
@@ -123,6 +139,12 @@ class RssRuntimeJob:
         self._has_pending_briefing = has_pending_briefing or _no_pending_briefing
         self._correlate_event = correlate_event or _ignore_correlation
         self._article_fetcher = article_fetcher or ArticleFetcher()
+        self._source_ready = source_ready or _source_ready
+        self._source_succeeded = source_succeeded or _source_succeeded
+        self._source_failed = source_failed or _source_failed
+        self._source_validators = source_validators or _source_validators
+        self._save_source_validators = save_source_validators or _save_source_validators
+        self._max_concurrent_fetches = max(1, max_concurrent_fetches)
 
     async def run(
         self,
@@ -242,19 +264,66 @@ class RssRuntimeJob:
         if retry_item is not None:
             await process(retry_item, is_retry=True)
         else:
-            for source in self._catalog.rss:
-                if not source.enabled:
+            semaphore = asyncio.Semaphore(self._max_concurrent_fetches)
+            fetched_at = self._clock()
+
+            async def collect_source(
+                source: object,
+            ) -> tuple[object, list[SourceItem] | None, Exception | None, bool]:
+                async with semaphore:
+                    try:
+                        ready = await self._source_ready("rss", source.name)  # type: ignore[attr-defined]
+                    except Exception:
+                        ready = True
+                    if not ready:
+                        return source, None, None, False
+                    try:
+                        etag, last_modified = await self._source_validators("rss", source.name)  # type: ignore[attr-defined]
+                        conditional = getattr(self._collector, "collect_conditional", None)
+                        if conditional is None:
+                            items = await self._collector.collect(source, fetched_at=fetched_at)  # type: ignore[arg-type]
+                            not_modified = False
+                        else:
+                            result = await conditional(source, etag, last_modified, fetched_at)  # type: ignore[misc]
+                            await self._save_source_validators(
+                                "rss", source.name, result.etag, result.last_modified
+                            )  # type: ignore[attr-defined]
+                            items, not_modified = result.items or [], result.not_modified
+                        try:
+                            strategy = "rss_not_modified" if not_modified else "rss_metadata"
+                            await self._source_succeeded(
+                                "rss", source.name, strategy
+                            )  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        return source, items, None, not_modified
+                    except Exception as error:
+                        try:
+                            await self._source_failed("rss", source.name, error)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        return source, None, error, False
+
+            collected = await asyncio.gather(
+                *(collect_source(source) for source in self._catalog.rss if source.enabled)
+            )
+            for source, items, error, not_modified in collected:
+                name = source.name  # type: ignore[attr-defined]
+                if items is None:
+                    if error is None:
+                        counts.errors.append(f"{name}: source_cooldown")
+                    else:
+                        counts.failed += 1
+                        counts.errors.append(f"{name}: source_fetch_error")
                     continue
-                try:
-                    items = await self._collector.collect(source, fetched_at=self._clock())
-                    counts.fetched += len(items)
-                    deterministic = await pipeline.process(items, process)
-                    counts.stale += len(deterministic.stale)
-                    counts.future_filtered += len(deterministic.future_quarantined)
-                    counts.duplicates += len(deterministic.duplicates)
-                except Exception as error:
-                    counts.failed += 1
-                    counts.errors.append(f"{source.name}: {type(error).__name__}")
+                if not_modified:
+                    counts.not_modified += 1
+                    continue
+                counts.fetched += len(items)
+                deterministic = await pipeline.process(items, process)
+                counts.stale += len(deterministic.stale)
+                counts.future_filtered += len(deterministic.future_quarantined)
+                counts.duplicates += len(deterministic.duplicates)
 
         if briefing_items or await self._has_pending_briefing():
             try:
@@ -288,6 +357,28 @@ async def _ignore_refresh_blocked_item(item: SourceItem, language: str | None) -
 
 async def _no_pending_briefing() -> bool:
     return False
+
+
+async def _source_ready(kind: str, name: str) -> bool:
+    return True
+
+
+async def _source_succeeded(kind: str, name: str, strategy: str) -> None:
+    return None
+
+
+async def _source_failed(kind: str, name: str, error: BaseException) -> None:
+    return None
+
+
+async def _source_validators(kind: str, name: str) -> tuple[str | None, str | None]:
+    return None, None
+
+
+async def _save_source_validators(
+    kind: str, name: str, etag: str | None, last_modified: str | None
+) -> None:
+    return None
 
 
 async def _ignore_correlation(

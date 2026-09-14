@@ -72,7 +72,7 @@ def test_caption_selection_uses_configured_language_family_before_caption_type()
     )
     assert select_preferred_track([tr_automatic, en_human], "tr") == tr_automatic
     assert select_preferred_track([tr_regional_human, en_human], "en") == en_human
-    assert select_preferred_track([en_human], "tr") is None
+    assert select_preferred_track([en_human], "tr") == en_human
 
 
 def test_ytdlp_wrapper_requests_captions_only_without_downloading_media(monkeypatch) -> None:
@@ -127,11 +127,13 @@ def test_yt_dlp_rejects_non_youtube_and_malformed_video_urls_before_invocation()
         fetcher._fetch_subtitles_sync("https://www.youtube.com/watch?v=short", ("en",))
 
 
-def test_configured_caption_language_requests_only_its_known_regional_family() -> None:
+def test_configured_caption_language_includes_turkish_english_fallbacks() -> None:
     legacy = ("en", "en-US", "tr", "tr-TR")
 
     assert _subtitle_languages_for(None, legacy) == legacy
-    assert _subtitle_languages_for("tr", legacy) == ("tr", "tr-TR", "tr-CY")
+    assert _subtitle_languages_for("tr", legacy) == (
+        "tr", "tr-TR", "tr-CY", "en", "en-US", "en-GB", "en-AU", "en-CA", "en-IN", "en-NZ"
+    )
     assert _subtitle_languages_for("en", legacy) == (
         "en",
         "en-US",
@@ -140,4 +142,7 @@ def test_configured_caption_language_requests_only_its_known_regional_family() -
         "en-CA",
         "en-IN",
         "en-NZ",
+        "tr",
+        "tr-TR",
+        "tr-CY",
     )

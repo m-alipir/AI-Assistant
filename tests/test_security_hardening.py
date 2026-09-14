@@ -10,12 +10,14 @@ import yaml
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.briefing.presentation import safe_links
 from app.collectors.rss import _validate_connected_peer, _validate_remote_url
 from app.config.settings import Settings
 from app.db.session import create_engine
 from app.main import create_app
-from app.observability.logging import JsonFormatter
+from app.observability.logging import JsonFormatter, bind_request_id, reset_request_id
 from app.providers.contracts import ProviderError
+from app.security import ProcessRateLimiter
 
 PROJECT_ROOT = Path(__file__).parents[1]
 
@@ -122,6 +124,27 @@ def test_admin_failed_authentication_is_process_limited() -> None:
         assert client.get("/admin").status_code == 429
 
 
+def test_security_rejection_has_no_store_headers_and_correlation_id() -> None:
+    app = create_app(
+        settings=_production_settings(),
+        readiness_check=lambda: __import__("asyncio").sleep(0, result=True),
+    )
+    with TestClient(app, base_url="https://admin.example.test") as client:
+        response = client.get("/admin")
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-request-id"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_bounds_distinct_client_keys() -> None:
+    limiter = ProcessRateLimiter(max_requests=1, max_keys=8)
+    for index in range(32):
+        assert await limiter.allow(f"client-{index}")
+    assert len(limiter._timestamps) == 8
+
+
 def test_production_configuration_fails_closed_without_admin_protection() -> None:
     with pytest.raises(ValidationError, match="ADMIN_AUTH_ENABLED"):
         Settings(_env_file=None, app_env="production")
@@ -209,6 +232,17 @@ def test_outbound_feed_validation_rejects_http_and_private_networks(monkeypatch)
         )
 
 
+def test_presentation_links_reject_local_or_credential_bearing_targets() -> None:
+    assert safe_links(
+        [
+            "https://localhost:8443/private",
+            "https://metrics.internal/",
+            "https://operator:secret@example.test/",
+            "https://127.0.0.1/private",
+        ]
+    ) == []
+
+
 def test_connected_peer_validation_blocks_dns_rebinding_destination() -> None:
     class NetworkStream:
         def get_extra_info(self, name: str):
@@ -246,6 +280,18 @@ def test_log_formatter_redacts_postgres_password_without_configured_secret() -> 
     rendered = formatter.format(record)
     assert "database-secret" not in rendered
     assert "runtime:[REDACTED]@" in rendered
+
+
+def test_log_formatter_includes_server_bound_diagnostic_context() -> None:
+    token = bind_request_id("safe-request-id")
+    try:
+        record = logging.LogRecord("test", logging.WARNING, __file__, 1, "safe event", (), None)
+        record.diagnostic_category = "safe_category"  # type: ignore[attr-defined]
+        rendered = JsonFormatter().format(record)
+    finally:
+        reset_request_id(token)
+    assert '"request_id": "safe-request-id"' in rendered
+    assert '"diagnostic_category": "safe_category"' in rendered
 
 
 def test_production_secret_file_must_be_absolute_and_outside_workspace() -> None:

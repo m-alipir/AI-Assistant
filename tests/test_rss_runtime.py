@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ import pytest
 
 from app.briefing.core import BriefingItem
 from app.collectors.article import ArticleContent
-from app.collectors.rss import RssCollector
+from app.collectors.rss import ConditionalFeedResult, RssCollector
 from app.config.sources import RssSourceConfig, SourceCatalog
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.jobs.rss_runtime import BriefingRenderError, RssRuntimeJob, database_persistence
@@ -53,6 +54,78 @@ class FakeFlow:
 
 
 @pytest.mark.asyncio
+async def test_rss_metadata_fetches_are_bounded_and_processing_stays_safe() -> None:
+    class DelayedCollector:
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak = 0
+
+        async def collect(self, source, fetched_at):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            await asyncio.sleep(0)
+            self.active -= 1
+            return []
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("empty fixture feeds must not persist events")
+
+    async def persist_briefing(items) -> None:
+        raise AssertionError("empty fixture feeds must not render a briefing")
+
+    sources = [
+        RssSourceConfig(
+            name=f"Fixture {index}",
+            url=f"https://example.test/{index}.xml",
+            stream=SourceStream.TECH,
+            enabled=True,
+        )
+        for index in range(3)
+    ]
+    collector = DelayedCollector()
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=sources),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        collector=collector,
+        max_concurrent_fetches=2,
+    ).run()
+
+    assert collector.peak == 2
+    assert result["counts"]["fetched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_rss_not_modified_skips_parse_and_downstream_work() -> None:
+    class NotModifiedCollector:
+        async def collect_conditional(self, source, etag, last_modified, fetched_at):
+            return ConditionalFeedResult(None, None, None, not_modified=True)
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("304 response must not reach persistence")
+
+    async def persist_briefing(items) -> None:
+        raise AssertionError("304 response must not create a briefing")
+
+    source = RssSourceConfig(
+        name="Conditional fixture",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+    )
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        collector=NotModifiedCollector(),
+    ).run()
+
+    assert result["counts"]["not_modified"] == 1
+    assert result["counts"]["llm_calls"] == 0
+
+@pytest.mark.asyncio
 async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing() -> None:
     source = RssSourceConfig(
         name="Fixture RSS",
@@ -92,6 +165,7 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
     assert result["status"] == "completed"
     assert result["counts"] == {
         "fetched": 4,
+        "not_modified": 0,
         "stale": 1,
         "future_filtered": 1,
         "duplicates": 1,

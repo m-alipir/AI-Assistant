@@ -266,6 +266,16 @@ def test_dashboard_source_and_model_actions_persist(tmp_path: Path):
     app.state.models_path = models
     app.state.interests_path = interests
     with TestClient(app) as client:
+        rejected = client.post(
+            "/admin/ui/sources",
+            json={
+                "kind": "rss",
+                "name": "Credential-bearing Feed",
+                "endpoint": "https://operator:secret@example.test/feed.xml",
+                "stream": "tech",
+            },
+        )
+        assert rejected.status_code == 422
         added = client.post(
             "/admin/ui/sources",
             json={

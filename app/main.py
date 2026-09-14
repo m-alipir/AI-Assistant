@@ -34,6 +34,7 @@ from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
+from app.config.runtime_sources import SourceControlError, add_source, disable_source, list_sources
 from app.config.settings import Settings, get_settings
 from app.config.sources import SourceCatalog, YouTubeSourceConfig, load_source_catalog
 from app.db.session import check_database_ready, create_engine, create_session_factory
@@ -41,6 +42,7 @@ from app.email.core import TokenCipher
 from app.email.gmail_api import GmailApiClient
 from app.email.oauth import GmailOAuth
 from app.ingestion.schemas import SourceItem, SourceKind, TimestampConfidence
+from app.ingestion.source_health import database_source_health
 from app.jobs.gmail_runtime import GmailAccountRecord, GmailRuntimeJob
 from app.jobs.retention import RetentionJob, RetentionScheduler
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
@@ -71,7 +73,7 @@ from app.notifications.core import (
     notification_key,
 )
 from app.notifications.ntfy import NtfyNotifier
-from app.observability.logging import configure_logging
+from app.observability.logging import bind_request_id, configure_logging, reset_request_id
 from app.security import ProcessRateLimiter, opaque_client_key
 from app.telegram.api import router as telegram_router
 from app.telegram.core import TelegramBotClient
@@ -126,52 +128,69 @@ def create_app(
     async def protect_admin_and_add_security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         """Apply production-only access control, CSRF origin checks, and browser hardening."""
         request.state.csp_nonce = secrets.token_urlsafe(18)
+        request_id = secrets.token_urlsafe(12)
+        request.state.request_id = request_id
+        request_context = bind_request_id(request_id)
         is_admin = request.url.path == "/admin" or request.url.path.startswith("/admin/")
         is_agent_api = request.url.path.startswith("/api/v1/")
-        if is_admin and active_settings.admin_auth_enabled:
-            if not _admin_credentials_valid(request, active_settings):
-                client_key = opaque_client_key(request.client.host if request.client else None)
-                if not await app.state.admin_auth_rate_limiter.allow(client_key):
-                    return PlainTextResponse("Too many authentication attempts.", status_code=429)
-                return PlainTextResponse(
-                    "Admin authentication required.",
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="Personal Intelligence Admin"'},
-                )
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _same_admin_origin(
-                request, active_settings
-            ):
-                return PlainTextResponse("Invalid admin request origin.", status_code=403)
-        if active_settings.force_https and request.url.path not in {"/health", "/ready"}:
-            if not _request_is_https(request, active_settings):
-                origin = urlsplit(active_settings.admin_public_origin)
-                secure_url = urlunsplit(
-                    (origin.scheme, origin.netloc, request.url.path, request.url.query, "")
-                )
-                return RedirectResponse(secure_url, status_code=307)
-        response: Response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Permissions-Policy", "camera=(), geolocation=(), microphone=()"
-        )
-        response.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
-            "img-src 'self' data: https:; connect-src 'self'; "
-            f"script-src 'self' 'nonce-{request.state.csp_nonce}'; "
-            f"style-src 'self' 'nonce-{request.state.csp_nonce}'",
-        )
-        if is_admin or is_agent_api:
-            response.headers.setdefault("Cache-Control", "no-store")
-        if is_agent_api:
-            response.headers.setdefault("Vary", "Authorization")
-        if active_settings.force_https:
+        def finalize(response: Response) -> Response:
+            response.headers.setdefault("X-Request-ID", request_id)
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("X-Frame-Options", "DENY")
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault(
-                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+                "Permissions-Policy", "camera=(), geolocation=(), microphone=()"
             )
-        return response
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
+                "img-src 'self' data: https:; connect-src 'self'; "
+                f"script-src 'self' 'nonce-{request.state.csp_nonce}'; "
+                f"style-src 'self' 'nonce-{request.state.csp_nonce}'",
+            )
+            if is_admin or is_agent_api:
+                response.headers.setdefault("Cache-Control", "no-store")
+            if is_agent_api:
+                response.headers.setdefault("Vary", "Authorization")
+            if active_settings.force_https:
+                response.headers.setdefault(
+                    "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+                )
+            return response
+
+        try:
+            if is_admin and active_settings.admin_auth_enabled:
+                if not _admin_credentials_valid(request, active_settings):
+                    client_key = opaque_client_key(request.client.host if request.client else None)
+                    if not await app.state.admin_auth_rate_limiter.allow(client_key):
+                        return finalize(
+                            PlainTextResponse("Too many authentication attempts.", status_code=429)
+                        )
+                    return finalize(
+                        PlainTextResponse(
+                            "Admin authentication required.",
+                            status_code=401,
+                            headers={
+                                "WWW-Authenticate": 'Basic realm="Personal Intelligence Admin"'
+                            },
+                        )
+                    )
+                if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _same_admin_origin(
+                    request, active_settings
+                ):
+                    return finalize(
+                        PlainTextResponse("Invalid admin request origin.", status_code=403)
+                    )
+            if active_settings.force_https and request.url.path not in {"/health", "/ready"}:
+                if not _request_is_https(request, active_settings):
+                    origin = urlsplit(active_settings.admin_public_origin)
+                    secure_url = urlunsplit(
+                        (origin.scheme, origin.netloc, request.url.path, request.url.query, "")
+                    )
+                    return finalize(RedirectResponse(secure_url, status_code=307))
+            return finalize(await call_next(request))
+        finally:
+            reset_request_id(request_context)
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=active_settings.allowed_host_list)
 
@@ -282,6 +301,13 @@ def create_app(
             has_pending_briefing,
             correlate_event,
         ) = database_persistence(sessions)
+        (
+            source_ready,
+            source_succeeded,
+            source_failed,
+            source_validators,
+            save_source_validators,
+        ) = database_source_health(sessions)
         provider_coordinator = ProviderCallCoordinator()
         app.state.provider_coordinator = provider_coordinator
         notification_dispatchers = []
@@ -599,6 +625,12 @@ def create_app(
                     active_settings.allow_private_source_urls,
                     active_settings.allow_insecure_source_urls,
                 ),
+                source_ready=source_ready,
+                source_succeeded=source_succeeded,
+                source_failed=source_failed,
+                source_validators=source_validators,
+                save_source_validators=save_source_validators,
+                max_concurrent_fetches=active_settings.rss_max_concurrent_fetches,
             )
             gmail_job = GmailRuntimeJob(
                 gmail_accounts,
@@ -916,12 +948,135 @@ def create_app(
         async def telegram_status() -> dict[str, object]:
             ready = await readiness_check()
             last_run = str(getattr(app.state, "last_run", "idle"))[:64]
+            scheduler = getattr(app.state, "scheduler", None)
+            scheduler_state = scheduler.state if scheduler else None
+            sources = list_sources(active_settings.admin_sources_path)
+            active_sources = sum(bool(source["enabled"]) for source in sources)
+            async with sessions() as session:
+                last_briefing = await session.scalar(
+                    text("SELECT created_at FROM briefings ORDER BY created_at DESC LIMIT 1")
+                )
+                last_schedule = (
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT completed_at, status FROM scheduled_runs "
+                                "WHERE completed_at IS NOT NULL "
+                                "ORDER BY run_date DESC LIMIT 1"
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+            scheduled_at = "henüz yok"
+            if last_schedule is not None:
+                scheduled_at = f"{last_schedule['completed_at']} ({last_schedule['status']})"
+            current_schedule_error = getattr(scheduler_state, "last_error", None)
+            warning = current_schedule_error or (
+                "son_zamanlanmış_çalışma_başarısız"
+                if last_schedule is not None and last_schedule["status"] == "failed"
+                else None
+            )
+            warning_line = f"\nUyarı: {warning}" if warning else ""
             return {
                 "text": (
                     f"Sistem: {'hazır' if ready else 'geçici olarak hazır değil'}\n"
-                    f"Son işlem: {last_run}"
+                    f"Son işlem: {last_run}\n"
+                    f"Son zamanlanmış çalışma: {scheduled_at}\n"
+                    f"Son özet: {last_briefing or 'henüz yok'}\n"
+                    f"Aktif kaynak: {active_sources}/{len(sources)}{warning_line}"
                 )
             }
+
+        async def telegram_history(limit: int) -> list[dict[str, object]]:
+            page = await agent_list_briefings(limit, None)
+            rows = page.get("items")
+            return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+        async def telegram_sources() -> str:
+            rows = list_sources(active_settings.admin_sources_path)
+            if not rows:
+                return "Henüz takip edilen kaynak yok."
+            lines = ["Takip edilen kaynaklar"]
+            for row in rows[:30]:
+                state = "aktif" if row["enabled"] else "pasif"
+                lines.append(f"- {row['id']} · {row['kind']} · {row['name']} ({state})")
+            return "\n".join(lines)
+
+        async def telegram_add_source(kind: str, endpoint: str, name: str) -> str:
+            try:
+                source = add_source(active_settings.admin_sources_path, kind, endpoint, name)
+            except SourceControlError as error:
+                return str(error)
+            return f"{source['name']} eklendi ve aktif edildi. Kimlik: {source['id']}"
+
+        async def telegram_disable_source(source_id: str) -> str:
+            try:
+                name = disable_source(active_settings.admin_sources_path, source_id)
+            except SourceControlError as error:
+                return str(error)
+            return f"{name} devre dışı bırakıldı. İsterseniz daha sonra tekrar ekleyebilirsiniz."
+
+        def _telegram_subject(value: str) -> str | None:
+            subject = " ".join(value.split())
+            if not subject or len(subject) > 128 or any(ord(char) < 32 for char in subject):
+                return None
+            return subject
+
+        async def telegram_interests() -> str:
+            async with sessions() as session:
+                rows = (
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT subject, base, explicit, adaptive FROM interest_profile "
+                                "WHERE base <> 0 OR explicit <> 0 OR adaptive <> 0 "
+                                "ORDER BY (base + explicit + adaptive) DESC, subject LIMIT 20"
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            if not rows:
+                return "Henüz kaydedilmiş ilgi alanı yok. /ilgi_ekle <konu> ile ekleyin."
+            return "\n".join(
+                ["İlgi alanları"]
+                + [f"- {row['subject']}" for row in rows]
+            )
+
+        async def telegram_set_interest(value: str, enabled: bool) -> str:
+            subject = _telegram_subject(value)
+            if subject is None:
+                return "İlgi alanı 1–128 görünür karakter olmalı."
+            async with sessions.begin() as session:
+                if enabled:
+                    await session.execute(
+                        text(
+                            "INSERT INTO interest_profile (subject, base, explicit, adaptive) "
+                            "VALUES (:subject, 0, 1, 0) ON CONFLICT (subject) DO UPDATE "
+                            "SET explicit = greatest(1, interest_profile.explicit)"
+                        ),
+                        {"subject": subject},
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO feedback_events (subject, action, occurred_at) "
+                            "VALUES (:subject, 'explicit_more', now())"
+                        ),
+                        {"subject": subject},
+                    )
+                else:
+                    await session.execute(
+                        text("UPDATE interest_profile SET explicit = 0 WHERE subject = :subject"),
+                        {"subject": subject},
+                    )
+            return (
+                f"{subject} ilgi alanlarına eklendi."
+                if enabled
+                else f"{subject} için açık tercih kaldırıldı."
+            )
 
         if telegram_bot is not None:
             app.state.telegram_command_handler = TelegramWebhookHandler(
@@ -932,6 +1087,12 @@ def create_app(
                 search=search_knowledge,
                 ask=ask_knowledge,
                 status=telegram_status,
+                history=telegram_history,
+                sources=telegram_sources,
+                add_source=telegram_add_source,
+                disable_source=telegram_disable_source,
+                interests=telegram_interests,
+                set_interest=telegram_set_interest,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler

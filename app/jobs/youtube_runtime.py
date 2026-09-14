@@ -37,6 +37,7 @@ class YouTubeRun:
     preferred_language_captions: int = 0
     skipped_no_captions: int = 0
     skipped_no_preferred_language_caption: int = 0
+    metadata_fallbacks: int = 0
     failed: int = 0
     post_llm_blocked: int = 0
     youtube_feed_access_errors: int = 0
@@ -64,6 +65,7 @@ class YouTubeRun:
             "preferred_language_captions": self.preferred_language_captions,
             "skipped_no_captions": self.skipped_no_captions,
             "skipped_no_preferred_language_caption": self.skipped_no_preferred_language_caption,
+            "metadata_fallbacks": self.metadata_fallbacks,
             "failed": self.failed,
             "post_llm_blocked": self.post_llm_blocked,
             "failure_categories": {
@@ -143,20 +145,24 @@ class YouTubeRuntimeJob:
                     run.caption_access_errors += 1
                     run.errors.append(f"{item.source_name}: yt_dlp_caption_access_error")
                     return
-                if not tracks:
-                    run.skipped_no_captions += 1
-                    return
+                transcript = ""
+                provenance = "description_only"
                 track = select_preferred_track(tracks, source.language)
-                if track is None:
-                    run.skipped_no_preferred_language_caption += 1
-                    return
-                segments = parse_webvtt(track.vtt)
-                if not segments:
-                    run.skipped_no_captions += 1
-                    return
-                run.captions_available += 1
-                if source.language:
-                    run.preferred_language_captions += 1
+                if track is not None:
+                    segments = parse_webvtt(track.vtt)
+                    transcript = "\n".join(segment.text for segment in segments)[:12_000]
+                    if transcript:
+                        provenance = "auto_caption" if track.is_automatic else "manual_caption"
+                        run.captions_available += 1
+                        if source.language and _language_matches(track.language, source.language):
+                            run.preferred_language_captions += 1
+                if not transcript:
+                    if item.snippet and len(item.snippet.strip()) >= 80:
+                        transcript = item.snippet.strip()
+                        run.metadata_fallbacks += 1
+                    else:
+                        run.skipped_no_captions += 1
+                        return
                 try:
                     gate = await self._flow.gate(item.title, item.snippet or "", item.content_hash)
                 except ProviderBusy:
@@ -177,10 +183,10 @@ class YouTubeRuntimeJob:
                 if not gate.relevant and gate.global_importance < 7:
                     return
                 run.relevant += 1
-                transcript = "\n".join(segment.text for segment in segments)[:12_000]
                 try:
                     extracted = await self._flow.extract(
-                        f"VIDEO TITLE: {item.title}\nCAPTIONS:\n{transcript}", item.content_hash
+                        f"VIDEO TITLE: {item.title}\nSOURCE: {provenance}\nCONTENT:\n{transcript}",
+                        item.content_hash,
                     )
                 except ProviderBusy:
                     run.failed += 1
@@ -285,3 +291,7 @@ async def _not_post_llm_failed(content_hash: str) -> bool:
 
 async def _ignore_refresh_blocked_item(item: SourceItem, language: str | None) -> None:
     """Keep standalone/offline jobs side-effect free when no durable guard is supplied."""
+
+
+def _language_matches(value: str, preference: str) -> bool:
+    return value.casefold().replace("_", "-").startswith(preference.casefold())

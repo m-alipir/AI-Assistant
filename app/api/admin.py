@@ -2,12 +2,15 @@
 
 import json
 import logging
+import os
 import re
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -104,7 +107,21 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _save_yaml(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    """Atomically replace trusted configuration so readers never observe a partial document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent, text=True
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
+            yaml.safe_dump(data, output, sort_keys=False, allow_unicode=True)
+        os.replace(temporary_name, path)
+    except OSError:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
 
 
 def _source_id(kind: str, name: str) -> str:
@@ -504,7 +521,13 @@ async def add_source(source: SourceCreate, request: Request) -> dict[str, object
     ):
         raise HTTPException(409, "a source with this name already exists")
     if kind == "rss":
-        if not source.endpoint.startswith(("https://", "http://")):
+        endpoint = urlparse(source.endpoint)
+        if (
+            endpoint.scheme not in {"https", "http"}
+            or not endpoint.netloc
+            or endpoint.username
+            or endpoint.password
+        ):
             raise HTTPException(422, "RSS feed URL must be an absolute HTTP(S) URL")
         entries.append(
             {"name": source.name, "url": source.endpoint, "stream": source.stream, "enabled": False}

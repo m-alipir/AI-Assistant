@@ -112,6 +112,7 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
         "preferred_language_captions": 0,
         "skipped_no_captions": 0,
         "skipped_no_preferred_language_caption": 0,
+        "metadata_fallbacks": 0,
         "failed": 0,
         "post_llm_blocked": 0,
         "failure_categories": {
@@ -190,13 +191,13 @@ async def test_youtube_runtime_no_captions_is_safe_skip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_youtube_runtime_skips_wrong_caption_language_before_llm() -> None:
+async def test_youtube_runtime_uses_alternate_caption_language_before_llm() -> None:
     subtitles = FakeSubtitles(
         [SubtitleTrack("en-US", False, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi")]
     )
 
     async def persist(item, gate, extracted) -> str:
-        raise AssertionError("wrong-language captions must not persist")
+        return "alternate-language-event"
 
     async def unknown(content_hash: str) -> bool:
         return False
@@ -211,9 +212,11 @@ async def test_youtube_runtime_skips_wrong_caption_language_before_llm() -> None
         subtitles=subtitles,
         clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
     ).run()
-    assert result.skipped_no_preferred_language_caption == 1
+    assert result.skipped_no_preferred_language_caption == 0
+    assert result.captions_available == 1
+    assert result.processed == 1
     assert result.failed == 0
-    assert result.llm_calls == 0
+    assert result.llm_calls == 2
     assert subtitles.urls == ["https://www.youtube.com/watch?v=abc123"]
     assert subtitles.requested_languages == ["tr"]
 

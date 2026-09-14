@@ -1,6 +1,7 @@
 """Read-only, bounded integration API for external orchestration agents."""
 
 import json
+import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -16,6 +17,7 @@ from app.knowledge.search import SafeEmailResult, SearchFilters, SearchResponse
 from app.security import ProcessRateLimiter, opaque_client_key
 
 router = APIRouter(prefix="/api/v1", tags=["agent-api"])
+logger = logging.getLogger(__name__)
 
 MAX_LIST_PAGE_SIZE = 20
 MAX_ITEM_TEXT_CHARS = 600
@@ -106,6 +108,10 @@ async def _audit(request: Request, endpoint: str, outcome: str, response_bytes: 
             await writer(endpoint, outcome, response_bytes)
         except Exception:
             # Audit trouble must not disclose database detail or make retrieval unavailable.
+            logger.warning(
+                "agent_api_audit_write_failed",
+                extra={"diagnostic_category": "agent_api_audit_unavailable"},
+            )
             return
 
 
@@ -221,6 +227,10 @@ async def latest_briefing(request: Request) -> JSONResponse:
         await _audit(request, endpoint, "not_found", 0)
         raise HTTPException(status_code=404, detail="No saved briefing found.") from None
     except Exception:
+        logger.warning(
+            "agent_api_callback_failed",
+            extra={"diagnostic_category": "agent_api_backend_unavailable"},
+        )
         await _audit(request, endpoint, "unavailable", 0)
         raise HTTPException(
             status_code=503, detail="Agent API is temporarily unavailable."
@@ -247,6 +257,10 @@ async def list_briefings(
         result = await callback(limit, before)
         page = AgentBriefingPage.model_validate(result)
     except Exception:
+        logger.warning(
+            "agent_api_callback_failed",
+            extra={"diagnostic_category": "agent_api_backend_unavailable"},
+        )
         await _audit(request, endpoint, "unavailable", 0)
         raise HTTPException(
             status_code=503, detail="Agent API is temporarily unavailable."
@@ -271,6 +285,10 @@ async def briefing_detail(briefing_id: str, request: Request) -> JSONResponse:
         await _audit(request, endpoint, "not_found", 0)
         raise HTTPException(status_code=404, detail="Saved briefing not found.") from None
     except Exception:
+        logger.warning(
+            "agent_api_callback_failed",
+            extra={"diagnostic_category": "agent_api_backend_unavailable"},
+        )
         await _audit(request, endpoint, "unavailable", 0)
         raise HTTPException(
             status_code=503, detail="Agent API is temporarily unavailable."
@@ -309,6 +327,10 @@ async def knowledge_search(request: Request) -> JSONResponse:
         result = await callback(filters)
         response = project_search_response(result)
     except Exception:
+        logger.warning(
+            "agent_api_callback_failed",
+            extra={"diagnostic_category": "agent_api_backend_unavailable"},
+        )
         await _audit(request, endpoint, "unavailable", 0)
         raise HTTPException(
             status_code=503, detail="Agent API is temporarily unavailable."

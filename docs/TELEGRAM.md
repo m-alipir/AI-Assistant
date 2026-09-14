@@ -13,12 +13,24 @@ long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbo
 - `/ara <sorgu>` uses deterministic bounded retrieval only; it makes no model request.
 - `/sor <soru>` uses the existing bounded Ask route, including its configured provider budget,
   cache, source links, and fact/inference separation.
-- `/durum` returns only a compact readiness and last-run state.
-- `/start` provides a safe help message only after authorization; it never enrolls a user.
+- `/durum` returns compact readiness, recent scheduled/manual run, briefing, and source counts.
+- `/gecmis [sayı]` lists up to ten persisted briefings; `/ozet` still opens the latest one.
+- `/kaynaklar` lists the persisted RSS and YouTube catalog. `/kaynak_ekle <feed-url veya
+  YouTube kanal-url> [ad]` adds one source (explicit `rss|youtube` is also accepted), and
+  `/kaynak_sil <kimlik>` safely disables it rather than destroying its history.
+- `/ilgiler`, `/ilgi_ekle <konu>`, and `/ilgi_sil <konu>` use the existing stable interest profile.
+- `/yardim` and `/start` show this compact command guide only after authorization; they never
+  enroll a user.
 
 Only a configured exact `user_id:chat_id` pair may use any command. The default deployment should
 use one private chat (`same user_id:chat_id`). Group chat use is an explicit additional pair, not a
 cross-product of independent user and chat allow-lists.
+
+Source changes are atomically persisted in the existing protected source catalog mounted for the
+application. They survive restarts and are picked up by the next scheduled run; no Telegram input
+can request an arbitrary fetch, alter private-network protections, or bypass normal freshness,
+deduplication, caption, retry, and budget boundaries. Gmail stays read-only and is connected once
+through the protected browser OAuth flow; scheduled runs then use its existing durable checkpoint.
 
 ## Production configuration
 

@@ -483,6 +483,8 @@ failure cannot roll back a persisted briefing or stop ingestion; disabled defaul
   feedback mutation, or audit write; `/start` must not self-enrol a user
 - [x] support Turkish-first `/ozet`, `/ara <sorgu>`, `/sor <soru>`, and `/durum` commands through the
   existing bounded services; `/sor` must retain current OpenRouter budgets and source citations
+- [x] expose bounded Turkish help, briefing history, persisted source add/list/disable, and stable
+  interest list/add/remove controls through the same allow-listed command boundary
 - [x] add explicit feedback controls only through the existing stable interest-learning boundary;
   do not create unrestricted tasks, shell access, browsing, or general agent actions
 - [x] optionally deliver the existing privacy-minimized notification kinds through Telegram with
@@ -566,6 +568,9 @@ removable adapters/services, and the existing database and domain model remain c
 ---
 
 ## Backlog / explicitly out of current track
+- [~] **Optimization baseline (approved):** fixture-only performance and retrieval-quality gates
+  are defined in `docs/OPTIMIZATION_BASELINE.md`; implementation begins only with a measured,
+  reversible improvement and preserves the current PostgreSQL/pgvector architecture.
 - [ ] Gmail Pub/Sub push/watch if polling latency becomes a real issue
 - [ ] Audio download + STT fallback when no YouTube captions exist
 - [ ] Discord integration; Telegram is now authorized separately as M22.1
@@ -582,6 +587,55 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-13: Security completion validation: 236 passed, 3 dedicated PostgreSQL integration tests
+  skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset; Ruff and `git diff --check` passed.
+  Locked dependency audit and `pip check` passed. Source/briefing/LLM/Admin security regressions
+  cover inline URL credentials, local-only rendered links, gatekeeper delimiter closure, atomically
+  written source configuration, and provider-error privacy. Base, webhook, and outbound-polling
+  production Compose files resolved with synthetic secret paths. No source, provider, Gmail,
+  Telegram, VDS, or user-data request was made.
+- 2026-09-13: Provider-error privacy validation: 84 focused tests passed, Ruff passed. OpenRouter
+  4xx logs preserve only status/model and safe compact code/type metadata; provider error messages
+  are never logged, including when they contain a credential-shaped value. No provider, source,
+  Gmail, Telegram, VDS, or user-data request was made.
+- 2026-09-12: Security boundary and diagnostics validation: 234 passed, 3 dedicated PostgreSQL
+  integration tests skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. Process-local
+  rate-limit state is bounded against synthetic client-key floods; all application responses,
+  including authentication rejections, carry hardened headers and a server-generated correlation
+  ID. Safe Agent API/Telegram failure categories are logged without request, command, secret, or
+  provider-error content. Ruff and `git diff --check` passed. A live `pip-audit` check could not
+  produce a clean result because the local editable project is not published on PyPI; this is not
+  treated as a successful dependency-vulnerability audit. No source, provider, Gmail, Telegram,
+  VDS, or user-data request was made.
+- 2026-09-12: Optimizer conditional-RSS-cache validation: 19 focused tests passed, Ruff and
+  generated Alembic SQL passed. ETag/Last-Modified validators are persisted as non-sensitive
+  source-health metadata; a 304 skips feed parsing and all downstream work. No source, provider,
+  Gmail, Telegram, or user-data request was made.
+- 2026-09-12: Optimizer RSS metadata concurrency validation: 16 focused tests passed and Ruff
+  passed. Enabled RSS sources now fetch metadata through a configurable bounded semaphore (default
+  3), while freshness, deduplication, event persistence, briefing writes, and provider work remain
+  deterministic and sequential. No source, provider, Gmail, Telegram, or user-data request was
+  made.
+- 2026-09-12: Optimizer baseline observation: a disposable PostgreSQL 17/pgvector database was
+  migrated through `20260912_0022`. A rolled-back transaction with 5,000 synthetic events measured
+  the current 180-day, newest-first 100-row candidate query at 1.845 ms via `EXPLAIN (ANALYZE,
+  BUFFERS)`; no vector index was added because this is not a demonstrated bottleneck. A separate
+  100,000-row rolled-back LLM-ledger query used the existing `ix_llm_calls_created_at` index and
+  completed in 0.997 ms, so no duplicate migration was retained. Offline suite: 229 passed, 3
+  dedicated PostgreSQL integration tests skipped. No source, provider, Gmail, Telegram, or
+  user-data request was made.
+- 2026-09-12: Optimizer Phase 0 documentation validation: 229 passed, 3 dedicated PostgreSQL
+  integration tests skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset; `git diff --check`
+  passed. The first test invocation could not write the host system temporary directory, so the
+  same suite was rerun successfully with an isolated workspace temporary directory, which was
+  removed afterwards. No runtime code, schema, external provider, source, Gmail, Telegram, or VDS
+  call changed.
+- 2026-09-12: Telegram control-surface validation: 226 passed, 3 dedicated PostgreSQL integration
+  tests skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. Fake transport coverage verifies
+  authorized help/source/interest commands do not call a model; source tests cover atomic persistent
+  RSS/YouTube addition, safe disablement, duplicate/invalid rejection, and channel URL detection.
+  Ruff and `git diff --check` passed. No external provider, source, Gmail, Telegram, or VDS call
+  was made.
 - 2026-09-12: OpenRouter 4xx diagnostic validation: 222 passed, 3 PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake client covers one-attempt
   4xx handling, bounded safe error metadata, and secret-like error-message redaction. Ruff and
@@ -886,6 +940,57 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-13: Completed the offline security hardening pass. Gatekeeper title/snippet metadata now
+  uses the same escaped, bounded untrusted JSON boundary as full extraction; its prompt/cache
+  version advanced to avoid reuse of older results. Source configuration rejects inline URL
+  credentials through both Admin and Telegram control paths, Admin writes configuration atomically,
+  and rendered provenance links reject local-only targets. Locked dependency and requirement
+  consistency checks passed; live VDS/TLS/Telegram and multi-replica limiter checks remain
+  environment-dependent.
+- 2026-09-13: Removed OpenRouter provider error-message logging. Safe diagnostics retain only
+  HTTP status, configured model, and constrained error code/type, preventing a provider/proxy from
+  reflecting prompts, source content, or credential-like text into operational logs.
+- 2026-09-12: Hardened the process-local rate limiter so synthetic distinct client keys cannot
+  retain unbounded in-memory state. Added privacy-preserving `X-Request-ID` correlation and fixed
+  diagnostic categories for Agent API and Telegram failures; sensitive command, request, provider,
+  credential, and exception text remains excluded from logs. Security headers now apply to early
+  authentication/origin rejections as well. Multi-replica shared limiting and a clean external
+  dependency-vulnerability audit remain environment-dependent follow-ups.
+- 2026-09-12: Added RSS conditional HTTP caching. Per-source ETag and Last-Modified values are
+  retained only as bounded source-health metadata; a 304 result is observable and avoids parsing,
+  deduplication, article work, and LLM work. Redirect validation, cooldown, source ordering, and
+  all safety bounds remain intact. Migration `20260912_0023` is required before validator reuse.
+- 2026-09-12: Added bounded RSS metadata-fetch concurrency behind
+  `RSS_MAX_CONCURRENT_FETCHES` (default 3). Only independent source collection is concurrent;
+  source-health handling is retained and downstream item/LLM processing remains ordered, bounded,
+  and unchanged. The setting is documented in `.env.example`.
+- 2026-09-12: Verified that the LLM-ledger daily-budget, Admin newest-first, and retention paths
+  already have the required `llm_calls.created_at` index from `20260908_0014`; a 100,000-row
+  rolled-back synthetic query used it and completed in 0.997 ms. No duplicate migration or index
+  was retained.
+- 2026-09-12: Captured the first optimizer baseline against a current disposable PostgreSQL schema.
+  The small synthetic corpus does not justify ANN/vector indexing, so the current exact pgvector
+  strategy remains unchanged; future retrieval work requires larger-corpus evidence and quality
+  metrics before a reversible SQL candidate-selection change.
+- 2026-09-12: Added the optimizer Phase 0 baseline/acceptance specification. It defines
+  sanitized fixture scenarios, retrieval quality and cost gates, before/after PostgreSQL plan
+  capture, and rollback requirements; no runtime behavior, schema, source, provider, or user data
+  changed. The pending source-health and Telegram worktree changes were preserved.
+- 2026-09-12: Added a pre-LLM resilient retrieval layer. RSS sources now persist only safe health
+  metadata and skip their cooldown window; terminal invalid/unsupported failures are not retried,
+  while timeout/network/429/5xx failures use bounded deterministic backoff. Article extraction now
+  falls back from Trafilatura to a bounded visible-text parser, and YouTube prefers configured
+  captions before Turkish/English/available tracks and may use a sufficiently long public
+  description as explicitly lower-confidence fallback. No CAPTCHA, login/paywall bypass, browser,
+  private-content, or LLM scraper was introduced. Migration `20260912_0022` is required before
+  the health state is active; live source behavior remains pending VDS verification.
+- 2026-09-12: Extended the authorized Telegram control surface without adding a second ingestion or
+  assistant path. Allow-listed users can now see help/history/status, maintain the protected
+  RSS/YouTube catalog atomically, and manage explicit interests through the existing database
+  profile. Source changes keep normal scheduler, freshness, SSRF, deduplication, retry, caption,
+  and model-budget boundaries; Gmail remains the existing read-only browser OAuth onboarding flow.
+  Offline control-flow/source tests passed; no external service, production configuration, or
+  migration changed. VDS polling/webhook and scheduler smoke evidence remains pending.
 - 2026-09-12: Added bounded OpenRouter 4xx diagnostics without logging request payloads or
   credentials. The current `openai/gpt-oss-120b` public model metadata requires reasoning and
   advertises `max_tokens`, so production must use its supported low reasoning effort instead of

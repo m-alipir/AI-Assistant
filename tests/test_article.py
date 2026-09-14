@@ -12,9 +12,24 @@ def test_trafilatura_removes_navigation_and_retains_article_text() -> None:
     <p>The announcement explains the release schedule and supported hardware.</p></article>
     <footer>Copyright newsletter privacy</footer></body></html>
     """
-    text = _extract_html(html.encode())
+    text, strategy = _extract_html(html.encode())
     assert "NVIDIA announced" in text
     assert "Subscribe" not in text
+    assert strategy == "trafilatura"
+
+
+def test_visible_html_fallback_keeps_article_when_primary_parser_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.collectors.article.trafilatura.extract",
+        lambda *_args, **_kwargs: None,
+    )
+    text, strategy = _extract_html(
+        b"<article>Useful source-backed text " + b"with enough detail. " * 10 + b"</article>"
+    )
+    assert strategy == "visible_html"
+    assert "Useful source-backed text" in text
 
 
 def test_article_parser_rejects_empty_or_boilerplate_html() -> None:

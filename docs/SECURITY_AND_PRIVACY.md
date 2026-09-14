@@ -94,11 +94,28 @@ Before an LLM request:
 
 Log metadata (model, token usage, hash, latency, status), not sensitive prompt payloads by default.
 
+## Safe operational diagnostics
+- Every application response receives a server-generated `X-Request-ID`. Operators can use this
+  opaque ID to correlate a reported failure with structured logs; it is not derived from a user,
+  request body, URL query, token, or provider response.
+- Security and integration failures log only a fixed diagnostic category (for example
+  `telegram_command_unavailable` or `agent_api_backend_unavailable`) and the request ID when one
+  exists. Do not log exception messages, commands, source text, credentials, authorization
+  headers, or provider bodies merely to improve troubleshooting.
+- Process-local rate limiters bound both request counts and retained distinct caller keys. This
+  protects the documented single-process deployment from memory growth under synthetic-client
+  floods; multi-replica deployments still require a separately approved shared limiter.
+
 ## Web/content safety
 - Treat fetched pages/transcripts as untrusted data, not instructions.
 - Prompts must clearly delimit source content.
+- Gatekeeper metadata and extractor content are encoded as bounded JSON strings inside distinct
+  untrusted-data delimiters. A title, snippet, page, or transcript cannot close that boundary or
+  supply executable instructions to the model.
 - Never execute commands/code found in ingested content.
 - Do not let page text modify system/configuration/model-routing policies.
+- Source URLs must never contain inline credentials. Public provenance links reject credentials,
+  loopback/private IP literals, and common local-only hostnames before rendering.
 
 ## Network/runtime
 - Outbound requests only to configured sources/providers.

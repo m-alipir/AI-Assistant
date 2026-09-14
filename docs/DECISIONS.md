@@ -306,4 +306,50 @@ and stale read-only claim recovery must be redesigned before multi-replica deplo
 
 ---
 
+## D027 — Privacy-preserving request correlation and bounded limiter state
+**Date:** 2026-09-12
+**Status:** Accepted
+
+Operational diagnosis uses a server-generated opaque request ID and fixed safe failure categories.
+The ID is returned as `X-Request-ID` and may appear in structured logs, but is never derived from
+caller identity, request content, credentials, URLs, or provider data. Process-local rate limiting
+also caps retained distinct keys, preventing synthetic client identities from growing memory without
+bound.
+
+Consequences: operators can correlate a reported failure without enabling request/body/error-detail
+logging. This is intentionally not distributed tracing or a shared limiter; multi-replica security
+still needs a separately designed shared state service.
+
+---
+
+## D028 — Provider error bodies are never diagnostic data
+**Date:** 2026-09-13
+**Status:** Accepted
+
+OpenRouter 4xx diagnostics retain only the HTTP status, configured model identifier, and a compact
+provider error code/type when those fields match a fixed safe shape. The provider-supplied error
+message is always discarded before logging.
+
+Consequences: provider or proxy error reflection cannot place source text, prompts, credentials,
+or arbitrary remote content in operational logs. Operators retain enough stable metadata to
+distinguish configuration/capability rejections from transport failures.
+
+---
+
+## D029 — All model-bound source fields use untrusted JSON boundaries
+**Date:** 2026-09-13
+**Status:** Accepted
+
+Both gatekeeper metadata and extractor source content are length-bounded JSON strings surrounded
+by explicit untrusted-data delimiters. Angle brackets are escaped before placement in the prompt.
+Source URL configuration rejects inline credentials, and presentation links exclude credentialed,
+loopback, and common local-only targets.
+
+Consequences: untrusted titles/snippets receive the same prompt-injection boundary as full
+articles and transcripts. Configuration cannot accidentally persist URL credentials, while the
+briefing UI does not become a convenient link to local services. Existing outbound SSRF validation
+remains the authority for every server-side fetch.
+
+---
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

@@ -167,14 +167,20 @@ class YtDlpSubtitleFetcher:
 def select_preferred_track(
     tracks: list[SubtitleTrack], preferred_language: str | None = None
 ) -> SubtitleTrack | None:
-    """Prefer manual captions, optionally limited to a configured base-language family."""
-    candidates = (
-        [track for track in tracks if _matches_language(track.language, preferred_language)]
-        if preferred_language
-        else tracks
-    )
-    return next((track for track in candidates if not track.is_automatic), None) or next(
-        (track for track in candidates if track.is_automatic), None
+    """Prefer configured language, then Turkish/English, before another available track."""
+    language_order = [preferred_language, "tr", "en"] if preferred_language else ["tr", "en"]
+    for language in language_order:
+        if not language:
+            continue
+        matches = [track for track in tracks if _matches_language(track.language, language)]
+        selected = next((track for track in matches if not track.is_automatic), None)
+        if selected is not None:
+            return selected
+        selected = next((track for track in matches if track.is_automatic), None)
+        if selected is not None:
+            return selected
+    return next((track for track in tracks if not track.is_automatic), None) or next(
+        (track for track in tracks if track.is_automatic), None
     )
 
 
@@ -196,7 +202,12 @@ def _subtitle_languages_for(
         "tr": ("tr", "tr-TR", "tr-CY"),
         "en": ("en", "en-US", "en-GB", "en-AU", "en-CA", "en-IN", "en-NZ"),
     }
-    return variants[preferred_language]
+    requested = list(variants[preferred_language])
+    for fallback in ("tr", "en"):
+        for language in variants[fallback]:
+            if language not in requested:
+                requested.append(language)
+    return tuple(requested)
 
 
 def parse_webvtt(vtt: str) -> list[TranscriptSegment]:

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from app.telegram.core import (
     feedback_keyboard,
     split_plain_text,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramUser(BaseModel):
@@ -66,6 +69,12 @@ class TelegramUpdate(BaseModel):
 BriefingCallback = Callable[[], Awaitable[dict[str, object]]]
 SearchCallback = Callable[[SearchFilters], Awaitable[dict[str, object]]]
 StatusCallback = Callable[[], Awaitable[dict[str, object]]]
+HistoryCallback = Callable[[int], Awaitable[list[dict[str, object]]]]
+SourcesCallback = Callable[[], Awaitable[str]]
+AddSourceCallback = Callable[[str, str, str], Awaitable[str]]
+DisableSourceCallback = Callable[[str], Awaitable[str]]
+InterestsCallback = Callable[[], Awaitable[str]]
+SetInterestCallback = Callable[[str, bool], Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,12 @@ class TelegramWebhookHandler:
         search: SearchCallback,
         ask: SearchCallback,
         status: StatusCallback,
+        history: HistoryCallback | None = None,
+        sources: SourcesCallback | None = None,
+        add_source: AddSourceCallback | None = None,
+        disable_source: DisableSourceCallback | None = None,
+        interests: InterestsCallback | None = None,
+        set_interest: SetInterestCallback | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
@@ -107,6 +122,12 @@ class TelegramWebhookHandler:
         self._search = search
         self._ask = ask
         self._status = status
+        self._history = history
+        self._sources = sources
+        self._add_source = add_source
+        self._disable_source = disable_source
+        self._interests = interests
+        self._set_interest = set_interest
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
         self._global = ProcessRateLimiter(settings.telegram_global_rate_limit_per_minute)
         self._semaphore = asyncio.Semaphore(settings.telegram_max_concurrent_commands)
@@ -166,11 +187,23 @@ class TelegramWebhookHandler:
                     await self._handle_message(update, actor)
             await self._finish_update(update.update_id, "completed")
         except TimeoutError:
+            logger.warning(
+                "telegram_command_failed",
+                extra={"diagnostic_category": "telegram_command_timeout"},
+            )
             await self._finish_update(update.update_id, "command_timeout")
         except TelegramDeliveryError:
+            logger.warning(
+                "telegram_command_failed",
+                extra={"diagnostic_category": "telegram_delivery_unavailable"},
+            )
             await self._finish_update(update.update_id, "telegram_delivery_error")
         except Exception:
             # The command, provider response, and database exception never enter logs or Telegram.
+            logger.warning(
+                "telegram_command_failed",
+                extra={"diagnostic_category": "telegram_command_unavailable"},
+            )
             await self._finish_update(update.update_id, "command_unavailable")
 
     async def _handle_message(self, update: TelegramUpdate, actor: Actor) -> None:
@@ -182,8 +215,11 @@ class TelegramWebhookHandler:
         if command == "start":
             await self._bot.send_message(
                 actor.chat_id,
-                TelegramMessage("Yetkili kullanıcılar için kişisel bilgi asistanı hazır."),
+                TelegramMessage(_help_text()),
             )
+            return
+        if command == "yardim":
+            await self._bot.send_message(actor.chat_id, TelegramMessage(_help_text()))
             return
         if command == "ozet":
             await self._send_briefing(actor)
@@ -201,9 +237,27 @@ class TelegramWebhookHandler:
                 actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
             )
             return
+        if command == "gecmis":
+            await self._send_history(actor, argument)
+            return
+        if command == "kaynaklar":
+            await self._send_control_text(actor, self._sources, "Kaynaklar şu anda alınamıyor.")
+            return
+        if command == "kaynak_ekle":
+            await self._add_source_command(actor, argument)
+            return
+        if command == "kaynak_sil":
+            await self._disable_source_command(actor, argument)
+            return
+        if command == "ilgiler":
+            await self._send_control_text(actor, self._interests, "İlgi alanları alınamıyor.")
+            return
+        if command in {"ilgi_ekle", "ilgi_sil"}:
+            await self._set_interest_command(actor, argument, command == "ilgi_ekle")
+            return
         await self._bot.send_message(
             actor.chat_id,
-            TelegramMessage("Komut bulunamadı. /ozet, /ara, /sor veya /durum kullanın."),
+            TelegramMessage("Komut bulunamadı. Kullanılabilir komutlar için /yardim yazın."),
         )
 
     async def _send_briefing(self, actor: Actor) -> None:
@@ -266,6 +320,98 @@ class TelegramWebhookHandler:
         await self._bot.send_messages(
             actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
         )
+
+    async def _send_history(self, actor: Actor, argument: str) -> None:
+        if self._history is None:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("Geçmiş özetler kullanılamıyor."),
+            )
+            return
+        try:
+            limit = int(argument) if argument else 5
+        except ValueError:
+            limit = 5
+        rows = await self._history(max(1, min(limit, 10)))
+        if not rows:
+            text_value = "Henüz kaydedilmiş özet yok."
+        else:
+            lines = ["Geçmiş özetler"]
+            for row in rows:
+                created_at = str(row.get("created_at") or "")[:25]
+                title = str(row.get("title") or "Özet")[:200]
+                lines.append(f"- {created_at}: {title}")
+            text_value = "\n".join(lines)
+        await self._bot.send_messages(
+            actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
+        )
+
+    async def _send_control_text(
+        self, actor: Actor, callback: SourcesCallback | InterestsCallback | None, unavailable: str
+    ) -> None:
+        if callback is None:
+            await self._bot.send_message(actor.chat_id, TelegramMessage(unavailable))
+            return
+        text_value = await callback()
+        await self._bot.send_messages(
+            actor.chat_id, [TelegramMessage(chunk) for chunk in split_plain_text(text_value)]
+        )
+
+    async def _add_source_command(self, actor: Actor, argument: str) -> None:
+        if self._add_source is None:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("Kaynak yönetimi kullanılamıyor."),
+            )
+            return
+        kind, separator, rest = argument.partition(" ")
+        if kind.casefold() in {"rss", "youtube"}:
+            endpoint, separator, name = (
+                rest.strip().partition(" ") if separator else ("", "", "")
+            )
+        else:
+            endpoint, separator, name = argument.partition(" ")
+            kind = "auto"
+        if not endpoint:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("Kullanım: /kaynak_ekle <feed-url veya YouTube kanal-url> [ad]"),
+            )
+            return
+        response = await self._add_source(kind, endpoint, name.strip())
+        await self._bot.send_message(actor.chat_id, TelegramMessage(response))
+
+    async def _disable_source_command(self, actor: Actor, argument: str) -> None:
+        if self._disable_source is None:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("Kaynak yönetimi kullanılamıyor."),
+            )
+            return
+        if not argument:
+            await self._bot.send_message(
+                actor.chat_id, TelegramMessage("Kullanım: /kaynak_sil <kaynak-kimliği>"),
+            )
+            return
+        result = await self._disable_source(argument)
+        await self._bot.send_message(actor.chat_id, TelegramMessage(result))
+
+    async def _set_interest_command(self, actor: Actor, argument: str, enabled: bool) -> None:
+        if self._set_interest is None:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("İlgi yönetimi kullanılamıyor."),
+            )
+            return
+        if not argument:
+            command = "/ilgi_ekle" if enabled else "/ilgi_sil"
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage(f"Kullanım: {command} <konu>"),
+            )
+            return
+        result = await self._set_interest(argument, enabled)
+        await self._bot.send_message(actor.chat_id, TelegramMessage(result))
 
     async def _claim_update(self, update_id: int, actor: Actor, kind: str) -> bool:
         async with self._sessions.begin() as session:
@@ -396,7 +542,10 @@ def _command(value: str | None, maximum: int) -> tuple[str, str] | None:
     if not command.startswith("/"):
         return None
     command = command[1:].partition("@")[0].casefold()
-    if command not in {"start", "ozet", "ara", "sor", "durum"}:
+    if command not in {
+        "start", "yardim", "ozet", "gecmis", "ara", "sor", "durum", "kaynaklar",
+        "kaynak_ekle", "kaynak_sil", "ilgiler", "ilgi_ekle", "ilgi_sil",
+    }:
         return command, ""
     return command, argument.strip()
 
@@ -455,3 +604,16 @@ def _search_text(value: dict[str, object], label: str) -> str:
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _help_text() -> str:
+    return (
+        "Kişisel bilgi asistanı\n"
+        "/ozet — son özet\n/gecmis [sayı] — geçmiş özetler\n"
+        "/ara <konu> — hafızada ara\n/sor <soru> — kaynaklı soru sor\n"
+        "/durum — sistem durumu\n/kaynaklar — takip edilen kaynaklar\n"
+        "/kaynak_ekle <feed-url veya YouTube kanal-url> [ad]\n"
+        "Gerekirse: /kaynak_ekle rss|youtube <adres> [ad]\n"
+        "/kaynak_sil <kaynak-kimliği> — devre dışı bırak\n"
+        "/ilgiler — ilgi alanları\n/ilgi_ekle <konu>\n/ilgi_sil <konu>"
+    )

@@ -250,13 +250,13 @@ async def test_openrouter_4xx_logs_only_safe_error_metadata(
     assert requests == 1
     assert "status=400 model=openai/gpt-oss-120b code=unsupported_parameter" in caplog.text
     assert "type=invalid_request_error" in caplog.text
-    assert "reasoning effort none is unsupported" in caplog.text
+    assert "reasoning effort none is unsupported" not in caplog.text
     assert "private article text" not in caplog.text
     assert "test-key" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_openrouter_4xx_redacts_sensitive_error_message(
+async def test_openrouter_4xx_never_logs_provider_error_message(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
@@ -276,7 +276,7 @@ async def test_openrouter_4xx_redacts_sensitive_error_message(
             "test-key", "https://example.test", httpx.MockTransport(handler)
         ).complete("fake/model", "prompt", RoleConfig(model="fake/model"), {"type": "object"})
 
-    assert "message=redacted" in caplog.text
+    assert "message=" not in caplog.text
     assert "sk-test-secret" not in caplog.text
 
 
@@ -612,7 +612,7 @@ async def test_memory_cache_hit_is_persisted_as_operational_metadata() -> None:
         importance=1,
         needs_full_extraction=False,
     )
-    key = cache.key("memory-digest", "gatekeeper", "v2", "fake/primary", "v1")
+    key = cache.key("memory-digest", "gatekeeper", "v3", "fake/primary", "v1")
     cache.values[key] = payload.model_dump_json()
     router = Router(
         OpenRouterClient("test-key", "https://example.test"),

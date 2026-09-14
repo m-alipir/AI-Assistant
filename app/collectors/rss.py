@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import socket
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
@@ -18,6 +19,15 @@ from app.normalize.source_items import content_fingerprint, normalize_url, parse
 from app.providers.contracts import ProviderError
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ConditionalFeedResult:
+    payload: bytes | None
+    etag: str | None
+    last_modified: str | None
+    not_modified: bool = False
+    items: list[SourceItem] | None = None
 
 
 class FeedFetcher(Protocol):
@@ -51,7 +61,10 @@ class HttpFeedFetcher:
         timeout = httpx.Timeout(self._timeout_seconds)
         for attempt in range(self._retries + 1):
             try:
-                return await self._fetch_once(url, timeout)
+                result = await self._fetch_once(url, timeout, {})
+                if result.payload is None:
+                    raise ProviderError("feed unexpectedly returned no payload")
+                return result.payload
             except (httpx.HTTPError, ProviderError) as error:
                 if attempt == self._retries:
                     logger.warning("feed_fetch_failed", extra={"attempts": attempt + 1})
@@ -59,7 +72,31 @@ class HttpFeedFetcher:
                 await asyncio.sleep(0.2 * (attempt + 1))
         raise AssertionError("unreachable")
 
-    async def _fetch_once(self, url: str, timeout: httpx.Timeout) -> bytes:
+    async def fetch_conditional(
+        self, url: str, etag: str | None, last_modified: str | None
+    ) -> ConditionalFeedResult:
+        headers = {
+            key: value
+            for key, value in {
+                "If-None-Match": etag,
+                "If-Modified-Since": last_modified,
+            }.items()
+            if value
+        }
+        timeout = httpx.Timeout(self._timeout_seconds)
+        for attempt in range(self._retries + 1):
+            try:
+                return await self._fetch_once(url, timeout, headers)
+            except (httpx.HTTPError, ProviderError) as error:
+                if attempt == self._retries:
+                    logger.warning("feed_fetch_failed", extra={"attempts": attempt + 1})
+                    raise ProviderError("feed fetch failed after bounded retries") from error
+                await asyncio.sleep(0.2 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    async def _fetch_once(
+        self, url: str, timeout: httpx.Timeout, conditional_headers: dict[str, str]
+    ) -> ConditionalFeedResult:
         """Fetch with explicit redirect validation so a feed cannot pivot into private networks."""
         current_url = url
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
@@ -69,14 +106,15 @@ class HttpFeedFetcher:
                     allow_private_hosts=self._allow_private_hosts,
                     allow_insecure_http=self._allow_insecure_http,
                 )
+                headers = {
+                    "Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml"
+                }
+                if redirect_count == 0:
+                    headers.update(conditional_headers)
                 async with client.stream(
                     "GET",
                     current_url,
-                    headers={
-                        "Accept": (
-                            "application/atom+xml, application/rss+xml, application/xml, text/xml"
-                        )
-                    },
+                    headers=headers,
                 ) as response:
                     _validate_connected_peer(
                         response, allow_private_hosts=self._allow_private_hosts
@@ -87,6 +125,8 @@ class HttpFeedFetcher:
                             raise ProviderError("feed redirect could not be safely followed")
                         current_url = urljoin(current_url, location)
                         continue
+                    if response.status_code == 304:
+                        return ConditionalFeedResult(None, None, None, not_modified=True)
                     response.raise_for_status()
                     content_type = response.headers.get("content-type", "").lower()
                     if content_type and not any(
@@ -99,7 +139,11 @@ class HttpFeedFetcher:
                         payload.extend(chunk)
                         if len(payload) > self._max_response_bytes:
                             raise ProviderError("feed response exceeds configured size limit")
-                    return bytes(payload)
+                    return ConditionalFeedResult(
+                        bytes(payload),
+                        response.headers.get("etag", "")[:512] or None,
+                        response.headers.get("last-modified", "")[:256] or None,
+                    )
         raise ProviderError("feed redirect could not be safely followed")
 
 
@@ -157,6 +201,40 @@ class RssCollector:
         """Fetch and normalize source entries into compact candidate items."""
         now = (fetched_at or datetime.now(UTC)).astimezone(UTC)
         payload = await self._fetcher.fetch(source.url)
+        return self._parse_payload(payload, source, now)
+
+    async def collect_conditional(
+        self, source: RssSourceConfig, etag: str | None, last_modified: str | None,
+        fetched_at: datetime | None = None,
+    ) -> ConditionalFeedResult:
+        conditional = getattr(self._fetcher, "fetch_conditional", None)
+        if conditional is None:
+            payload = await self._fetcher.fetch(source.url)
+            return ConditionalFeedResult(
+                payload,
+                None,
+                None,
+                items=self._parse_payload(
+                    payload, source, (fetched_at or datetime.now(UTC)).astimezone(UTC)
+                ),
+            )
+        result = await conditional(source.url, etag, last_modified)
+        if result.not_modified:
+            return result
+        if result.payload is None:
+            raise ProviderError("feed unexpectedly returned no payload")
+        return ConditionalFeedResult(
+            result.payload,
+            result.etag,
+            result.last_modified,
+            items=self._parse_payload(
+                result.payload, source, (fetched_at or datetime.now(UTC)).astimezone(UTC)
+            ),
+        )
+
+    def _parse_payload(
+        self, payload: bytes, source: RssSourceConfig, now: datetime
+    ) -> list[SourceItem]:
         lowered = payload.lower()
         if b"<!doctype" in lowered or b"<!entity" in lowered:
             raise ProviderError("feed XML contains a prohibited declaration")

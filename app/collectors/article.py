@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 import httpx
@@ -15,6 +16,7 @@ from app.providers.contracts import ProviderError
 class ArticleContent:
     text: str
     final_url: str
+    strategy: str = "trafilatura"
 
 
 class ArticleFetcher:
@@ -77,11 +79,12 @@ class ArticleFetcher:
                         payload.extend(chunk)
                         if len(payload) > self._max_bytes:
                             raise ProviderError("article response exceeds configured size limit")
-                    return ArticleContent(_extract_html(bytes(payload)), current)
+                    text, strategy = _extract_html(bytes(payload))
+                    return ArticleContent(text, current, strategy)
         raise ProviderError("article redirect could not be safely followed")
 
 
-def _extract_html(payload: bytes) -> str:
+def _extract_html(payload: bytes) -> tuple[str, str]:
     """Parse already-fetched HTML only; parsing never initiates another network request."""
     try:
         text = trafilatura.extract(
@@ -90,8 +93,39 @@ def _extract_html(payload: bytes) -> str:
             include_tables=False,
             favor_precision=True,
         )
+    except Exception:
+        text = None
+    if text and len(text.strip()) >= 80:
+        return text.strip(), "trafilatura"
+    fallback = _visible_html_text(payload)
+    if len(fallback) < 80:
+        raise ProviderError("article did not contain sufficient extractable text")
+    return fallback, "visible_html"
+
+
+class _VisibleText(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "noscript", "svg", "nav", "footer"}:
+            self._hidden += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript", "svg", "nav", "footer"} and self._hidden:
+            self._hidden -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden:
+            self.parts.append(data)
+
+
+def _visible_html_text(payload: bytes) -> str:
+    parser = _VisibleText()
+    try:
+        parser.feed(payload.decode("utf-8", errors="replace"))
     except Exception as error:
         raise ProviderError("article HTML extraction failed") from error
-    if not text or len(text.strip()) < 80:
-        raise ProviderError("article did not contain sufficient extractable text")
-    return text.strip()
+    return " ".join(" ".join(parser.parts).split())[:24_000]

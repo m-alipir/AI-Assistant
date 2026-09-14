@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     rss_max_items_per_feed: int = Field(
         default=100, validation_alias="RSS_MAX_ITEMS_PER_FEED", ge=1, le=500
     )
+    rss_max_concurrent_fetches: int = Field(
+        default=3, validation_alias="RSS_MAX_CONCURRENT_FETCHES", ge=1, le=8
+    )
     article_request_timeout_seconds: float = Field(
         default=12, validation_alias="ARTICLE_REQUEST_TIMEOUT_SECONDS", gt=0, le=60
     )

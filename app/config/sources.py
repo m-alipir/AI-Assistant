@@ -41,8 +41,10 @@ class RssSourceConfig(BaseModel):
 
     @model_validator(mode="after")
     def enabled_source_requires_http_url(self) -> "RssSourceConfig":
-        """Permit disabled placeholders while preventing an enabled malformed endpoint."""
+        """Permit disabled placeholders while keeping source configuration non-secret."""
         parsed = urlparse(self.url)
+        if parsed.username or parsed.password:
+            raise ValueError("RSS source URLs must not include credentials")
         if self.enabled and (parsed.scheme not in {"http", "https"} or not parsed.netloc):
             raise ValueError("enabled RSS sources require an absolute HTTP(S) URL")
         return self

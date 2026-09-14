@@ -19,7 +19,7 @@ from app.telegram.core import (
     split_plain_text,
 )
 from app.telegram.poller import TelegramPoller
-from app.telegram.service import Actor, TelegramWebhookHandler, _search_text
+from app.telegram.service import Actor, TelegramUpdate, TelegramWebhookHandler, _search_text
 
 TOKEN = "123456789:telegram-token-for-offline-tests"
 SECRET = "telegram_webhook_secret_with_adequate_entropy_123"
@@ -170,6 +170,46 @@ def test_plain_text_split_preserves_literal_content_without_format_mode() -> Non
     assert len(parts) == 2
     assert parts[0].startswith("*not markdown*")
     assert all(len(part) <= 4_000 for part in parts)
+
+
+@pytest.mark.asyncio
+async def test_telegram_control_commands_reuse_injected_runtime_callbacks() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("control command must not call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+
+    async def sources() -> str:
+        return "Takip edilen kaynaklar\n- rss-example · RSS · Example (aktif)"
+
+    async def add_source(kind: str, endpoint: str, name: str) -> str:
+        assert (kind, endpoint, name) == ("rss", "https://example.test/feed", "Example")
+        return "Example eklendi ve aktif edildi."
+
+    async def set_interest(subject: str, enabled: bool) -> str:
+        assert (subject, enabled) == ("GPU", True)
+        return "GPU ilgi alanlarına eklendi."
+
+    handler._sources = sources
+    handler._add_source = add_source
+    handler._set_interest = set_interest
+    await handler.process_update(TelegramUpdate.model_validate(_payload(60, text="/kaynaklar")))
+    await handler.process_update(
+        TelegramUpdate.model_validate(
+            _payload(61, text="/kaynak_ekle rss https://example.test/feed Example")
+        )
+    )
+    await handler.process_update(TelegramUpdate.model_validate(_payload(62, text="/ilgi_ekle GPU")))
+    await handler.process_update(TelegramUpdate.model_validate(_payload(63, text="/yardim")))
+
+    messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
+    assert messages[0].startswith("Takip edilen kaynaklar")
+    assert messages[1] == "Example eklendi ve aktif edildi."
+    assert messages[2] == "GPU ilgi alanlarına eklendi."
+    assert "/kaynak_ekle rss" in messages[3]
 
 
 def test_search_output_only_keeps_safe_https_provenance_links() -> None:
