@@ -38,6 +38,7 @@ from app.config.csv_import import (
     InvalidCsvStructure,
     MalformedCsv,
 )
+from app.config.onboarding import SchedulerPreference
 from app.config.opml import (
     InvalidOpmlStructure,
     MalformedOpml,
@@ -420,6 +421,7 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
         sources_available = False
     else:
         sources_available = True
+    scheduler = getattr(request.app.state, "scheduler", None)
     return {
         "request": request,
         "sources": sources,
@@ -427,6 +429,15 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
         "sources_available": sources_available,
         "active_sources": sum(item["enabled"] for item in sources),
         "disabled_sources": sum(not item["enabled"] for item in sources),
+        "telegram_configured": bool(
+            getattr(request.app.state, "telegram_webhook_handler", None)
+            or getattr(request.app.state, "telegram_polling", None)
+        ),
+        "gmail_configured": bool(
+            getattr(request.app.state, "gmail_configured", False)
+            and getattr(request.app.state, "gmail_encryption_ready", False)
+        ),
+        "scheduler": scheduler.state if scheduler else None,
     }
 
 
@@ -576,6 +587,34 @@ async def control_center_page(request: Request) -> HTMLResponse:
         name="admin_control_center.html",
         context=context,
     )
+
+
+@router.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request) -> HTMLResponse:
+    """Render optional, browser-resumable first-run guidance."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Setup", "active_page": "onboarding"})
+    return templates.TemplateResponse(
+        request=request, name="admin_onboarding.html", context=context
+    )
+
+
+@router.post("/onboarding/scheduler")
+async def save_onboarding_scheduler(
+    preference: SchedulerPreference, request: Request
+) -> dict[str, object]:
+    repository = getattr(request.app.state, "onboarding_repository", None)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if repository is None or scheduler is None:
+        raise HTTPException(503, "scheduler preferences are unavailable")
+    if scheduler.state.running:
+        raise HTTPException(409, "scheduler is currently running; retry shortly")
+    try:
+        await repository.save_scheduler_preference(preference)
+        await scheduler.configure(preference.enabled, preference.daily_time)
+    except Exception:
+        raise HTTPException(503, "scheduler preferences are unavailable") from None
+    return {"enabled": scheduler.state.enabled, "daily_time": scheduler.state.daily_time}
 
 
 @router.get("/sources/ui", response_class=HTMLResponse)

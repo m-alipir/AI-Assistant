@@ -11,6 +11,7 @@
         <div class="card">Disabled sources<br><b>{{ disabled_sources }}</b></div>
       </div>
     </section>
+    {% if not active_sources %}<section><h2>New here?</h2><p>Use the optional setup flow to connect services, add sources, choose a briefing time, and review readiness.</p><p><a href="/admin/onboarding">Start setup</a></p></section>{% endif %}
     <section>
       <h2>Manage sources</h2>
       <p>Review, add, disable, remove, import, or export managed RSS and YouTube sources. Imports are previewed first and new sources stay disabled until you enable them.</p>

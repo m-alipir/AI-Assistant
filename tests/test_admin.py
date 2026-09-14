@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.config.onboarding import SchedulerPreference
 from app.config.source_repository import (
     EnabledSourceDeleteBlocked,
     ManagedSourceCreate,
@@ -11,6 +12,7 @@ from app.config.source_repository import (
     SourceNotFound,
     canonicalize_endpoint,
 )
+from app.jobs.scheduler import DailyScheduler
 from app.knowledge.search import KnowledgeSearchError
 from app.main import create_app
 
@@ -114,6 +116,17 @@ class FakeSourceRepository:
         if row["enabled"]:
             raise EnabledSourceDeleteBlocked
         del self.rows[source_id]
+
+
+class FakeOnboardingRepository:
+    def __init__(self) -> None:
+        self.preference: SchedulerPreference | None = None
+
+    async def scheduler_preference(self) -> SchedulerPreference | None:
+        return self.preference
+
+    async def save_scheduler_preference(self, preference: SchedulerPreference) -> None:
+        self.preference = preference
 
 
 def test_admin_run_callback():
@@ -255,6 +268,7 @@ def test_control_center_dashboard_is_narrow_and_never_exposes_environment_values
     assert "Control Center" in response.text
     assert "Dashboard" in response.text
     assert "Sources" in response.text
+    assert "/admin/onboarding" in response.text
     assert "secret-must-not-render" not in response.text
 
 
@@ -318,6 +332,47 @@ def test_control_center_dashboard_omits_unrelated_runtime_controls(tmp_path: Pat
     assert "Last Gmail sync" in operations.text
     assert "Last YouTube sync" in operations.text
     assert "Manual Run" in operations.text
+
+
+def test_onboarding_is_optional_and_reuses_safe_admin_entry_points(tmp_path: Path) -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    app.state.sources_path = tmp_path / "sources.yaml"
+    app.state.models_path = tmp_path / "models.yaml"
+    app.state.interests_path = tmp_path / "interests.yaml"
+    app.state.interests_path.write_text("profile: {}\n")
+    app.state.source_repository = FakeSourceRepository([_source_row(enabled=True)])
+    app.state.onboarding_repository = FakeOnboardingRepository()
+    app.state.gmail_configured = True
+    app.state.gmail_encryption_ready = True
+    app.state.scheduler = DailyScheduler(
+        False, "08:00", "Europe/Istanbul", _unused_run, _unused_claim
+    )
+
+    with TestClient(app) as client:
+        page = client.get("/admin/onboarding")
+        assert page.status_code == 200
+        assert "First-run setup" in page.text
+        assert "/admin/sources/ui" in page.text
+        assert "/admin/gmail/connect" in page.text
+        assert "/admin/interests/" in page.text
+        assert "/admin/onboarding/scheduler" in page.text
+        assert client.post(
+            "/admin/onboarding/scheduler", json={"enabled": True, "daily_time": "07:30"}
+        ).json() == {"enabled": True, "daily_time": "07:30"}
+        assert client.post(
+            "/admin/onboarding/scheduler", json={"enabled": True, "daily_time": "bad"}
+        ).status_code == 422
+    assert app.state.onboarding_repository.preference == SchedulerPreference(
+        enabled=True, daily_time="07:30"
+    )
+
+
+async def _unused_run() -> dict[str, object]:
+    raise AssertionError("onboarding must not run ingestion")
+
+
+async def _unused_claim(_: object) -> bool:
+    raise AssertionError("onboarding must not claim a scheduled day")
 
 
 def test_control_center_dashboard_omits_model_and_budget_controls(tmp_path: Path) -> None:

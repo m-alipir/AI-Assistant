@@ -97,7 +97,7 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
     try:
         async with engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260914_0025"
+        assert revision == "20260914_0026"
 
         created = await repository.create(
             ManagedSourceCreate(

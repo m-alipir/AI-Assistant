@@ -34,6 +34,7 @@ from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
+from app.config.onboarding import OnboardingRepository
 from app.config.settings import Settings, get_settings
 from app.config.source_repository import SourceRepository
 from app.config.sources import SourceCatalog, YouTubeSourceConfig, load_source_catalog
@@ -109,6 +110,11 @@ def create_app(
                 seed = load_source_catalog(active_settings.admin_sources_path)
                 await repository.bootstrap_yaml(seed)
         scheduler = getattr(lifespan_app.state, "scheduler", None)
+        preferences = getattr(lifespan_app.state, "onboarding_repository", None)
+        if scheduler and preferences:
+            preference = await preferences.scheduler_preference()
+            if preference is not None:
+                await scheduler.configure(preference.enabled, preference.daily_time)
         retention_scheduler = getattr(lifespan_app.state, "retention_scheduler", None)
         if scheduler:
             scheduler.start()
@@ -233,6 +239,7 @@ def create_app(
         sessions = create_session_factory(engine)
         source_repository = SourceRepository(sessions)
         app.state.source_repository = source_repository
+        app.state.onboarding_repository = OnboardingRepository(sessions)
         app.state.sessions = sessions
 
         async def write_agent_api_audit(endpoint: str, outcome: str, response_bytes: int) -> None:

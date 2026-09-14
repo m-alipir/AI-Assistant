@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 9 implementation commit: pending one focused bootstrap-lifecycle commit
+- Stage 10 implementation commit: pending one focused onboarding commit
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -69,10 +69,9 @@ Make the database the runtime source-of-truth.
   never rereads YAML after completion. It persists validated source freshness defaults with an
   empty-DB seed; pre-existing databases use built-in defaults. Scheduler, ingestion, and both
   retry paths load only the database catalog.
-
-## Not Finished
-
-- Onboarding is not implemented.
+- The optional Control Center onboarding starts at `/admin/onboarding`. It reuses the existing
+  Gmail OAuth, source, and interest endpoints, keeps browser-only skip progress resumable, and
+  persists only the non-secret daily scheduler preference in `control_center_settings`.
 
 ## Important Files
 
@@ -91,6 +90,7 @@ Make the database the runtime source-of-truth.
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
 - `app/config/sources.py`
+- `app/config/onboarding.py`
 - `tests/test_admin.py`, `tests/test_source_pack.py`, `tests/test_rss_runtime.py`,
   `tests/test_opml.py`, `tests/test_csv_bulk_urls.py`, `tests/test_source_export.py`,
   `tests/test_telegram.py`
@@ -110,9 +110,9 @@ after it completes, runtime catalog loads are database-only.
 
 ## Next Recommended Step
 
-No follow-on source-management slice is authorized. Do not start onboarding or production
-deployment without a new explicit request. Local or disposable-PostgreSQL success is not
-production migration/deployment acceptance.
+No follow-on slice is authorized. Do not start production deployment automation without a new
+explicit request. Local or disposable-PostgreSQL success is not production migration/deployment
+acceptance.
 
 ## Working Notes For The Next Agent
 
@@ -263,3 +263,13 @@ production migration/deployment acceptance.
   preservation, non-default seed defaults, startup fixture loading only while explicitly pending,
   and DB-only normal runtime.
 - Full Ruff with `--no-cache` and `git diff --check` passed after documentation changes.
+
+### Stage 10 onboarding verification
+
+- Focused Admin and scheduler suite passed 26 tests.
+- Full offline suite passed 281 tests with 6 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL container migrated to `20260914_0026`; focused
+  onboarding/source-repository persistence acceptance passed 11 tests and the container was
+  removed.
+- The wizard does not render or store Telegram/Gmail/provider secrets. Telegram configuration
+  remains an external protected-runtime prerequisite; Gmail remains explicitly optional.

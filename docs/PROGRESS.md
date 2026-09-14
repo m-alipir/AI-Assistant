@@ -582,6 +582,13 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 10 Control Center onboarding: focused Admin/scheduler coverage
+  passed 26 tests. The full offline suite passed 281 tests with 6 opt-in PostgreSQL skips. A
+  uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and passed
+  11 focused onboarding/source-repository tests before its container was removed. Coverage proves
+  optional/resumable setup rendering, existing Admin API entry points, scheduler input validation,
+  idle scheduler reconfiguration, and durable non-secret scheduler preferences. No provider, live
+  source, production database, deployment automation, or main-worktree mutation occurred.
 - 2026-09-14: Managed-source Stage 9 one-time YAML bootstrap lifecycle: focused bootstrap,
   repository, RSS, and YouTube runtime coverage passed 30 tests with 2 opt-in PostgreSQL skips.
   The full offline suite passed 279 tests with 5 opt-in PostgreSQL skips. A uniquely named
@@ -963,6 +970,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed the isolated first-run Control Center onboarding flow in
+  `feature/db-managed-sources`. The optional Setup page guides Telegram status/setup, Gmail
+  connect-or-skip, managed source add/import, interest overrides, daily briefing schedule choice,
+  and readiness. Existing installations remain on the normal dashboard; only an empty catalog sees
+  the setup prompt. `control_center_settings` persists scheduler choices without accepting browser
+  secrets. No deployment automation or unrelated backend refactor was added.
 - 2026-09-14: Completed the isolated managed-source one-time YAML bootstrap lifecycle in
   `feature/db-managed-sources`. `MANAGED_SOURCES_BOOTSTRAP` is default-off and is checked only at
   startup; `20260914_0025` records lifecycle completion. An explicit bootstrap seeds only an empty

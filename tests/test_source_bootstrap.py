@@ -30,9 +30,17 @@ def test_startup_reads_yaml_only_for_an_explicit_pending_bootstrap(
             bootstraps.append(seed)
             return True
 
+    class OnboardingRepository:
+        def __init__(self, sessions: object) -> None:
+            pass
+
+        async def scheduler_preference(self) -> None:
+            return None
+
     monkeypatch.setattr(main, "create_engine", lambda settings: _Engine())
     monkeypatch.setattr(main, "create_session_factory", lambda engine: object())
     monkeypatch.setattr(main, "SourceRepository", Repository)
+    monkeypatch.setattr(main, "OnboardingRepository", OnboardingRepository)
     fixture = tmp_path / "sources.yaml"
     fixture.write_text("rss: []\nyoutube: []\n", encoding="utf-8")
     first = Settings(managed_sources_bootstrap=True, admin_sources_path=fixture)
