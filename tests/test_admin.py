@@ -366,6 +366,17 @@ def test_control_center_dashboard_is_narrow_and_never_exposes_environment_values
     assert "secret-must-not-render" not in response.text
 
 
+def test_control_center_dashboard_reports_separate_polling_deployment() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    app.state.telegram_enabled = True
+    app.state.telegram_mode = "polling"
+    with TestClient(app) as client:
+        response = client.get("/admin/control-center")
+    assert response.status_code == 200
+    assert "Telegram" in response.text
+    assert "connected" in response.text
+
+
 def test_control_center_dashboard_shows_safe_operational_summary(
     tmp_path: Path, monkeypatch
 ) -> None:

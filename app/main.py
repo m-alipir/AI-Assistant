@@ -246,6 +246,10 @@ def create_app(
     app.state.models_path = active_settings.admin_models_path
     app.state.interests_path = active_settings.admin_interests_path
     app.state.gmail_enabled = active_settings.gmail_enabled
+    # The polling worker is a separate container, so dashboard status must not
+    # depend on a webhook/poller object living in this process.
+    app.state.telegram_enabled = active_settings.telegram_enabled
+    app.state.telegram_mode = active_settings.telegram_mode
     app.state.openrouter_configured = bool(active_settings.openrouter_api_key_value)
     app.state.gmail_configured = bool(
         active_settings.gmail_enabled
@@ -1434,10 +1438,21 @@ def _admin_credentials_valid(request: Request, settings: Settings) -> bool:
 
 
 def _same_admin_origin(request: Request, settings: Settings) -> bool:
-    """Require the configured browser origin for authenticated state-changing admin requests."""
+    """Require the configured origin, plus the explicitly supported localhost SSH tunnel."""
     origin = request.headers.get("origin", "").rstrip("/")
     expected = settings.admin_public_origin.rstrip("/")
-    return bool(origin and expected and secrets.compare_digest(origin, expected))
+    if origin and expected and secrets.compare_digest(origin, expected):
+        return True
+    # Production may intentionally publish Admin as https://localhost while an operator
+    # accesses it through the documented `ssh -L 8000:127.0.0.1:8000` tunnel.
+    return (
+        origin == "http://localhost:8000"
+        and urlsplit(expected).scheme == "https"
+        and urlsplit(expected).hostname == "localhost"
+        and request.url.scheme == "http"
+        and request.url.hostname == "localhost"
+        and request.url.port == 8000
+    )
 
 
 def _request_is_https(request: Request, settings: Settings) -> bool:

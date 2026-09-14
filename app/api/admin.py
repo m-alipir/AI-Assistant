@@ -480,6 +480,10 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
         "telegram_configured": bool(
             getattr(request.app.state, "telegram_webhook_handler", None)
             or getattr(request.app.state, "telegram_polling", None)
+            or (
+                getattr(request.app.state, "telegram_enabled", False)
+                and getattr(request.app.state, "telegram_mode", None) == "polling"
+            )
         ),
         "gmail_configured": bool(
             getattr(request.app.state, "gmail_configured", False)

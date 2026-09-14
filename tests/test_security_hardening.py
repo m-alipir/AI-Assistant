@@ -62,6 +62,52 @@ def test_production_admin_is_authenticated_and_mutations_require_same_origin() -
         assert health.headers["content-security-policy"].startswith("default-src 'self'")
 
 
+def test_localhost_ssh_tunnel_origin_allows_admin_post_forms_without_global_origin_bypass() -> None:
+    settings = _production_settings().model_copy(
+        update={"admin_public_origin": "https://localhost", "allowed_hosts": "localhost"}
+    )
+    app = create_app(
+        settings=settings,
+        readiness_check=lambda: __import__("asyncio").sleep(0, result=True),
+    )
+    app.state.run_callback = lambda: {"status": "completed", "counts": {}, "message": "ok"}
+
+    async def search(_filters):
+        return {
+            "status": "ok",
+            "answer_tr": "ok",
+            "events": [],
+            "emails": [],
+            "model_inferences": [],
+            "llm": {"provider_calls": 0, "cache_hits": 0, "by_role": {}},
+        }
+
+    app.state.search_callback = search
+    app.state.ask_callback = search
+    headers = {
+        "Authorization": _basic_header(),
+        "Origin": "http://localhost:8000",
+    }
+    with TestClient(app, base_url="http://localhost:8000") as client:
+        assert client.post("/admin/run-now", headers=headers).status_code == 200
+        assert client.post(
+            "/admin/search/retrieve", headers=headers, json={"question": "test"}
+        ).status_code == 200
+        assert client.post(
+            "/admin/search", headers=headers, json={"question": "test"}
+        ).status_code == 200
+        assert client.post(
+            "/admin/onboarding/scheduler",
+            headers=headers,
+            json={"enabled": False, "daily_time": "08:00"},
+        ).status_code != 403
+        wrong_port = {**headers, "Origin": "http://localhost:8001"}
+        assert client.post("/admin/run-now", headers=wrong_port).status_code == 403
+        assert client.post(
+            "/admin/run-now", headers={**headers, "Origin": "https://evil.test"}
+        ).status_code == 403
+
+
 def test_admin_csp_uses_per_response_nonces_without_inline_handlers() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
     with TestClient(app) as client:

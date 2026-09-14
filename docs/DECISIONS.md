@@ -352,4 +352,16 @@ remains the authority for every server-side fetch.
 
 ---
 
+## D030 — Admin CSRF accepts only the documented localhost SSH tunnel
+**Date:** 2026-09-14
+**Status:** Accepted
+
+Authenticated state-changing Admin requests continue to require the configured `Origin`. The sole
+additional production path is the documented SSH tunnel: when `ADMIN_PUBLIC_ORIGIN` is
+`https://localhost`, the request and Origin must both be exactly `http://localhost:8000`.
+
+Consequences: the Control Center works through the private localhost tunnel while arbitrary origins,
+ports, and public hosts remain rejected. The application still binds only to the deployment's
+existing loopback publication; no public port or secret is exposed.
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

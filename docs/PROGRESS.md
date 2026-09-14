@@ -587,6 +587,10 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Control Center smoke-regression validation: 51 focused Admin/security tests passed.
+  Dashboard Telegram status now recognizes the separate polling deployment from non-secret mode
+  state, and authenticated POST forms accept only the exact documented `http://localhost:8000`
+  SSH-tunnel origin when configured as `https://localhost`; wrong origins and ports remain 403.
 - 2026-09-14: Merge reconciliation validation: focused Telegram/RSS/Admin/Scheduler/Onboarding tests
   passed (69 passed, 1 PostgreSQL integration test skipped without a disposable URL); conflict
   markers are gone and DB-managed source callbacks remain the runtime path. Full offline, Ruff,
@@ -1059,6 +1063,11 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Fixed two production Control Center issues. Dashboard status no longer requires a
+  Telegram handler in the web process when the supported separate polling worker is configured.
+  Admin CSRF now has a narrow localhost SSH-tunnel exception tied to `https://localhost`, while
+  normal configured-origin and rejection behavior remains unchanged. Added regression coverage for
+  dashboard status and search/run/scheduler POST guards.
 - 2026-09-14: Reconciled `main` with `feature/db-managed-sources` while preserving the mainline
   GPT-OSS/reasoning and Telegram hardening. Runtime source reads and Telegram source mutations stay
   database-backed; YAML remains bootstrap-only. RSS 304 responses now persist source health before
