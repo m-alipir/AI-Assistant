@@ -4,6 +4,15 @@
 
 Make the database the runtime source-of-truth.
 
+## Resume Here
+
+- Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
+- Branch: `feature/db-managed-sources`
+- Stage 8 implementation commit: `44afab6 feat: add managed sources control center`
+- The worktree was clean when this handoff was updated on 2026-09-14.
+- Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
+  one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
+
 ## Current State
 
 - Migration `20260913_0024_managed_sources` creates the initial managed-source table.
@@ -51,6 +60,9 @@ Make the database the runtime source-of-truth.
   Sources page. Its source list/create/enable-disable/safe-delete and Source Pack/OPML/CSV
   preview/import/export entry points call the existing Admin API; no validation,
   canonicalization, or persistence rules are duplicated in browser code.
+- The focused Control Center starts at `/admin/control-center`; `/admin/sources/ui` is its Sources
+  page. The pre-existing broad operational page remains available at `/admin`. Do not remove or
+  silently change those existing operations while implementing later Control Center slices.
 
 ## Not Finished
 
@@ -69,8 +81,8 @@ Make the database the runtime source-of-truth.
 - `app/config/source_export.py`
 - `app/main.py`
 - `app/api/admin.py`
-- `app/templates/admin_shell.html`, `app/templates/admin_dashboard.html`,
-  `app/templates/admin_sources.html`
+- `app/templates/admin_shell.html`, `app/templates/admin_control_center.html`,
+  `app/templates/admin_sources.html`, `app/templates/admin_dashboard.html`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
@@ -95,8 +107,38 @@ still attempted on every ingestion/retry catalog load and needs an explicit life
 
 ## Next Recommended Step
 
-Onboarding veya production deployment ayrı bir onay gerektirir. Önce YAML bootstrap yaşam döngüsü
-example/bootstrap-only olarak açıkça tanımlanmalıdır; mevcut Control Center bu adıma dahil değildir.
+Implement the explicit YAML bootstrap lifecycle as the next isolated slice.
+
+- Make YAML an explicit one-time bootstrap/development-fixture path instead of attempting it on
+  every ingestion and retry catalog load.
+- Keep `SourceRepository` and the database as the only runtime source-of-truth after bootstrap.
+- Preserve current Admin, Telegram, Control Center, source import/export, canonicalization,
+  health/cooldown, and resilient ingestion behavior.
+- Define deterministic behavior for an empty database, an already-seeded database, a missing or
+  invalid bootstrap fixture, and repository/database unavailability.
+- Add focused repository/runtime/bootstrap tests, then run the full offline suite, Ruff,
+  `git diff --check`, and the opt-in disposable PostgreSQL acceptance test when Docker is available.
+- Update this handoff and `docs/PROGRESS.md`, and create one focused commit if clean.
+
+Do not start onboarding or production deployment without a new explicit request. Do not infer
+that local or disposable-PostgreSQL success means production migration/deployment acceptance.
+
+## Working Notes For The Next Agent
+
+- Use the project interpreter at
+  `C:\Users\Mali\Documents\ChatGPT\AI Personal Assistant\.venv\Scripts\python.exe`.
+- On this machine, pytest cache/temp paths inside the isolated worktree may be unreliable. Use
+  `-p no:cacheprovider` and a unique writable `--basetemp` directory.
+- Run Ruff with `--no-cache`.
+- PostgreSQL acceptance must use a uniquely named disposable pgvector container/database. Migrate
+  it to Alembic head, run only the opt-in managed-source test against it, and remove that exact
+  container and its anonymous volume afterward.
+- Source creation/import defaults to disabled. An enabled source must be disabled before safe
+  deletion. Keep these rules in the repository/service layer, not in handlers or browser code.
+- Source Pack interests/exclude are preview metadata only; do not create an interest subsystem as
+  part of source work.
+- Never write uploaded import content to arbitrary filesystem paths, render untrusted UI content
+  with `innerHTML`, expose secrets/provider bodies, or mutate the main dirty worktree.
 
 ## Do Not Break
 
@@ -207,3 +249,14 @@ example/bootstrap-only olarak açıkça tanımlanmalıdır; mevcut Control Cente
   through DOM `textContent`; it does not write uploaded content to disk.
 - No provider, live source, production database, deployment, onboarding, or main-worktree mutation
   occurred.
+
+### Latest clean baseline
+
+- Branch head: `44afab6 feat: add managed sources control center`.
+- Focused Admin/Control Center test file: 19 passed after preserving the existing `/admin`
+  operations page and keeping the focused UI at `/admin/control-center`.
+- Full offline suite: 278 passed, 4 opt-in PostgreSQL tests skipped.
+- Disposable PostgreSQL managed-source acceptance: 1 passed; its uniquely named container and
+  anonymous volume were removed.
+- Full Ruff with `--no-cache` and `git diff --check` passed; no separate frontend package/checker
+  exists.

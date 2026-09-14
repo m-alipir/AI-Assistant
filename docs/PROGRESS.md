@@ -954,6 +954,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Refreshed the managed-source continuation handoff after Stage 8. The next isolated
+  slice is the explicit one-time YAML bootstrap/development-fixture lifecycle; onboarding and
+  production deployment still require a separate explicit request. Recorded the clean baseline
+  (`44afab6`), `/admin/control-center` versus preserved `/admin` route boundary, local test runner
+  notes, disposable PostgreSQL cleanup rule, and the source-management invariants the next agent
+  must preserve.
 - 2026-09-14: Completed Stage 8 Control Center foundation in the isolated
   `feature/db-managed-sources` worktree. Added a shared shell at `/admin/control-center`,
   a narrow source-status Dashboard, and a database-backed Sources page for list/create,
