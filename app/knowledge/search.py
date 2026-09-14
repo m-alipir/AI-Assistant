@@ -306,6 +306,42 @@ async def fetch_sql_candidates(
         raise KnowledgeSearchError("search_result_shape_error") from error
 
 
+async def fetch_sql_event(engine: AsyncEngine, event_id: str) -> SearchEvent | None:
+    """Read one compact persisted event for a read-only Control Center detail view."""
+    try:
+        async with engine.connect() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT e.id, e.canonical_title, e.occurred_at, "
+                            "coalesce(m.category_paths_json, '[]') AS category_paths_json, "
+                            "coalesce(m.entities_json, '[]') AS entities_json, "
+                            "coalesce(m.topics_json, '[]') AS topics_json, "
+                            "ARRAY(SELECT c.statement FROM claims c WHERE c.event_id = e.id "
+                            "ORDER BY c.id LIMIT 8) AS facts, "
+                            "ARRAY(SELECT i.inference_text FROM inferences i "
+                            "WHERE i.event_id = e.id "
+                            "ORDER BY i.id LIMIT 5) AS inferences, "
+                            "ARRAY(SELECT es.canonical_url FROM event_sources es "
+                            "WHERE es.event_id = e.id AND es.canonical_url IS NOT NULL "
+                            "ORDER BY es.canonical_url LIMIT 3) AS source_links "
+                            "FROM events e LEFT JOIN event_search_metadata m ON m.event_id = e.id "
+                            "WHERE e.id = :event_id"
+                        ),
+                        {"event_id": event_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _safe_event_from_row(row) if row is not None else None
+    except (ProgrammingError, DBAPIError) as error:
+        raise KnowledgeSearchError(_database_error_category(error)) from error
+    except SQLAlchemyError as error:
+        raise KnowledgeSearchError("search_sql_error") from error
+
+
 def _safe_event_from_row(row: object) -> SearchEvent | None:
     """Skip one malformed legacy row rather than making the whole user search unavailable."""
     try:

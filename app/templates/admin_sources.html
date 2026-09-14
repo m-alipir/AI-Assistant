@@ -1,0 +1,39 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Sources</h1>
+      <p class="muted">All changes go through the Admin API. Deletion is allowed only after a source is disabled.</p>
+      {% if not sources_available %}<p class="bad">The managed-source repository is unavailable. Check database readiness and try again.</p>{% endif %}
+      <div class="row"><a href="/admin/source-packs/export">Download Source Pack</a><a href="/admin/opml/export">Download OPML</a><a href="/admin/csv/export">Download CSV</a></div>
+    </section>
+    <section>
+      <h2>Current sources</h2>
+      <table><thead><tr><th>Name</th><th>Type</th><th>Stream</th><th>Endpoint</th><th>Status</th><th>Health</th><th>Actions</th></tr></thead><tbody>
+      {% for source in sources %}<tr><td>{{ source.name }}</td><td>{{ source.kind }}</td><td>{{ source.stream }}</td><td>{{ source.endpoint }}</td><td>{{ 'enabled' if source.enabled else 'disabled' }}</td><td>{{ source.health_status }}</td><td><button data-command="toggle" data-id="{{ source.id }}" data-enabled="{{ 'false' if source.enabled else 'true' }}">{{ 'Disable' if source.enabled else 'Enable' }}</button> <button class="danger" data-command="delete" data-id="{{ source.id }}">Delete</button></td></tr>{% else %}<tr><td colspan="7" class="muted">No managed sources yet.</td></tr>{% endfor %}
+      </tbody></table>
+    </section>
+    <section>
+      <h2>Add a source</h2>
+      <p class="muted">New sources are disabled by default. RSS needs an absolute HTTP(S) feed URL; YouTube accepts a channel ID or official channel Atom feed URL.</p>
+      <div class="row"><select id="source-kind" aria-label="Source type"><option value="rss">RSS</option><option value="youtube">YouTube</option></select><input id="source-name" placeholder="Name" aria-label="Source name"><input id="source-endpoint" placeholder="RSS URL or channel ID" aria-label="Source endpoint"><select id="source-stream" aria-label="Source stream"><option value="tech">Tech</option><option value="world">World</option><option value="personalized">Personalized</option></select><button data-command="create">Add disabled source</button></div>
+    </section>
+    <section>
+      <h2>Import</h2>
+      <p class="muted">Paste Source Pack YAML, OPML, or source CSV. Preview does not change sources; import accepts only valid new rows and leaves them disabled.</p>
+      <div class="row"><select id="import-format" aria-label="Import format"><option value="source-packs">Source Pack YAML</option><option value="opml">OPML</option><option value="csv">CSV</option></select><button data-command="preview-import">Preview</button><button data-command="import">Import valid new sources</button></div>
+      <textarea id="import-content" placeholder="Paste content here" aria-label="Import content"></textarea>
+      <pre id="import-result" class="result muted">No preview yet.</pre>
+    </section>
+  </main>
+  <script nonce="{{ request.state.csp_nonce }}">
+    const notice=(message,isError=false)=>{const element=document.querySelector('#notice');element.textContent=message;element.className=`notice ${isError?'bad':'ok'}`};
+    const errorMessage=(body)=>typeof body.detail==='string'?body.detail:body.detail&&body.detail.message?body.detail.message:'Request failed';
+    async function requestJson(url,options={}){const response=await fetch(url,options);const body=await response.json().catch(()=>({}));if(!response.ok)throw Error(errorMessage(body));return body}
+    async function toggleSource(id,enabled){try{await requestJson(`/admin/sources/${encodeURIComponent(id)}/${enabled}`,{method:'POST'});location.reload()}catch(error){notice(error.message,true)}}
+    async function deleteSource(id){if(!confirm('Delete this disabled source?'))return;try{await requestJson(`/admin/sources/${encodeURIComponent(id)}`,{method:'DELETE'});location.reload()}catch(error){notice(error.message,true)}}
+    async function createSource(){try{await requestJson('/admin/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:document.querySelector('#source-kind').value,name:document.querySelector('#source-name').value,endpoint:document.querySelector('#source-endpoint').value,stream:document.querySelector('#source-stream').value,enabled:false})});location.reload()}catch(error){notice(error.message,true)}}
+    async function importSources(commit){const format=document.querySelector('#import-format').value;const content=document.querySelector('#import-content').value;const field={"source-packs":'yaml',opml:'opml',csv:'csv'}[format];const result=document.querySelector('#import-result');result.textContent=commit?'Importing…':'Previewing…';try{const response=await requestJson(`/admin/${format}/${commit?'import':'preview'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:content})});result.textContent=JSON.stringify(response,null,2);result.className='result';if(commit)notice('Import finished. Review and enable any sources you want to use.')}catch(error){result.textContent=error.message;result.className='result bad';notice(error.message,true)}}
+    document.addEventListener('click',event=>{const button=event.target.closest('button[data-command]');if(!button)return;const command=button.dataset.command;if(command==='toggle')toggleSource(button.dataset.id,button.dataset.enabled==='true');else if(command==='delete')deleteSource(button.dataset.id);else if(command==='create')createSource();else if(command==='preview-import')importSources(false);else if(command==='import')importSources(true)});
+  </script>
+{% endblock %}

@@ -80,6 +80,7 @@ def test_briefing_presentation_keeps_legacy_records_and_renders_istanbul_time() 
     assert tuple(sections) == BRIEFING_SECTIONS
     assert sections["Senin İçin / For You"][0].source_links == ["https://example.test/nvidia"]
     assert format_istanbul(datetime(2026, 9, 7, 12, tzinfo=UTC)) == "07.09.2026 15:00"
+    assert format_istanbul(datetime(2026, 9, 7, 12)) is None
 
 
 def test_presentation_links_allow_only_public_credential_free_https() -> None:

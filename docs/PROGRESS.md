@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
 observation continues independently)
-**Last updated:** 2026-09-12
+**Last updated:** 2026-09-14
 
 ## Rules for Codex
 - Read this file before every task.
@@ -587,6 +587,10 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Merge reconciliation validation: focused Telegram/RSS/Admin/Scheduler/Onboarding tests
+  passed (69 passed, 1 PostgreSQL integration test skipped without a disposable URL); conflict
+  markers are gone and DB-managed source callbacks remain the runtime path. Full offline, Ruff,
+  and merge-diff checks remain the final gate for this merge.
 - 2026-09-13: Security completion validation: 236 passed, 3 dedicated PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset; Ruff and `git diff --check` passed.
   Locked dependency audit and `pip check` passed. Source/briefing/LLM/Admin security regressions
@@ -636,6 +640,121 @@ None. Credentials are not required for offline tests or local defaults.
   RSS/YouTube addition, safe disablement, duplicate/invalid rejection, and channel URL detection.
   Ruff and `git diff --check` passed. No external provider, source, Gmail, Telegram, or VDS call
   was made.
+- 2026-09-14: Managed-source Stage 14 Control Center Scheduler UI: focused Admin/scheduler
+  coverage passed 34 tests with 1 opt-in PostgreSQL skip; the full offline suite passed 289 tests
+  with 6 opt-in PostgreSQL skips. A uniquely named disposable pgvector PostgreSQL database
+  migrated to `20260914_0026`, and persisted scheduler-preference acceptance passed before its
+  container and anonymous volume were removed. Full Ruff with `--no-cache` and `git diff --check`
+  passed. No separate frontend package/checker exists; server-rendered page and endpoint coverage
+  exercised the UI contract. No provider, live source, production database, deployment automation,
+  or scheduler run occurred.
+- 2026-09-14: Managed-source Stage 13 Control Center Search / Memory: focused Admin/Search
+  coverage passed 34 tests; the full offline suite passed 287 tests with 6 opt-in PostgreSQL
+  skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
+  the real Search integration suite passed 3 tests, including compact event detail retrieval;
+  its container and anonymous volume were removed. Full Ruff with `--no-cache` and
+  `git diff --check` passed. The configured local PostgreSQL endpoint was unavailable for a
+  browser-server smoke, while TestClient page and endpoint coverage passed. No provider, live
+  source, production database, deployment automation, or knowledge mutation occurred.
+- 2026-09-14: Managed-source Stage 12 Control Center Briefings history/detail: focused Admin and
+  briefing coverage passed 30 tests; the full offline suite passed 284 tests with 6 opt-in
+  PostgreSQL skips. A uniquely named disposable pgvector PostgreSQL database migrated to
+  `20260914_0026`; direct persisted briefing history/detail reads verified complete generated
+  content and timezone-aware Istanbul conversion before its container and anonymous volume were
+  removed. Full Ruff with `--no-cache` and `git diff --check` passed. No provider, live source,
+  production database, deployment automation, or main-worktree mutation occurred.
+- 2026-09-14: Managed-source Stage 11 Control Center operational dashboard: focused Admin
+  coverage passed 20 tests and the full offline suite passed 281 tests with 6 opt-in PostgreSQL
+  skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
+  passed 11 focused onboarding/source-repository tests before its container and anonymous volume
+  were removed. Full Ruff with `--no-cache` and `git diff --check` passed. Coverage proves
+  server-rendered operational status, source health/failure display, latest briefing and provider
+  usage fallbacks, and preserved `/admin` operations. No provider,
+  live source, production database, deployment automation, or main-worktree mutation occurred.
+- 2026-09-14: Managed-source Stage 10 Control Center onboarding: focused Admin/scheduler coverage
+  passed 26 tests. The full offline suite passed 281 tests with 6 opt-in PostgreSQL skips. A
+  uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and passed
+  11 focused onboarding/source-repository tests before its container was removed. Coverage proves
+  optional/resumable setup rendering, existing Admin API entry points, scheduler input validation,
+  idle scheduler reconfiguration, and durable non-secret scheduler preferences. No provider, live
+  source, production database, deployment automation, or main-worktree mutation occurred.
+- 2026-09-14: Managed-source Stage 9 one-time YAML bootstrap lifecycle: focused bootstrap,
+  repository, RSS, and YouTube runtime coverage passed 30 tests with 2 opt-in PostgreSQL skips.
+  The full offline suite passed 279 tests with 5 opt-in PostgreSQL skips. A uniquely named
+  disposable pgvector PostgreSQL database migrated to `20260914_0025` and passed all 10
+  managed-source repository tests; its container and anonymous volume were removed. Coverage
+  proves explicit empty-DB bootstrap, repeated/idempotent and canonical duplicate handling,
+  non-default seed-default persistence, pre-existing-row preservation, and that completed/default
+  startup does not load YAML while runtime/retry catalog reads remain database-only. No provider,
+  live source, production database, deployment, onboarding, or main-worktree mutation occurred.
+- 2026-09-14: Stage 8 Control Center validation: focused Control Center/import/export suite passed
+  61 tests. The complete offline suite passed 278 tests with 4 opt-in PostgreSQL tests skipped;
+  full Ruff with `--no-cache` and `git diff --check` passed. A uniquely named disposable pgvector
+  container was migrated to `20260913_0024`, passed the managed-source PostgreSQL acceptance test
+  (1 test), and was removed with its anonymous volume. Coverage includes the narrow shell and
+  dashboard, repository availability, escaped untrusted source values, API-driven CRUD controls,
+  all four import entry points, downloads, and text-node result/error rendering. No provider, live
+  source, production database, deployment, onboarding, ingestion, or main-worktree mutation
+  occurred.
+- 2026-09-13: Stage 7 source export validation: focused export coverage passed 4 tests; export plus
+  Source Pack, OPML, CSV, Admin, and repository coverage passed 68 tests with 1 opt-in PostgreSQL
+  test skipped. The full offline suite passed 277 tests with 4 opt-in PostgreSQL tests skipped.
+  Full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL container passed the
+  managed-source acceptance test (1 test) and was removed with its anonymous volume. Coverage
+  includes deterministic canonical Source Pack/OPML/CSV output, disabled-source inclusion, Source
+  Pack round-trip state, documented format limits, Admin attachment responses, and unavailable
+  repositories. No provider, Control Center, onboarding, deployment, ingestion, or main-worktree
+  mutation occurred.
+- 2026-09-13: Stage 6 CSV and bulk URL validation: focused adapter coverage passed 16 tests; CSV and
+  bulk URL plus Source Pack, OPML, and relevant repository/Admin coverage passed 64 tests with 1
+  opt-in PostgreSQL test skipped. The full offline suite passed 273 tests with 4 opt-in PostgreSQL
+  tests skipped. Full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL
+  container passed the managed-source acceptance test (1 test) and was removed with its anonymous
+  volume. Coverage includes strict CSV/header parsing, bounds, shared normalization, pasted URL
+  lines, invalid rows, existing/internal canonical duplicates, preview non-mutation, disabled
+  creation, filtered/idempotent import, Admin errors, and unavailable repositories. No provider,
+  Control Center, onboarding, export, deployment, or main-worktree mutation occurred.
+- 2026-09-13: Stage 5 OPML validation: focused OPML coverage passed 11 tests; OPML plus
+  Source Pack and relevant repository/Admin coverage passed 48 tests with 1 opt-in PostgreSQL test
+  skipped. Coverage includes safe XML and DTD/entity rejection, root/body validation,
+  size/source/depth bounds, nested RSS/Atom extraction, mixed invalid rows, existing/internal
+  canonical duplicates, preview non-mutation, filtered/idempotent import, Admin HTTP failures, and
+  unavailable repositories. The full offline suite passed 257 tests with 4 opt-in PostgreSQL tests
+  skipped; full Ruff and `git diff --check` passed. A disposable migrated PostgreSQL container
+  passed the managed-source acceptance test (1 test) and was removed with its anonymous volume.
+  No provider, CSV/bulk URL, production deployment, or main-worktree mutation occurred.
+- 2026-09-13: Stage 4 Source Pack YAML validation: focused Source Pack coverage passed 11 tests;
+  Source Pack plus relevant repository/Admin coverage passed 37 tests with 1 opt-in PostgreSQL test
+  skipped; the full offline suite passed 246 tests with 4 opt-in PostgreSQL tests skipped. A
+  disposable migrated PostgreSQL container then passed the managed-source acceptance test (1 test)
+  and was removed with its anonymous volume. Full Ruff and `git diff --check` passed. Coverage
+  includes safe YAML/malformed input, pack structure and bounds, normalized fields, mixed invalid
+  rows, existing/internal canonical duplicates, preview non-mutation, filtered/idempotent import,
+  Admin HTTP failures, and unavailable repositories. No provider, interest mutation, OPML/CSV,
+  production deployment, or main-worktree mutation occurred.
+- 2026-09-13: Stage 3 Telegram DB-managed source validation: focused Telegram/repository coverage
+  passed 30 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 235 tests
+  with 4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. Tests cover
+  canonicalized add, bounded list/detail health output, enable/disable, enabled-source delete
+  rejection, safe delete, concise invalid/duplicate/not-found/unavailable messages, and absence of
+  model work. Docker remained unavailable, so disposable PostgreSQL acceptance did not run. No
+  provider, live Telegram/source, production DB/deployment, import/export, or main-worktree
+  mutation occurred.
+- 2026-09-13: Stage 2 Admin DB-managed source validation: focused Admin/repository coverage passed
+  26 tests with the opt-in PostgreSQL test skipped; the full offline suite passed 233 tests with
+  4 opt-in PostgreSQL tests skipped. Full Ruff and `git diff --check` passed. CRUD,
+  canonicalization visibility, duplicate/invalid/not-found/unsafe-delete HTTP mapping,
+  repository-unavailable behavior, compatibility routes, and zero source-YAML mutation are
+  covered. Docker remained unavailable, so disposable PostgreSQL acceptance did not run. No
+  provider, live source, production DB/deployment, Telegram source-management, or main-worktree
+  mutation occurred.
+- 2026-09-13: Managed-source repository CRUD/health validation: full Ruff and
+  `git diff --check` passed; Alembic static SQL emitted `20260913_0024`; the focused suite passed
+  29 tests with only its opt-in PostgreSQL persistence test skipped, and the full offline suite
+  passed 232 tests with 4 opt-in PostgreSQL tests skipped. RSS/YouTube fakes verify success and
+  safe feed-access failure persistence. No provider, live source, production DB, deployment, or
+  main-worktree mutation occurred. Docker daemon was unavailable, so the new disposable
+  PostgreSQL acceptance test remains opt-in and unexecuted.
 - 2026-09-12: OpenRouter 4xx diagnostic validation: 222 passed, 3 PostgreSQL integration tests
   skipped because `SEARCH_INTEGRATION_DATABASE_URL` is unset. The fake client covers one-attempt
   4xx handling, bounded safe error metadata, and secret-like error-message redaction. Ruff and
@@ -940,6 +1059,10 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Reconciled `main` with `feature/db-managed-sources` while preserving the mainline
+  GPT-OSS/reasoning and Telegram hardening. Runtime source reads and Telegram source mutations stay
+  database-backed; YAML remains bootstrap-only. RSS 304 responses now persist source health before
+  the no-op fast path. Final full-suite and merge checks are pending.
 - 2026-09-13: Completed the offline security hardening pass. Gatekeeper title/snippet metadata now
   uses the same escaped, bounded untrusted JSON boundary as full extraction; its prompt/cache
   version advanced to avoid reuse of older results. Source configuration rejects inline URL
@@ -991,6 +1114,107 @@ None. Credentials are not required for offline tests or local defaults.
   and model-budget boundaries; Gmail remains the existing read-only browser OAuth onboarding flow.
   Offline control-flow/source tests passed; no external service, production configuration, or
   migration changed. VDS polling/webhook and scheduler smoke evidence remains pending.
+- 2026-09-14: Completed the isolated Control Center Scheduler UI slice in
+  `feature/db-managed-sources`. The new Scheduler page exposes existing daily briefing state,
+  timezone, next/last run status, persisted preference, and bounded scheduled-run history. Its
+  save form reuses the onboarding scheduler endpoint, retaining backend validation, idle-run 409
+  protection, DB persistence, and runtime reconfiguration without a YAML path or frontend
+  scheduler logic. Existing onboarding, `/admin`, Gmail/AI settings, deployment, and main-worktree
+  behavior remain untouched.
+- 2026-09-14: Completed the isolated Control Center Search / Memory slice in
+  `feature/db-managed-sources`. The new read-only page reuses existing deterministic retrieval
+  and optional bounded Ask callbacks, displays safe compact source/title/date snippets, and opens
+  escaped persisted-event detail views. Empty, invalid, unavailable, and missing-result states are
+  handled without copying retrieval logic into the browser. Istanbul display converts only
+  timezone-aware timestamps; naive legacy values remain unavailable rather than being shifted.
+  Existing `/admin`, Briefings, scheduler, AI settings, and main-worktree behavior remain
+  untouched.
+- 2026-09-14: Completed the isolated Control Center Briefings history and detail slice in
+  `feature/db-managed-sources`. The read-only pages list the newest 50 persisted briefings with
+  status and summary, render complete escaped generated content, and distinguish empty,
+  unavailable, incomplete, and unknown states. Istanbul rendering uses only timezone-aware values;
+  naive legacy timestamps are not shifted. Existing `/admin/briefings/{id}`, feedback, storage,
+  scheduler, Search/Memory, AI settings, and main-worktree behavior remain untouched.
+- 2026-09-14: Implemented the isolated Control Center operational dashboard in
+  `feature/db-managed-sources`. It presents database/source health, last ingestion and next
+  briefing status, source counts and recent failures, the latest briefing, Telegram/Gmail/provider
+  readiness, available provider usage, and links to Sources, setup, and Operations. It reuses the
+  existing Admin/runtime services and preserves `/admin`, `/admin/control-center`, and source
+  management behavior; no backend operational logic was copied into browser code.
+- 2026-09-14: Completed the isolated first-run Control Center onboarding flow in
+  `feature/db-managed-sources`. The optional Setup page guides Telegram status/setup, Gmail
+  connect-or-skip, managed source add/import, interest overrides, daily briefing schedule choice,
+  and readiness. Existing installations remain on the normal dashboard; only an empty catalog sees
+  the setup prompt. `control_center_settings` persists scheduler choices without accepting browser
+  secrets. No deployment automation or unrelated backend refactor was added.
+- 2026-09-14: Completed the isolated managed-source one-time YAML bootstrap lifecycle in
+  `feature/db-managed-sources`. `MANAGED_SOURCES_BOOTSTRAP` is default-off and is checked only at
+  startup; `20260914_0025` records lifecycle completion. An explicit bootstrap seeds only an empty
+  database, persists validated seed defaults, recognizes existing sources without altering them,
+  and never rereads YAML after completion. Scheduler/ingestion and blocked RSS/YouTube retries now
+  load only the database catalog. Added focused lifecycle and PostgreSQL acceptance coverage;
+  onboarding, deployment, source-management UI/API behavior, and the main worktree remain
+  untouched.
+- 2026-09-14: Refreshed the managed-source continuation handoff after Stage 8. The next isolated
+  slice is the explicit one-time YAML bootstrap/development-fixture lifecycle; onboarding and
+  production deployment still require a separate explicit request. Recorded the clean baseline
+  (`44afab6`), `/admin/control-center` versus preserved `/admin` route boundary, local test runner
+  notes, disposable PostgreSQL cleanup rule, and the source-management invariants the next agent
+  must preserve.
+- 2026-09-14: Completed Stage 8 Control Center foundation in the isolated
+  `feature/db-managed-sources` worktree. Added a shared shell at `/admin/control-center`,
+  a narrow source-status Dashboard, and a database-backed Sources page for list/create,
+  enable-disable, safe-delete, Source Pack/OPML/CSV preview/import, and deterministic
+  Source Pack/OPML/CSV downloads. Browser code delegates all validation, canonicalization, and
+  persistence to existing Admin endpoints; the existing `/admin` operational page remains
+  available, and untrusted values/errors are escaped or set via text
+  nodes. Onboarding, Gmail/scheduler/briefing/memory/search/budget/model UI, deployment, ingestion,
+  and the main worktree remain untouched. Full evidence: 61 focused tests, 278 offline tests with
+  4 opt-in PostgreSQL skips, one disposable PostgreSQL acceptance test, Ruff, and diff check.
+- 2026-09-13: Completed Stage 7 deterministic database-managed source export in the isolated
+  `feature/db-managed-sources` worktree. Added a read-only exporter and minimal Admin download
+  endpoints for Source Pack YAML, OPML, and CSV; exports include disabled rows and canonical
+  endpoints. Source Pack preserves all import-supported source metadata; OPML and CSV explicitly
+  document their format limits. Control Center, onboarding, deployment, ingestion behavior, and
+  main-worktree changes remain untouched.
+- 2026-09-13: Completed Stage 6 CSV and bulk URL preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added bounded CSV and one-URL-per-line adapters, reused the
+  shared Source Pack row/batch workflow, exposed four minimal Admin endpoints, forced disabled
+  creation, and documented the formats in `docs/CSV_AND_BULK_URLS.md`. Control Center, onboarding,
+  source export, production deployment, and ingestion behavior remain untouched.
+- 2026-09-13: Completed Stage 5 OPML preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added a safe bounded OPML adapter, shared Source Pack batch
+  analysis/import reuse, minimal Admin transport, deterministic row/count results, and focused
+  tests. CSV/bulk URL, Control Center, onboarding, production deployment, and ingestion behavior
+  remain untouched.
+- 2026-09-13: Completed Stage 4 Source Pack YAML preview/import in the isolated
+  `feature/db-managed-sources` worktree. Added a reusable safe/bounded parser and service, a minimal
+  Admin transport, deterministic per-source/aggregate results, repository-only persistence, and
+  retry-safe duplicate handling. Interests/exclude are preview metadata only. The schema/API is
+  documented in `docs/SOURCE_PACKS.md`; OPML/CSV/bulk URL, Control Center, onboarding, production
+  deployment, and the bootstrap lifecycle remain untouched.
+- 2026-09-13: Completed Stage 3 Telegram source management in the isolated
+  `feature/db-managed-sources` worktree. The allow-listed chat interface now uses the same database
+  repository as Admin and ingestion for source list/detail, validated add, enable/disable, and safe
+  delete. It exposes only compact health state and safe error categories in Turkish; Telegram has
+  no remaining source YAML path. Import/export, Control Center, onboarding, production deployment,
+  and the explicit one-time bootstrap lifecycle remain untouched.
+- 2026-09-13: Completed Stage 2 Admin source management in the isolated
+  `feature/db-managed-sources` worktree. Admin dashboard/config reads plus get/list/create/update,
+  enable-disable, and safe-delete operations now use the database repository as their only runtime
+  source of truth; legacy Admin UI routes are repository-backed compatibility wrappers. Admin has
+  no remaining source YAML read/write path. Telegram and all later source-import/UI/onboarding work
+  remain untouched and are the next separate stages.
+- 2026-09-13: Completed the handoff's recommended managed-source repository slice in the isolated
+  `feature/db-managed-sources` worktree. Create/get/list/update/enable/disable/safe-delete,
+  canonical endpoint validation, duplicate mapping, and RSS/YouTube discovery health persistence
+  are implemented and covered offline. Admin/Telegram still use YAML and remain the next cutover;
+  do not merge or deploy until that single-source-of-truth transition and real disposable-DB
+  acceptance are complete.
+- 2026-09-13: Isolated branch `feature/db-managed-sources` / worktree
+  `AI-Personal-Assistant-db-managed-sources` started the managed-source cutover. Migration
+  `20260913_0024` and DB runtime lookup bootstrap exist; Admin/Telegram CRUD, imports, health
+  wiring, UI, and tests remain unfinished. Do not merge or deploy this worktree yet.
 - 2026-09-12: Added bounded OpenRouter 4xx diagnostics without logging request payloads or
   credentials. The current `openai/gpt-oss-120b` public model metadata requires reasoning and
   advertises `max_tokens`, so production must use its supported low reasoning effort instead of

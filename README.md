@@ -38,19 +38,19 @@ external API key.
 Stop the stack with `docker compose down`; named database data is retained. To intentionally
 remove local database data as well, use `docker compose down --volumes`.
 
-## Local admin dashboard
+## Local Control Center
 
-Open `http://localhost:8000/admin` after the stack is running. The dashboard is a lightweight
-local/VPS operations screen: it shows readiness and migration state, lets you add/enable/delete
-RSS or YouTube sources, edit role-based model IDs, set explicit interest overrides, run the
-connected job, inspect recent briefings/events, and view the metadata-only LLM ledger.
+Open `http://localhost:8000/admin/control-center` after the stack is running. The focused Control Center shows
+database/source-repository readiness and source counts. Its Sources page lists database-managed
+RSS/YouTube sources; creates disabled sources; enables, disables, and safely removes them; and
+offers preview/import for Source Pack YAML, OPML, CSV, and pasted URL lists plus deterministic
+Source Pack/OPML/CSV downloads. Validation, canonicalization, duplicate handling, and persistence
+remain in the Admin API, rather than being reimplemented in browser code.
 
-For a first RSS → LLM → briefing test, set `OPENROUTER_API_KEY` in `.env`, configure valid model
-IDs in `config/models.example.yaml`, then add and enable a valid RSS source. The RSS runtime job is
-bound at application startup and reloads source/model settings for each manual run. It applies
-freshness and deduplication before OpenRouter gatekeeper/extractor calls, then writes events,
-claims, LLM metadata, and a local briefing preview. Gmail needs its separate OAuth runtime setup
-and is not needed for an RSS-only first test.
+For a first RSS → LLM → briefing test, separately configure a valid RSS source and the required
+runtime/model settings. Existing operational Admin tools remain available separately at `/admin`;
+the focused Control Center does not add model, Gmail, scheduler, briefing, memory, search, budget,
+or manual-ingestion controls.
 
 ## Daily RSS schedule
 

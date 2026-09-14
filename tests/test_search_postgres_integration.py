@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.jobs.rss_runtime import database_persistence
-from app.knowledge.search import SearchFilters, fetch_sql_candidates
+from app.knowledge.search import SearchFilters, fetch_sql_candidates, fetch_sql_event
 from app.llm.core import ExtractedClaim, ExtractorResult, GatekeeperResult
 
 DATABASE_URL = os.environ.get("SEARCH_INTEGRATION_DATABASE_URL")
@@ -37,7 +37,7 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
     try:
         async with engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "20260911_0021"
+            assert revision == "20260914_0026"
             await connection.execute(
                 text(
                     "INSERT INTO events (id, canonical_title, occurred_at, embedding_dimensions) "
@@ -122,6 +122,10 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
         assert {event.event_id for event in events} == {event_id, legacy_event_id}
         nvidia = next(event for event in events if event.event_id == event_id)
         assert nvidia.source_links == ["https://example.test/nvidia"]
+        detail = await fetch_sql_event(engine, event_id)
+        assert detail is not None
+        assert detail.title == "NVIDIA RSS integration event"
+        assert detail.verified_facts == ["NVIDIA source-backed integration fact."]
         assert emails[0].classification == "security"
         assert emails[0].recorded_at is not None
     finally:
@@ -175,7 +179,7 @@ async def test_telegram_migration_creates_replay_tables_and_channel_key() -> Non
                     )
                 )
             ).all()
-        assert revision == "20260911_0021"
+        assert revision == "20260914_0026"
         assert tables == {
             "telegram_updates",
             "telegram_feedback_tokens",

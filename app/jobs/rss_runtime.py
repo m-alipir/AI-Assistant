@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.briefing.core import BriefingItem, build_sections, render_preview
 from app.collectors.article import ArticleContent, ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
+from app.config.source_repository import SourceRepository
 from app.config.sources import SourceCatalog
 from app.correlation.core import CorrelationResult, MemoryEvent
 from app.correlation.runtime import CorrelationRuntime, correlation_content_hash
@@ -125,6 +126,7 @@ class RssRuntimeJob:
         source_validators: SourceValidators | None = None,
         save_source_validators: SourceValidatorsSave | None = None,
         max_concurrent_fetches: int = 3,
+        source_repository: SourceRepository | None = None,
     ) -> None:
         self._catalog = catalog
         self._flow = flow
@@ -145,6 +147,7 @@ class RssRuntimeJob:
         self._source_validators = source_validators or _source_validators
         self._save_source_validators = save_source_validators or _save_source_validators
         self._max_concurrent_fetches = max(1, max_concurrent_fetches)
+        self._source_repository = source_repository
 
     async def run(
         self,
@@ -302,6 +305,13 @@ class RssRuntimeJob:
                             await self._source_failed("rss", source.name, error)  # type: ignore[attr-defined]
                         except Exception:
                             pass
+                        if self._source_repository is not None and source.managed_source_id:
+                            try:
+                                await self._source_repository.record_failure(
+                                    source.managed_source_id, error_category="rss_feed_access_error"
+                                )
+                            except Exception:
+                                pass
                         return source, None, error, False
 
             collected = await asyncio.gather(
@@ -316,6 +326,14 @@ class RssRuntimeJob:
                         counts.failed += 1
                         counts.errors.append(f"{name}: source_fetch_error")
                     continue
+                if self._source_repository is not None and source.managed_source_id:
+                    try:
+                        await self._source_repository.record_success(
+                            source.managed_source_id,
+                            strategy="rss_not_modified" if not_modified else "rss_atom",
+                        )
+                    except Exception:
+                        counts.errors.append(f"{name}: source_health_persistence_error")
                 if not_modified:
                     counts.not_modified += 1
                     continue

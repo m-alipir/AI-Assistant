@@ -61,6 +61,21 @@ class FakeFlow:
         )
 
 
+class FakeSourceRepository:
+    def __init__(self) -> None:
+        self.successes: list[tuple[str, str]] = []
+        self.failures: list[tuple[str, str]] = []
+
+    async def record_success(
+        self, source_id: str, *, strategy: str, detected_language: str | None = None
+    ) -> bool:
+        self.successes.append((source_id, strategy))
+        return True
+
+    async def record_failure(self, source_id: str, *, error_category: str) -> bool:
+        self.failures.append((source_id, error_category))
+        return True
+
 def catalog(language: str | None = None) -> SourceCatalog:
     return SourceCatalog(
         youtube=[
@@ -73,6 +88,53 @@ def catalog(language: str | None = None) -> SourceCatalog:
             )
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_youtube_runtime_persists_source_feed_health() -> None:
+    source = YouTubeSourceConfig(
+        name="Managed Channel",
+        channel_id="UCfixture",
+        stream=SourceStream.TECH,
+        enabled=True,
+        managed_source_id="managed-youtube",
+    )
+    repository = FakeSourceRepository()
+
+    async def persist(item, gate, extracted) -> str:
+        return "event"
+
+    async def known_item(content_hash: str) -> bool:
+        return False
+
+    job = YouTubeRuntimeJob(
+        SourceCatalog(youtube=[source]),
+        FakeFlow(),
+        persist,
+        known_item,
+        discovery=YouTubeDiscovery(FixtureFetcher()),
+        subtitles=FakeSubtitles([]),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+        source_repository=repository,
+    )
+    await job.run()
+    assert repository.successes == [("managed-youtube", "youtube_atom")]
+
+    class BrokenDiscovery:
+        async def collect(self, source, *, fetched_at):
+            raise RuntimeError("safe fixture failure")
+
+    failed = YouTubeRuntimeJob(
+        SourceCatalog(youtube=[source]),
+        FakeFlow(),
+        persist,
+        known_item,
+        discovery=BrokenDiscovery(),
+        subtitles=FakeSubtitles([]),
+        source_repository=repository,
+    )
+    await failed.run()
+    assert repository.failures == [("managed-youtube", "youtube_feed_access_error")]
 
 
 @pytest.mark.asyncio

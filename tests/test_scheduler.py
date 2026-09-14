@@ -41,6 +41,17 @@ async def test_disabled_scheduler_never_claims_or_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_can_apply_an_operator_preference_when_idle() -> None:
+    scheduler = DailyScheduler(False, "08:00", "Europe/Istanbul", _unused_run, _unused_claim)
+
+    await scheduler.configure(True, "07:30")
+
+    assert scheduler.state.enabled
+    assert scheduler.state.daily_time == "07:30"
+    await scheduler.stop()
+
+
+@pytest.mark.asyncio
 async def test_restart_cannot_claim_a_second_istanbul_local_day_and_records_safe_summary() -> None:
     claims: set[date] = set()
     records: list[tuple[date, str, str | None]] = []

@@ -75,6 +75,17 @@ class DailyScheduler:
             self.state.next_run = self.next_at().isoformat()
             self._task = asyncio.create_task(self._loop())
 
+    async def configure(self, enabled: bool, daily_time: str) -> None:
+        """Apply a persisted operator choice without interrupting an active run."""
+        if self.state.running:
+            raise RuntimeError("scheduler is running")
+        await self.stop()
+        self._at = time.fromisoformat(daily_time)
+        self.state.enabled = enabled
+        self.state.daily_time = daily_time
+        self.state.next_run = None
+        self.start()
+
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()

@@ -1,0 +1,10 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Briefings</h1>
+      <p class="muted">Saved generated briefings only. Viewing history never starts a run or a model call.</p>
+      {% if history["error"] %}<p class="bad" role="status">Briefing history is temporarily unavailable.</p>{% elif history["items"] %}<table><tr><th>Date and time</th><th>Status</th><th>Summary</th><th></th></tr>{% for briefing in history["items"] %}<tr><td>{{ briefing.created_at or 'Timestamp unavailable' }}</td><td>{{ briefing.status }}</td><td>{{ briefing.summary }}</td><td><a href="/admin/control-center/briefings/{{ briefing.id }}">Open</a></td></tr>{% endfor %}</table>{% else %}<p class="muted">No saved briefings yet.</p>{% endif %}
+    </section>
+  </main>
+{% endblock %}

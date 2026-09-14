@@ -53,6 +53,21 @@ class FakeFlow:
         )
 
 
+class FakeSourceRepository:
+    def __init__(self) -> None:
+        self.successes: list[tuple[str, str]] = []
+        self.failures: list[tuple[str, str]] = []
+
+    async def record_success(
+        self, source_id: str, *, strategy: str, detected_language: str | None = None
+    ) -> bool:
+        self.successes.append((source_id, strategy))
+        return True
+
+    async def record_failure(self, source_id: str, *, error_category: str) -> bool:
+        self.failures.append((source_id, error_category))
+        return True
+
 @pytest.mark.asyncio
 async def test_rss_metadata_fetches_are_bounded_and_processing_stays_safe() -> None:
     class DelayedCollector:
@@ -192,6 +207,55 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
     assert second["counts"]["processed"] == 0
     assert second["counts"]["llm_calls"] == 0
     assert second["counts"]["duplicates"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rss_runtime_persists_source_success_and_safe_access_failure() -> None:
+    source = RssSourceConfig(
+        name="Managed RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+        managed_source_id="managed-rss",
+    )
+    repository = FakeSourceRepository()
+
+    async def persist_event(item, gate, extracted) -> str:
+        return "event"
+
+    async def persist_briefing(items) -> None:
+        return None
+
+    async def known_item(content_hash: str) -> bool:
+        return False
+
+    successful = RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        known_item,
+        collector=RssCollector(FixtureFetcher(b"<rss><channel /></rss>")),
+        source_repository=repository,
+    )
+    await successful.run()
+    assert repository.successes == [("managed-rss", "rss_atom")]
+
+    class BrokenCollector:
+        async def collect(self, source, *, fetched_at):
+            raise RuntimeError("safe fixture failure")
+
+    failed = RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        known_item,
+        collector=BrokenCollector(),
+        source_repository=repository,
+    )
+    await failed.run()
+    assert repository.failures == [("managed-rss", "rss_feed_access_error")]
 
 
 @pytest.mark.asyncio

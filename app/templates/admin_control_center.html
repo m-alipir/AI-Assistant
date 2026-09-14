@@ -1,0 +1,22 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Dashboard</h1>
+      <p class="{{ 'ok' if overall_status == 'ready' else 'bad' }}"><b>{{ 'Ready' if overall_status == 'ready' else 'Needs attention' }}</b> · database, sources, and current runtime state.</p>
+      <div class="grid">
+        <div class="card">Database<br><b class="{{ 'ok' if database_ready else 'bad' }}">{{ 'ready' if database_ready else 'not ready' }}</b></div>
+        <div class="card">Source repository<br><b class="{{ 'ok' if sources_available else 'bad' }}">{{ 'available' if sources_available else 'unavailable' }}</b></div>
+        <div class="card">Last ingestion<br><b>{{ last_run }}</b><br><span class="muted">{{ last_run_details.at if last_run_details else 'not run in this process' }}</span></div>
+        <div class="card">Next briefing<br><b>{{ scheduler.next_run if scheduler and scheduler.next_run else 'not scheduled' }}</b><br><a href="/admin/control-center/scheduler">Manage schedule</a></div>
+      </div>
+    </section>
+    <section>
+      <h2>Sources</h2><div class="grid"><div class="card">Total<br><b>{{ source_counts.total }}</b></div><div class="card">Enabled<br><b class="{{ 'ok' if source_counts.enabled else 'bad' }}">{{ source_counts.enabled }}</b></div><div class="card">Unhealthy<br><b class="{{ 'bad' if source_counts.unhealthy else 'ok' }}">{{ source_counts.unhealthy }}</b></div><div class="card">Cooling down<br><b>{{ source_counts.cooling_down }}</b></div></div>
+      <p><a href="/admin/sources/ui">Manage sources</a>{% if source_counts.unhealthy or source_counts.cooling_down %} · <a href="/admin/sources/ui">Review source health</a>{% endif %}</p>
+    </section>
+    <section><h2>Recent source failures</h2><table><tr><th>Source</th><th>Category</th><th>Last attempt</th><th>Retry</th></tr>{% for source in recent_source_failures %}<tr><td>{{ source.name }}</td><td>{{ source.last_error_category }}</td><td>{{ source.last_attempt_at or 'unknown' }}</td><td>{{ source.next_retry_at or 'not cooling down' }}</td></tr>{% else %}<tr><td colspan="4" class="muted">No recent source failures.</td></tr>{% endfor %}</table></section>
+    <section><h2>Latest briefing</h2>{% if latest_briefing %}<p><b>{{ latest_briefing.created_at }}</b> · <a href="/admin/control-center/briefings/{{ latest_briefing.id }}">Open briefing</a> · <a href="/admin/control-center/briefings">View history</a></p><p class="muted">{{ latest_briefing.rendered[:240] }}</p>{% else %}<p class="muted">No briefing has been created yet. <a href="/admin/onboarding">Finish setup</a> or use Operations for a manual run.</p>{% endif %}</section>
+    <section><h2>Connections and usage</h2><div class="grid"><div class="card">Telegram<br><b class="{{ 'ok' if telegram_configured else 'muted' }}">{{ 'connected' if telegram_configured else 'not configured' }}</b></div><div class="card">Gmail<br><b class="{{ 'ok' if gmail_configured else 'muted' }}">{{ 'ready' if gmail_configured else 'optional / not configured' }}</b></div><div class="card">Provider<br><b class="{{ 'ok' if provider_configured else 'muted' }}">{{ 'configured' if provider_configured else 'not configured' }}</b></div><div class="card">Provider calls<br><b>{{ provider_usage.llm_calls if provider_usage.llm_calls is not none else 'unavailable' }}</b></div><div class="card">Provider cost<br><b>{{ provider_usage.llm_cost_usd if provider_usage.llm_cost_usd is not none else 'unavailable' }}</b></div></div><p><a href="/admin/onboarding">Open setup</a> · <a href="/admin">Operations and runtime details</a></p></section>
+  </main>
+{% endblock %}

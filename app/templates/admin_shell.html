@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Control Center · {{ page_title }}</title>
+  <style nonce="{{ request.state.csp_nonce }}">
+    :root{color-scheme:dark;font-family:system-ui;background:#101522;color:#edf2ff}body{max-width:1120px;margin:auto;padding:24px}.shell{display:flex;justify-content:space-between;gap:16px;align-items:baseline;border-bottom:1px solid #32405a;padding-bottom:16px}.brand{font-weight:700}.nav{display:flex;gap:8px;flex-wrap:wrap}.nav a{color:#aebbd4;text-decoration:none;padding:7px 10px;border-radius:5px}.nav a[aria-current="page"]{background:#2d5ca8;color:#fff}section{background:#1a2233;border:1px solid #32405a;border-radius:8px;padding:16px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{background:#101522;border-radius:6px;padding:12px}.ok{color:#81db9c}.bad{color:#ff9d9d}.muted{color:#aebbd4}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #32405a;padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}input,select,button,textarea{padding:8px;background:#101522;color:inherit;border:1px solid #51617c;border-radius:5px}input,select{min-width:0}textarea{width:100%;box-sizing:border-box;min-height:160px}button{background:#2d5ca8;cursor:pointer}.danger{background:#8c3f4d}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.notice{min-height:1.5em}.result,.briefing-content{white-space:pre-wrap;overflow-wrap:anywhere;background:#101522;padding:12px;border-radius:6px}.result{max-height:320px;overflow:auto}.briefing-content{font:inherit;margin:0}
+  </style>
+</head>
+<body>
+  <header class="shell"><a class="brand" href="/admin/control-center">Control Center</a><nav class="nav" aria-label="Control Center"><a href="/admin/control-center" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a><a href="/admin/control-center/scheduler" {% if active_page == 'scheduler' %}aria-current="page"{% endif %}>Scheduler</a><a href="/admin/control-center/search" {% if active_page == 'search' %}aria-current="page"{% endif %}>Search / Memory</a><a href="/admin/control-center/briefings" {% if active_page == 'briefings' %}aria-current="page"{% endif %}>Briefings</a><a href="/admin/onboarding" {% if active_page == 'onboarding' %}aria-current="page"{% endif %}>Setup</a><a href="/admin/sources/ui" {% if active_page == 'sources' %}aria-current="page"{% endif %}>Sources</a><a href="/admin">Operations</a></nav></header>
+  <p id="notice" class="notice" role="status" aria-live="polite"></p>
+  {% block content %}{% endblock %}
+</body>
+</html>

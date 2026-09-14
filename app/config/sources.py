@@ -38,6 +38,7 @@ class RssSourceConfig(BaseModel):
     enabled: bool = False
     source_tier: str = "unknown"
     freshness_hours: int | None = Field(default=None, ge=1, le=720)
+    managed_source_id: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def enabled_source_requires_http_url(self) -> "RssSourceConfig":
@@ -59,6 +60,7 @@ class YouTubeSourceConfig(BaseModel):
     enabled: bool = False
     freshness_hours: int | None = Field(default=None, ge=1, le=720)
     language: Literal["tr", "en"] | None = None
+    managed_source_id: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def enabled_source_requires_real_channel_id(self) -> "YouTubeSourceConfig":

@@ -34,8 +34,9 @@ from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
-from app.config.runtime_sources import SourceControlError, add_source, disable_source, list_sources
+from app.config.onboarding import OnboardingRepository
 from app.config.settings import Settings, get_settings
+from app.config.source_repository import ManagedSourceCreate, SourceRepository
 from app.config.sources import SourceCatalog, YouTubeSourceConfig, load_source_catalog
 from app.db.session import check_database_ready, create_engine, create_session_factory
 from app.email.core import TokenCipher
@@ -55,6 +56,7 @@ from app.knowledge.search import (
     SearchResponse,
     answer_question,
     fetch_sql_candidates,
+    fetch_sql_event,
 )
 from app.llm.core import (
     BudgetTracker,
@@ -102,7 +104,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
+        if active_settings.managed_sources_bootstrap:
+            repository = getattr(lifespan_app.state, "source_repository", None)
+            if repository is None:
+                raise RuntimeError("managed source bootstrap requires a database")
+            if await repository.needs_yaml_bootstrap():
+                seed = load_source_catalog(active_settings.admin_sources_path)
+                await repository.bootstrap_yaml(seed)
         scheduler = getattr(lifespan_app.state, "scheduler", None)
+        preferences = getattr(lifespan_app.state, "onboarding_repository", None)
+        if scheduler and preferences:
+            preference = await preferences.scheduler_preference()
+            if preference is not None:
+                await scheduler.configure(preference.enabled, preference.daily_time)
         retention_scheduler = getattr(lifespan_app.state, "retention_scheduler", None)
         if scheduler:
             scheduler.start()
@@ -242,6 +256,9 @@ def create_app(
     app.state.gmail_encryption_configuration_error = False
     if engine is not None:
         sessions = create_session_factory(engine)
+        source_repository = SourceRepository(sessions)
+        app.state.source_repository = source_repository
+        app.state.onboarding_repository = OnboardingRepository(sessions)
         app.state.sessions = sessions
 
         async def write_agent_api_audit(endpoint: str, outcome: str, response_bytes: int) -> None:
@@ -599,7 +616,7 @@ def create_app(
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            catalog = await source_repository.load_catalog()
             job = RssRuntimeJob(
                 catalog,
                 ExtractionFlow(router),
@@ -631,6 +648,7 @@ def create_app(
                 source_validators=source_validators,
                 save_source_validators=save_source_validators,
                 max_concurrent_fetches=active_settings.rss_max_concurrent_fetches,
+                source_repository=source_repository,
             )
             gmail_job = GmailRuntimeJob(
                 gmail_accounts,
@@ -656,6 +674,7 @@ def create_app(
                         allow_insecure_http=active_settings.allow_insecure_source_urls,
                     )
                 ),
+                source_repository=source_repository,
             ).run()
             youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
             rss_call_start = len(router.calls)
@@ -756,6 +775,12 @@ def create_app(
             ).model_dump(mode="json")
 
         app.state.search_callback = search_knowledge
+
+        async def search_event_detail(event_id: str):
+            """Read one persisted search result without invoking a provider."""
+            return await fetch_sql_event(engine, event_id)
+
+        app.state.search_event_detail_callback = search_event_detail
 
         async def agent_briefing_items(
             briefing_id: str, rendered: str
@@ -950,7 +975,10 @@ def create_app(
             last_run = str(getattr(app.state, "last_run", "idle"))[:64]
             scheduler = getattr(app.state, "scheduler", None)
             scheduler_state = scheduler.state if scheduler else None
-            sources = list_sources(active_settings.admin_sources_path)
+            try:
+                sources = await source_repository.list()
+            except Exception:
+                sources = []
             active_sources = sum(bool(source["enabled"]) for source in sources)
             async with sessions() as session:
                 last_briefing = await session.scalar(
@@ -995,7 +1023,7 @@ def create_app(
             return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
         async def telegram_sources() -> str:
-            rows = list_sources(active_settings.admin_sources_path)
+            rows = await source_repository.list()
             if not rows:
                 return "Henüz takip edilen kaynak yok."
             lines = ["Takip edilen kaynaklar"]
@@ -1006,17 +1034,24 @@ def create_app(
 
         async def telegram_add_source(kind: str, endpoint: str, name: str) -> str:
             try:
-                source = add_source(active_settings.admin_sources_path, kind, endpoint, name)
-            except SourceControlError as error:
-                return str(error)
+                source = await source_repository.create(
+                    ManagedSourceCreate(kind=kind, endpoint=endpoint, name=name, enabled=True)
+                )
+            except Exception:
+                return "Kaynak yönetimi şu anda kullanılamıyor."
             return f"{source['name']} eklendi ve aktif edildi. Kimlik: {source['id']}"
 
         async def telegram_disable_source(source_id: str) -> str:
             try:
-                name = disable_source(active_settings.admin_sources_path, source_id)
-            except SourceControlError as error:
-                return str(error)
-            return f"{name} devre dışı bırakıldı. İsterseniz daha sonra tekrar ekleyebilirsiniz."
+                row = await source_repository.get(source_id)
+                if row is None or not await source_repository.set_enabled(source_id, False):
+                    return "Kaynak bulunamadı."
+            except Exception:
+                return "Kaynak yönetimi şu anda kullanılamıyor."
+            return (
+                f"{row['name']} devre dışı bırakıldı. "
+                "İsterseniz daha sonra tekrar ekleyebilirsiniz."
+            )
 
         def _telegram_subject(value: str) -> str | None:
             subject = " ".join(value.split())
@@ -1093,6 +1128,7 @@ def create_app(
                 disable_source=telegram_disable_source,
                 interests=telegram_interests,
                 set_interest=telegram_set_interest,
+                source_repository=source_repository,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler
@@ -1104,7 +1140,7 @@ def create_app(
                 return {"status": "retry_not_available"}
             source_name = record.get("source_name")
             video_url = record.get("canonical_url")
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            catalog = await source_repository.load_catalog()
             source = next(
                 (entry for entry in catalog.youtube if entry.name == source_name and entry.enabled),
                 None,
@@ -1185,7 +1221,7 @@ def create_app(
             record = await claim_blocked_item(content_hash, "rss")
             if record is None:
                 return {"status": "retry_not_available"}
-            catalog = load_source_catalog(active_settings.admin_sources_path)
+            catalog = await source_repository.load_catalog()
             source_name = record.get("source_name")
             source = next(
                 (entry for entry in catalog.rss if entry.name == source_name and entry.enabled),

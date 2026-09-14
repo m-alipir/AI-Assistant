@@ -1,0 +1,10 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <p><a href="/admin/control-center/search">← Search / Memory</a></p>
+      <h1>Memory result</h1>
+      {% if unavailable %}<p class="bad" role="status">Memory result is temporarily unavailable.</p>{% else %}<h2>{{ event.title }}</h2><p class="muted">{{ event.occurred_at or 'Timestamp unavailable' }}</p>{% if event.verified_facts %}<h3>Source-backed facts</h3><ul>{% for fact in event.verified_facts %}<li>{{ fact }}</li>{% endfor %}</ul>{% endif %}{% if event.stored_inferences %}<h3>Stored model inferences</h3><ul>{% for inference in event.stored_inferences %}<li>{{ inference }}</li>{% endfor %}</ul>{% endif %}{% if event.entities or event.topics or event.category_paths %}<p class="muted">{{ event.entities | join(', ') }}{% if event.topics %} · {{ event.topics | join(', ') }}{% endif %}{% if event.category_paths %} · {{ event.category_paths | join(', ') }}{% endif %}</p>{% endif %}{% if event.source_links %}<h3>Sources</h3><ul>{% for link in event.source_links %}<li><a href="{{ link }}" target="_blank" rel="noopener">{{ link }}</a></li>{% endfor %}</ul>{% else %}<p class="muted">No retained source link.</p>{% endif %}{% endif %}
+    </section>
+  </main>
+{% endblock %}

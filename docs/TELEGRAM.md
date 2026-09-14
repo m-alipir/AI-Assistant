@@ -21,13 +21,26 @@ long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbo
 - `/ilgiler`, `/ilgi_ekle <konu>`, and `/ilgi_sil <konu>` use the existing stable interest profile.
 - `/yardim` and `/start` show this compact command guide only after authorization; they never
   enroll a user.
+- `/durum` returns only a compact readiness and last-run state.
+- `/kaynaklar` lists at most 30 database-managed sources with enabled and health state.
+- `/kaynak <id>` shows one source's endpoint, enabled state, health, and safe last-error category.
+- `/kaynak_ekle [rss|youtube] <endpoint> [name]` validates through the managed-source repository,
+  canonicalizes the endpoint, and adds the source enabled.
+- `/kaynak_ac <id>` and `/kaynak_kapat <id>` enable or disable one source.
+- `/kaynak_sil <id>` deletes only an already-disabled source.
+- `/start` provides a safe help message only after authorization; it never enrolls a user.
+
+Source commands are intentionally chat-first and reuse the same database repository as Admin and
+ingestion. Telegram has no YAML source read/write path. Duplicate, invalid, missing, unsafe-delete,
+and repository/database failures are returned as concise Turkish messages without database or
+provider details.
 
 Only a configured exact `user_id:chat_id` pair may use any command. The default deployment should
 use one private chat (`same user_id:chat_id`). Group chat use is an explicit additional pair, not a
 cross-product of independent user and chat allow-lists.
 
-Source changes are atomically persisted in the existing protected source catalog mounted for the
-application. They survive restarts and are picked up by the next scheduled run; no Telegram input
+Source changes are atomically persisted in the database-managed source repository. They survive
+restarts and are picked up by the next scheduled run; no Telegram input
 can request an arbitrary fetch, alter private-network protections, or bypass normal freshness,
 deduplication, caption, retry, and budget boundaries. Gmail stays read-only and is connected once
 through the protected browser OAuth flow; scheduled runs then use its existing durable checkpoint.

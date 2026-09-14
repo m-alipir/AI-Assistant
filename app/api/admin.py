@@ -9,12 +9,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from inspect import isawaitable
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Literal
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -27,6 +26,43 @@ from app.briefing.presentation import (
     legacy_sections,
     safe_links,
     shown_because,
+)
+from app.config.bulk_urls import (
+    BulkUrlLimitExceeded,
+    BulkUrlRepositoryUnavailable,
+    BulkUrlService,
+    InvalidBulkUrlStructure,
+)
+from app.config.csv_import import (
+    CsvImportService,
+    CsvLimitExceeded,
+    CsvRepositoryUnavailable,
+    InvalidCsvStructure,
+    MalformedCsv,
+)
+from app.config.onboarding import SchedulerPreference
+from app.config.opml import (
+    InvalidOpmlStructure,
+    MalformedOpml,
+    OpmlLimitExceeded,
+    OpmlRepositoryUnavailable,
+    OpmlService,
+)
+from app.config.source_export import SourceExportRepositoryUnavailable, SourceExportService
+from app.config.source_pack import (
+    InvalidSourcePackStructure,
+    MalformedSourcePack,
+    SourcePackLimitExceeded,
+    SourcePackRepositoryUnavailable,
+    SourcePackService,
+)
+from app.config.source_repository import (
+    EnabledSourceDeleteBlocked,
+    ManagedSourceCreate,
+    ManagedSourceUpdate,
+    SourceAlreadyExists,
+    SourceNotFound,
+    SourceRepository,
 )
 from app.email.oauth import OAuthErrorCategory, OAuthFlowError
 from app.interests.feedback import record_briefing_feedback
@@ -76,21 +112,29 @@ def _oauth_failure_response(category: OAuthErrorCategory) -> HTMLResponse:
     )
 
 
-class SourceCreate(BaseModel):
-    kind: str
-    name: str = Field(min_length=1, max_length=256)
-    endpoint: str = Field(min_length=1, max_length=2048)
-    stream: str = "tech"
-    language: str | None = Field(default=None, max_length=8)
-
-
 class ModelUpdate(BaseModel):
     role: str
     model: str = Field(min_length=1, max_length=256)
 
 
 class YouTubeLanguageUpdate(BaseModel):
-    language: str | None = Field(default=None, max_length=8)
+    language: Literal["tr", "en"] | None = None
+
+
+class SourcePackUpload(BaseModel):
+    yaml: str = Field(min_length=1)
+
+
+class OpmlUpload(BaseModel):
+    opml: str = Field(min_length=1)
+
+
+class CsvUpload(BaseModel):
+    csv: str = Field(min_length=1)
+
+
+class BulkUrlUpload(BaseModel):
+    urls: str = Field(min_length=1)
 
 
 class BriefingFeedback(BaseModel):
@@ -124,61 +168,94 @@ def _save_yaml(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
-def _source_id(kind: str, name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
-    return f"{kind}-{slug or 'source'}"
+def _source_repository(request: Request) -> SourceRepository:
+    repository = getattr(request.app.state, "source_repository", None)
+    if repository is None:
+        raise HTTPException(503, "managed source repository is unavailable")
+    return repository
 
 
-def _configured_sources(path: Path) -> list[dict[str, Any]]:
-    data = _load_yaml(path)
-    result: list[dict[str, Any]] = []
-    for kind in ("rss", "youtube"):
-        for entry in data.get(kind, []):
-            if isinstance(entry, dict):
-                name = str(entry.get("name", "Unnamed source"))
-                result.append(
-                    {
-                        "id": _source_id(kind, name),
-                        "kind": kind,
-                        "name": name,
-                        "stream": entry.get("stream", "personalized"),
-                        "enabled": bool(entry.get("enabled", False)),
-                        "endpoint": entry.get("url") or entry.get("channel_id", ""),
-                        "language": entry.get("language"),
-                    }
-                )
-    return result
+def _source_view(row: dict[str, object]) -> dict[str, object]:
+    """Expose only the non-secret managed-source projection used by Admin."""
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "name": row["name"],
+        "endpoint": row["canonical_endpoint"],
+        "stream": row["stream"],
+        "enabled": row["enabled"],
+        "priority": row["priority"],
+        "category": row["category"],
+        "language": row["language"],
+        "freshness_hours": row["freshness_hours"],
+        "health_status": row["health_status"],
+        "last_attempt_at": row["last_attempt_at"],
+        "last_success_at": row["last_success_at"],
+        "consecutive_failures": row["consecutive_failures"],
+        "last_error_category": row["last_error_category"],
+        "next_retry_at": row["next_retry_at"],
+        "last_successful_strategy": row["last_successful_strategy"],
+        "detected_language": row["detected_language"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
-def _set_source_enabled(path: Path, source_id: str, enabled: bool) -> None:
-    data = _load_yaml(path)
-    for kind in ("rss", "youtube"):
-        for entry in data.get(kind, []):
-            if (
-                isinstance(entry, dict)
-                and _source_id(kind, str(entry.get("name", ""))) == source_id
-            ):
-                entry["enabled"] = enabled
-                _save_yaml(path, data)
-                return
-    data.setdefault("admin_enabled", {})[source_id] = enabled
-    _save_yaml(path, data)
+def _raise_source_http_error(error: Exception) -> None:
+    if isinstance(error, SourceAlreadyExists):
+        raise HTTPException(409, "source endpoint is already managed") from error
+    if isinstance(error, SourceNotFound):
+        raise HTTPException(404, "managed source not found") from error
+    if isinstance(error, EnabledSourceDeleteBlocked):
+        raise HTTPException(409, "disable the source before deleting it") from error
+    if isinstance(error, ValueError):
+        raise HTTPException(422, str(error)) from error
+    raise error
 
 
-def _set_youtube_language(path: Path, source_id: str, language: str | None) -> None:
-    data = _load_yaml(path)
-    for entry in data.get("youtube", []):
-        if (
-            isinstance(entry, dict)
-            and _source_id("youtube", str(entry.get("name", ""))) == source_id
-        ):
-            if language is None:
-                entry.pop("language", None)
-            else:
-                entry["language"] = language
-            _save_yaml(path, data)
-            return
-    raise HTTPException(404, "YouTube source not found")
+def _raise_source_pack_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedSourcePack):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, SourcePackLimitExceeded):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, InvalidSourcePackStructure):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, SourcePackRepositoryUnavailable):
+        raise HTTPException(503, "managed source repository is unavailable") from error
+    raise error
+
+
+def _raise_opml_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedOpml):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, OpmlLimitExceeded):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, InvalidOpmlStructure):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, OpmlRepositoryUnavailable):
+        raise HTTPException(503, "managed source repository is unavailable") from error
+    raise error
+
+
+def _raise_delimited_import_http_error(error: Exception) -> None:
+    if isinstance(error, MalformedCsv):
+        raise HTTPException(400, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (CsvLimitExceeded, BulkUrlLimitExceeded)):
+        raise HTTPException(413, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (InvalidCsvStructure, InvalidBulkUrlStructure)):
+        raise HTTPException(422, {"code": error.code, "message": str(error)}) from error
+    if isinstance(error, (CsvRepositoryUnavailable, BulkUrlRepositoryUnavailable)):
+        raise HTTPException(503, "managed source repository is unavailable") from error
+    raise error
+
+
+async def _admin_sources(request: Request) -> list[dict[str, object]]:
+    repository = _source_repository(request)
+    try:
+        rows = await repository.list()
+    except Exception:
+        raise HTTPException(503, "managed source repository is unavailable") from None
+    return [_source_view(row) for row in rows]
 
 
 async def _database_details(request: Request) -> dict[str, Any]:
@@ -295,7 +372,12 @@ async def _database_details(request: Request) -> dict[str, Any]:
 
 
 async def _dashboard_context(request: Request) -> dict[str, Any]:
-    sources = _configured_sources(request.app.state.sources_path)
+    try:
+        sources = await _admin_sources(request)
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        sources = []
     models = _load_yaml(request.app.state.models_path)
     roles = models.get("roles", {}) if isinstance(models.get("roles"), dict) else {}
     database_ready = await request.app.state.readiness_check()
@@ -344,6 +426,205 @@ async def _dashboard_context(request: Request) -> dict[str, Any]:
     }
 
 
+async def _control_center_context(request: Request) -> dict[str, Any]:
+    """Build the small, non-sensitive context shared by Control Center pages."""
+    try:
+        sources = await _admin_sources(request)
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        sources = []
+        sources_available = False
+    else:
+        sources_available = True
+    scheduler = getattr(request.app.state, "scheduler", None)
+    database_ready = await request.app.state.readiness_check()
+    details = await _database_details(request)
+    try:
+        metrics = await request.app.state.metrics_provider()
+    except Exception:
+        metrics = {"llm_calls": None, "llm_cost_usd": None, "recent_briefings": []}
+    failures = sorted(
+        (source for source in sources if source["last_error_category"]),
+        key=lambda source: str(source["last_attempt_at"] or ""),
+        reverse=True,
+    )[:5]
+    latest_briefing = details["briefings"][0] if details["briefings"] else None
+    source_counts = {
+        "total": len(sources),
+        "enabled": sum(item["enabled"] for item in sources),
+        "unhealthy": sum(item["health_status"] != "healthy" for item in sources),
+        "cooling_down": sum(item["next_retry_at"] is not None for item in sources),
+    }
+    return {
+        "request": request,
+        "sources": sources,
+        "database_ready": database_ready,
+        "sources_available": sources_available,
+        "active_sources": source_counts["enabled"],
+        "disabled_sources": source_counts["total"] - source_counts["enabled"],
+        "source_counts": source_counts,
+        "recent_source_failures": failures,
+        "details": details,
+        "latest_briefing": latest_briefing,
+        "provider_usage": {
+            "llm_calls": metrics.get("llm_calls"),
+            "llm_cost_usd": metrics.get("llm_cost_usd"),
+        },
+        "provider_configured": bool(getattr(request.app.state, "openrouter_configured", False)),
+        "last_run": getattr(request.app.state, "last_run", "idle"),
+        "last_run_details": getattr(request.app.state, "last_run_details", None),
+        "overall_status": "ready"
+        if database_ready and sources_available and source_counts["enabled"]
+        else "attention",
+        "telegram_configured": bool(
+            getattr(request.app.state, "telegram_webhook_handler", None)
+            or getattr(request.app.state, "telegram_polling", None)
+        ),
+        "gmail_configured": bool(
+            getattr(request.app.state, "gmail_configured", False)
+            and getattr(request.app.state, "gmail_encryption_ready", False)
+        ),
+        "scheduler": scheduler.state if scheduler else None,
+    }
+
+
+async def _control_center_scheduler_context(request: Request) -> dict[str, object]:
+    """Read the existing persisted scheduler preference and bounded runtime status."""
+    context = await _control_center_context(request)
+    repository = getattr(request.app.state, "onboarding_repository", None)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    preference: SchedulerPreference | None = None
+    error: str | None = None
+    if repository is None or scheduler is None:
+        error = "unavailable"
+    else:
+        try:
+            preference = await repository.scheduler_preference()
+        except Exception:
+            logger.warning("control_center_scheduler_preference_read_failed")
+            error = "unavailable"
+    return {
+        "request": request,
+        "scheduler": scheduler.state if scheduler else None,
+        "preference": preference,
+        "history": context["details"]["scheduled_runs"],
+        "history_error": context["details"]["error"],
+        "unavailable": error is not None,
+    }
+
+
+def _control_center_briefing_view(row: Mapping[str, object]) -> dict[str, object]:
+    """Build a bounded, escaped-template-ready view of one persisted briefing."""
+    rendered = str(row.get("rendered") or "")
+    created_at = row.get("created_at")
+    timestamp = format_istanbul(created_at) if isinstance(created_at, datetime) else None
+    return {
+        "id": str(row.get("id") or ""),
+        "created_at": timestamp,
+        "rendered": rendered,
+        "status": "Saved" if rendered.strip() else "Incomplete",
+        "summary": compact_sentences(rendered, limit=1, max_chars=240)
+        if rendered.strip()
+        else "Generated content is unavailable for this saved record.",
+    }
+
+
+def _control_center_search_event_view(event: object) -> dict[str, object]:
+    """Prepare the existing compact search projection for escaped Control Center rendering."""
+    occurred_at = getattr(event, "occurred_at", None)
+    return {
+        "id": str(getattr(event, "event_id", "")),
+        "title": str(getattr(event, "title", "")),
+        "occurred_at": format_istanbul(occurred_at) if isinstance(occurred_at, datetime) else None,
+        "source_links": safe_links(list(getattr(event, "source_links", []))),
+        "verified_facts": list(getattr(event, "verified_facts", [])),
+        "stored_inferences": list(getattr(event, "stored_inferences", [])),
+        "category_paths": list(getattr(event, "category_paths", [])),
+        "entities": list(getattr(event, "entities", [])),
+        "topics": list(getattr(event, "topics", [])),
+    }
+
+
+async def _control_center_search_event(request: Request, event_id: str) -> dict[str, object]:
+    """Read a single previously retrieved event without running search or a model."""
+    callback = getattr(request.app.state, "search_event_detail_callback", None)
+    if not callable(callback):
+        return {"item": None, "error": "unavailable"}
+    try:
+        event = await callback(event_id)
+    except KnowledgeSearchError as error:
+        logger.warning(
+            "control_center_memory_detail_read_failed",
+            extra={"search_error_category": error.category},
+        )
+        return {"item": None, "error": "unavailable"}
+    except Exception:
+        logger.exception(
+            "control_center_memory_detail_read_failed",
+            extra={"search_error_category": "search_unexpected_error"},
+        )
+        return {"item": None, "error": "unavailable"}
+    return {
+        "item": _control_center_search_event_view(event) if event is not None else None,
+        "error": None,
+    }
+
+
+async def _control_center_briefing_history(request: Request) -> dict[str, object]:
+    """Read a small, newest-first history without invoking briefing generation."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return {"items": [], "error": "unavailable"}
+    try:
+        async with engine.connect() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, created_at, rendered FROM briefings "
+                            "ORDER BY created_at DESC LIMIT 50"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except Exception:
+        logger.warning("control_center_briefing_history_read_failed")
+        return {"items": [], "error": "unavailable"}
+    return {"items": [_control_center_briefing_view(row) for row in rows], "error": None}
+
+
+async def _control_center_briefing(request: Request, briefing_id: str) -> dict[str, object]:
+    """Read one persisted briefing for the Control Center without reprocessing it."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return {"item": None, "error": "unavailable"}
+    try:
+        async with engine.connect() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, created_at, rendered FROM briefings "
+                            "WHERE id = :id"
+                        ),
+                        {"id": briefing_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+    except Exception:
+        logger.warning("control_center_briefing_read_failed")
+        return {"item": None, "error": "unavailable"}
+    return {
+        "item": _control_center_briefing_view(row) if row is not None else None,
+        "error": None,
+    }
+
+
 @router.get("/status")
 async def status(request: Request) -> dict[str, object]:
     metrics = await request.app.state.metrics_provider()
@@ -379,6 +660,26 @@ async def search_ask(filters: SearchFilters, request: Request) -> dict[str, obje
             "knowledge_search_failed", extra={"search_error_category": "search_unexpected_error"}
         )
         return _search_unavailable_response("search_unexpected_error")
+
+
+@router.post("/search/retrieve")
+async def search_retrieve(filters: SearchFilters, request: Request) -> dict[str, object]:
+    """Return existing deterministic memory retrieval without a provider call."""
+    callback = getattr(request.app.state, "search_callback", None)
+    if not callable(callback):
+        raise HTTPException(503, "memory search is unavailable in this deployment")
+    try:
+        return await callback(filters)
+    except KnowledgeSearchError as error:
+        logger.warning(
+            "admin_memory_search_failed", extra={"search_error_category": error.category}
+        )
+        raise HTTPException(503, "memory search is temporarily unavailable") from None
+    except Exception:
+        logger.exception(
+            "admin_memory_search_failed", extra={"search_error_category": "search_unexpected_error"}
+        )
+        raise HTTPException(503, "memory search is temporarily unavailable") from None
 
 
 def _search_unavailable_response(category: str) -> dict[str, object]:
@@ -465,7 +766,7 @@ async def retry_blocked_rss(content_hash: str, request: Request) -> dict[str, ob
 @router.get("/config")
 async def config(request: Request) -> dict[str, object]:
     return {
-        "sources": _load_yaml(request.app.state.sources_path),
+        "sources": {"items": await _admin_sources(request)},
         "models": _load_yaml(request.app.state.models_path),
         "interests": _load_yaml(request.app.state.interests_path),
     }
@@ -478,6 +779,158 @@ async def page(request: Request) -> HTMLResponse:
         name="admin_dashboard.html",
         context=await _dashboard_context(request),
     )
+
+
+@router.get("/control-center", response_class=HTMLResponse)
+async def control_center_page(request: Request) -> HTMLResponse:
+    """Render the focused, source-only Control Center dashboard."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Dashboard", "active_page": "dashboard"})
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_control_center.html",
+        context=context,
+    )
+
+
+@router.get("/control-center/briefings", response_class=HTMLResponse)
+async def control_center_briefings_page(request: Request) -> HTMLResponse:
+    """Render the read-only saved briefing history."""
+    history = await _control_center_briefing_history(request)
+    context = {
+        "request": request,
+        "history": history,
+        "page_title": "Briefings",
+        "active_page": "briefings",
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_briefings.html",
+        context=context,
+        status_code=503 if history["error"] else 200,
+    )
+
+
+@router.get("/control-center/search", response_class=HTMLResponse)
+async def control_center_search_page(request: Request) -> HTMLResponse:
+    """Render the read-only Control Center memory search page."""
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_search.html",
+        context={"request": request, "page_title": "Search / Memory", "active_page": "search"},
+    )
+
+
+@router.get("/control-center/scheduler", response_class=HTMLResponse)
+async def control_center_scheduler_page(request: Request) -> HTMLResponse:
+    """Render the persisted daily briefing schedule and safe runtime status."""
+    context = await _control_center_scheduler_context(request)
+    context.update({"page_title": "Scheduler", "active_page": "scheduler"})
+    return templates.TemplateResponse(request=request, name="admin_scheduler.html", context=context)
+
+
+@router.get("/control-center/search/{event_id}", response_class=HTMLResponse)
+async def control_center_search_detail_page(event_id: str, request: Request) -> HTMLResponse:
+    """Render one compact, persisted knowledge result."""
+    if not event_id or len(event_id) > 128:
+        raise HTTPException(422, "invalid event id")
+    result = await _control_center_search_event(request, event_id)
+    if result["error"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_search_detail.html",
+            context={
+                "request": request,
+                "event": None,
+                "unavailable": True,
+                "page_title": "Memory result",
+                "active_page": "search",
+            },
+            status_code=503,
+        )
+    if result["item"] is None:
+        raise HTTPException(404, "memory result not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_search_detail.html",
+        context={
+            "request": request,
+            "event": result["item"],
+            "unavailable": False,
+            "page_title": "Memory result",
+            "active_page": "search",
+        },
+    )
+
+
+@router.get("/control-center/briefings/{briefing_id}", response_class=HTMLResponse)
+async def control_center_briefing_detail_page(
+    briefing_id: str, request: Request
+) -> HTMLResponse:
+    """Render one saved briefing's complete persisted generated content."""
+    result = await _control_center_briefing(request, briefing_id)
+    if result["error"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_briefing_detail.html",
+            context={
+                "request": request,
+                "briefing": None,
+                "unavailable": True,
+                "page_title": "Briefing",
+                "active_page": "briefings",
+            },
+            status_code=503,
+        )
+    if result["item"] is None:
+        raise HTTPException(404, "briefing not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_briefing_detail.html",
+        context={
+            "request": request,
+            "briefing": result["item"],
+            "unavailable": False,
+            "page_title": "Briefing",
+            "active_page": "briefings",
+        },
+    )
+
+
+@router.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request) -> HTMLResponse:
+    """Render optional, browser-resumable first-run guidance."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Setup", "active_page": "onboarding"})
+    return templates.TemplateResponse(
+        request=request, name="admin_onboarding.html", context=context
+    )
+
+
+@router.post("/onboarding/scheduler")
+async def save_onboarding_scheduler(
+    preference: SchedulerPreference, request: Request
+) -> dict[str, object]:
+    repository = getattr(request.app.state, "onboarding_repository", None)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if repository is None or scheduler is None:
+        raise HTTPException(503, "scheduler preferences are unavailable")
+    if scheduler.state.running:
+        raise HTTPException(409, "scheduler is currently running; retry shortly")
+    try:
+        await repository.save_scheduler_preference(preference)
+        await scheduler.configure(preference.enabled, preference.daily_time)
+    except Exception:
+        raise HTTPException(503, "scheduler preferences are unavailable") from None
+    return {"enabled": scheduler.state.enabled, "daily_time": scheduler.state.daily_time}
+
+
+@router.get("/sources/ui", response_class=HTMLResponse)
+async def sources_page(request: Request) -> HTMLResponse:
+    """Render the database-backed source-management Control Center page."""
+    context = await _control_center_context(request)
+    context.update({"page_title": "Sources", "active_page": "sources"})
+    return templates.TemplateResponse(request=request, name="admin_sources.html", context=context)
 
 
 @router.get("/interests")
@@ -498,87 +951,201 @@ async def override(subject: str, direction: str, request: Request) -> dict[str, 
 
 @router.get("/sources")
 async def sources(request: Request) -> dict[str, object]:
-    return _load_yaml(request.app.state.sources_path)
+    return {"items": await _admin_sources(request)}
+
+
+def _export_response(content: str, *, filename: str, media_type: str) -> PlainTextResponse:
+    return PlainTextResponse(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _export(request: Request, format_name: str) -> str:
+    service = SourceExportService(_source_repository(request))
+    try:
+        if format_name == "source-pack":
+            return await service.source_pack_yaml()
+        if format_name == "opml":
+            return await service.opml()
+        return await service.csv()
+    except SourceExportRepositoryUnavailable:
+        raise HTTPException(503, "managed source repository is unavailable") from None
+
+
+@router.get("/source-packs/export")
+async def export_source_pack(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "source-pack"),
+        filename="managed-sources.yaml",
+        media_type="application/x-yaml",
+    )
+
+
+@router.get("/opml/export")
+async def export_opml(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "opml"),
+        filename="managed-rss-sources.opml",
+        media_type="application/xml",
+    )
+
+
+@router.get("/csv/export")
+async def export_csv(request: Request) -> PlainTextResponse:
+    return _export_response(
+        await _export(request, "csv"), filename="managed-sources.csv", media_type="text/csv"
+    )
+
+
+@router.post("/source-packs/preview")
+async def preview_source_pack(
+    upload: SourcePackUpload, request: Request
+) -> dict[str, object]:
+    try:
+        return await SourcePackService(_source_repository(request)).preview(upload.yaml)
+    except Exception as error:
+        _raise_source_pack_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/source-packs/import")
+async def import_source_pack(
+    upload: SourcePackUpload, request: Request
+) -> dict[str, object]:
+    try:
+        return await SourcePackService(_source_repository(request)).import_pack(upload.yaml)
+    except Exception as error:
+        _raise_source_pack_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/opml/preview")
+async def preview_opml(upload: OpmlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await OpmlService(_source_repository(request)).preview(upload.opml)
+    except Exception as error:
+        _raise_opml_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/opml/import")
+async def import_opml(upload: OpmlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await OpmlService(_source_repository(request)).import_opml(upload.opml)
+    except Exception as error:
+        _raise_opml_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/csv/preview")
+async def preview_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
+    try:
+        return await CsvImportService(_source_repository(request)).preview(upload.csv)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/csv/import")
+async def import_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
+    try:
+        return await CsvImportService(_source_repository(request)).import_csv(upload.csv)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/bulk-urls/preview")
+async def preview_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await BulkUrlService(_source_repository(request)).preview(upload.urls)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.post("/bulk-urls/import")
+async def import_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str, object]:
+    try:
+        return await BulkUrlService(_source_repository(request)).import_urls(upload.urls)
+    except Exception as error:
+        _raise_delimited_import_http_error(error)
+        raise AssertionError("unreachable") from error
+
+
+@router.get("/sources/{source_id}")
+async def get_source(source_id: str, request: Request) -> dict[str, object]:
+    row = await _source_repository(request).get(source_id)
+    if row is None:
+        raise HTTPException(404, "managed source not found")
+    return _source_view(row)
+
+
+@router.post("/sources", status_code=201)
+async def create_source(
+    source: ManagedSourceCreate, request: Request
+) -> dict[str, object]:
+    try:
+        row = await _source_repository(request).create(source)
+    except Exception as error:
+        _raise_source_http_error(error)
+        raise AssertionError("unreachable") from error
+    return _source_view(row)
+
+
+@router.patch("/sources/{source_id}")
+async def update_source(
+    source_id: str, update: ManagedSourceUpdate, request: Request
+) -> dict[str, object]:
+    try:
+        row = await _source_repository(request).update(source_id, update)
+    except Exception as error:
+        _raise_source_http_error(error)
+        raise AssertionError("unreachable") from error
+    return _source_view(row)
 
 
 @router.post("/sources/{source_id}/{enabled}")
 async def toggle_source(source_id: str, enabled: bool, request: Request) -> dict[str, object]:
-    _set_source_enabled(request.app.state.sources_path, source_id, enabled)
+    changed = await _source_repository(request).set_enabled(source_id, enabled)
+    if not changed:
+        raise HTTPException(404, "managed source not found")
     return {"source_id": source_id, "enabled": enabled}
 
 
+@router.delete("/sources/{source_id}")
+async def remove_source(source_id: str, request: Request) -> dict[str, str]:
+    try:
+        await _source_repository(request).delete(source_id)
+    except Exception as error:
+        _raise_source_http_error(error)
+    return {"status": "deleted"}
+
+
 @router.post("/ui/sources")
-async def add_source(source: SourceCreate, request: Request) -> dict[str, object]:
-    kind = source.kind.casefold()
-    if kind not in {"rss", "youtube"}:
-        raise HTTPException(422, "kind must be rss or youtube")
-    data = _load_yaml(request.app.state.sources_path)
-    entries = data.setdefault(kind, [])
-    source_id = _source_id(kind, source.name)
-    if any(
-        isinstance(item, dict) and _source_id(kind, str(item.get("name", ""))) == source_id
-        for item in entries
-    ):
-        raise HTTPException(409, "a source with this name already exists")
-    if kind == "rss":
-        endpoint = urlparse(source.endpoint)
-        if (
-            endpoint.scheme not in {"https", "http"}
-            or not endpoint.netloc
-            or endpoint.username
-            or endpoint.password
-        ):
-            raise HTTPException(422, "RSS feed URL must be an absolute HTTP(S) URL")
-        entries.append(
-            {"name": source.name, "url": source.endpoint, "stream": source.stream, "enabled": False}
-        )
-    else:
-        channel_id = source.endpoint.split("channel_id=")[-1].split("&")[0]
-        if not channel_id or channel_id.startswith("http"):
-            raise HTTPException(422, "enter a YouTube channel ID or Atom feed URL")
-        language = source.language.strip().casefold() if source.language else None
-        if language not in {None, "tr", "en"}:
-            raise HTTPException(422, "YouTube language must be tr or en when specified")
-        entries.append(
-            {
-                "name": source.name,
-                "channel_id": channel_id,
-                "stream": source.stream,
-                "enabled": False,
-                "language": language,
-            }
-        )
-    _save_yaml(request.app.state.sources_path, data)
-    return {"source_id": source_id, "enabled": False}
+async def add_source(source: ManagedSourceCreate, request: Request) -> dict[str, object]:
+    created = await create_source(source, request)
+    return {"source_id": created["id"], "enabled": created["enabled"]}
 
 
 @router.delete("/ui/sources/{source_id}")
 async def delete_source(source_id: str, request: Request) -> dict[str, str]:
-    data = _load_yaml(request.app.state.sources_path)
-    for kind in ("rss", "youtube"):
-        entries = data.get(kind, [])
-        retained = [
-            item
-            for item in entries
-            if not isinstance(item, dict)
-            or _source_id(kind, str(item.get("name", ""))) != source_id
-        ]
-        if len(retained) != len(entries):
-            data[kind] = retained
-            _save_yaml(request.app.state.sources_path, data)
-            return {"status": "deleted"}
-    raise HTTPException(404, "source not found")
+    return await remove_source(source_id, request)
 
 
 @router.post("/ui/sources/{source_id}/language")
 async def update_youtube_language(
     source_id: str, update: YouTubeLanguageUpdate, request: Request
 ) -> dict[str, str | None]:
-    language = update.language.strip().casefold() if update.language else None
-    if language not in {None, "tr", "en"}:
-        raise HTTPException(422, "YouTube language must be tr or en when specified")
-    _set_youtube_language(request.app.state.sources_path, source_id, language)
-    return {"source_id": source_id, "language": language}
+    try:
+        await _source_repository(request).update(
+            source_id, ManagedSourceUpdate(language=update.language)
+        )
+    except Exception as error:
+        _raise_source_http_error(error)
+    return {"source_id": source_id, "language": update.language}
 
 
 @router.post("/ui/models")
