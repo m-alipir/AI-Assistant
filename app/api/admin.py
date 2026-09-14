@@ -473,6 +473,31 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
     }
 
 
+async def _control_center_scheduler_context(request: Request) -> dict[str, object]:
+    """Read the existing persisted scheduler preference and bounded runtime status."""
+    context = await _control_center_context(request)
+    repository = getattr(request.app.state, "onboarding_repository", None)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    preference: SchedulerPreference | None = None
+    error: str | None = None
+    if repository is None or scheduler is None:
+        error = "unavailable"
+    else:
+        try:
+            preference = await repository.scheduler_preference()
+        except Exception:
+            logger.warning("control_center_scheduler_preference_read_failed")
+            error = "unavailable"
+    return {
+        "request": request,
+        "scheduler": scheduler.state if scheduler else None,
+        "preference": preference,
+        "history": context["details"]["scheduled_runs"],
+        "history_error": context["details"]["error"],
+        "unavailable": error is not None,
+    }
+
+
 def _control_center_briefing_view(row: Mapping[str, object]) -> dict[str, object]:
     """Build a bounded, escaped-template-ready view of one persisted briefing."""
     rendered = str(row.get("rendered") or "")
@@ -778,6 +803,14 @@ async def control_center_search_page(request: Request) -> HTMLResponse:
         name="admin_search.html",
         context={"request": request, "page_title": "Search / Memory", "active_page": "search"},
     )
+
+
+@router.get("/control-center/scheduler", response_class=HTMLResponse)
+async def control_center_scheduler_page(request: Request) -> HTMLResponse:
+    """Render the persisted daily briefing schedule and safe runtime status."""
+    context = await _control_center_scheduler_context(request)
+    context.update({"page_title": "Scheduler", "active_page": "scheduler"})
+    return templates.TemplateResponse(request=request, name="admin_scheduler.html", context=context)
 
 
 @router.get("/control-center/search/{event_id}", response_class=HTMLResponse)

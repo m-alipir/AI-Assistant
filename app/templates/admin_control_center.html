@@ -8,7 +8,7 @@
         <div class="card">Database<br><b class="{{ 'ok' if database_ready else 'bad' }}">{{ 'ready' if database_ready else 'not ready' }}</b></div>
         <div class="card">Source repository<br><b class="{{ 'ok' if sources_available else 'bad' }}">{{ 'available' if sources_available else 'unavailable' }}</b></div>
         <div class="card">Last ingestion<br><b>{{ last_run }}</b><br><span class="muted">{{ last_run_details.at if last_run_details else 'not run in this process' }}</span></div>
-        <div class="card">Next briefing<br><b>{{ scheduler.next_run if scheduler and scheduler.next_run else 'not scheduled' }}</b></div>
+        <div class="card">Next briefing<br><b>{{ scheduler.next_run if scheduler and scheduler.next_run else 'not scheduled' }}</b><br><a href="/admin/control-center/scheduler">Manage schedule</a></div>
       </div>
     </section>
     <section>

@@ -1,0 +1,21 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <h1>Scheduler</h1>
+      {% if unavailable %}<p class="bad" role="status">Schedule settings are temporarily unavailable. Current runtime state is shown when available.</p>{% endif %}
+      {% if scheduler %}<div class="grid"><div class="card">Daily briefing<br><b class="{{ 'ok' if scheduler.enabled else 'muted' }}">{{ 'enabled' if scheduler.enabled else 'disabled' }}</b></div><div class="card">Time zone<br><b>{{ scheduler.timezone }}</b></div><div class="card">Next run<br><b>{{ scheduler.next_run or 'not scheduled' }}</b></div><div class="card">Runtime<br><b>{{ 'running' if scheduler.running else 'idle' }}</b></div></div>{% if scheduler.last_run %}<p class="muted">Last run: {{ scheduler.last_run }}{% if scheduler.last_run_at %} · {{ scheduler.last_run_at }}{% endif %}{% if scheduler.last_summary %} · {{ scheduler.last_summary }}{% endif %}{% if scheduler.last_error %} · {{ scheduler.last_error }}{% endif %}{% if scheduler.last_skip_reason %} · {{ scheduler.last_skip_reason }}{% endif %}</p>{% endif %}{% else %}<p class="bad">Scheduler runtime is unavailable.</p>{% endif %}
+    </section>
+    <section>
+      <h2>Daily briefing schedule</h2>
+      {% if unavailable or not scheduler %}<p class="muted">Schedule changes are unavailable until the database-backed scheduler is ready.</p>{% else %}<p class="muted">Saved to Control Center settings and applied only while the scheduler is idle. Time zone: {{ scheduler.timezone }}.{% if preference %} Persisted preference: {{ 'enabled' if preference.enabled else 'disabled' }} at {{ preference.daily_time }}.{% endif %}</p><form id="scheduler-form" class="row"><label><input id="scheduler-enabled" type="checkbox" {% if scheduler.enabled %}checked{% endif %}> Enable daily briefing</label><label for="scheduler-time">Time</label><input id="scheduler-time" type="time" value="{{ scheduler.daily_time }}" required><button type="submit">Save schedule</button></form>{% endif %}
+    </section>
+    <section>
+      <h2>Recent scheduled runs</h2>
+      {% if history_error %}<p class="bad">Scheduled-run history is temporarily unavailable.</p>{% elif history %}<table><tr><th>Local day</th><th>Status</th><th>Started</th><th>Completed</th><th>Summary</th></tr>{% for run in history %}<tr><td>{{ run.run_date }}</td><td>{{ run.status }}</td><td>{{ run.started_at or 'unknown' }}</td><td>{{ run.completed_at or 'not completed' }}</td><td>{{ run.message or 'No summary.' }}</td></tr>{% endfor %}</table>{% else %}<p class="muted">No scheduled runs recorded yet.</p>{% endif %}
+    </section>
+  </main>
+  <script nonce="{{ request.state.csp_nonce }}">
+    const form=document.querySelector('#scheduler-form');if(form)form.addEventListener('submit',async event=>{event.preventDefault();const notice=document.querySelector('#notice'),time=document.querySelector('#scheduler-time').value;notice.textContent='Saving schedule…';notice.className='notice muted';try{const response=await fetch('/admin/onboarding/scheduler',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:document.querySelector('#scheduler-enabled').checked,daily_time:time})}),body=await response.json().catch(()=>({}));if(!response.ok)throw Error(body.detail||'Schedule could not be saved.');notice.textContent=`Schedule saved: ${body.enabled?'enabled':'disabled'} at ${body.daily_time}.`;notice.className='notice ok';location.reload()}catch(error){notice.textContent=error.message;notice.className='notice bad'}});
+  </script>
+{% endblock %}

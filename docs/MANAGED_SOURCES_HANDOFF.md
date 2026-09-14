@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 13 implementation: complete
+- Stage 14 implementation: complete
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -85,6 +85,10 @@ Make the database the runtime source-of-truth.
   optional Ask action reuses the existing bounded synthesis callback; neither path mutates stored
   knowledge. Result details read one compact persisted event, retain source-backed facts separate
   from stored inferences, and render only timezone-aware timestamps in Istanbul time.
+- The Control Center Scheduler page at `/admin/control-center/scheduler` reads the existing daily
+  scheduler state, persisted `control_center_settings` preference, and bounded scheduled-run
+  history. Its form reuses `/admin/onboarding/scheduler`, so validation, idle-run protection,
+  database persistence, and scheduler reconfiguration remain in the existing backend path.
 
 ## Important Files
 
@@ -100,7 +104,8 @@ Make the database the runtime source-of-truth.
 - `app/templates/admin_shell.html`, `app/templates/admin_control_center.html`,
   `app/templates/admin_sources.html`, `app/templates/admin_briefings.html`,
   `app/templates/admin_briefing_detail.html`, `app/templates/admin_search.html`,
-  `app/templates/admin_search_detail.html`, `app/templates/admin_dashboard.html`
+  `app/templates/admin_search_detail.html`, `app/templates/admin_scheduler.html`,
+  `app/templates/admin_dashboard.html`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
@@ -125,9 +130,9 @@ after it completes, runtime catalog loads are database-only.
 
 ## Next Recommended Step
 
-No follow-on slice is authorized. Do not start advanced Scheduler UI, AI settings, Search/Memory
-expansion, or production deployment automation without a new explicit request. Local or
-disposable-PostgreSQL success is not production migration/deployment acceptance.
+No follow-on slice is authorized. Do not start Gmail management, AI settings, Scheduler expansion,
+Search/Memory expansion, or production deployment automation without a new explicit request.
+Local or disposable-PostgreSQL success is not production migration/deployment acceptance.
 
 ## Working Notes For The Next Agent
 
@@ -323,3 +328,14 @@ disposable-PostgreSQL success is not production migration/deployment acceptance.
   endpoint coverage passed without contacting a provider.
 - No schema, provider, live source, production database, deployment, or knowledge mutation was
   added.
+
+### Stage 14 Scheduler UI verification
+
+- Focused Admin/scheduler coverage passed 34 tests with 1 opt-in PostgreSQL test skipped.
+- Full offline suite passed 289 tests with 6 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026`; the
+  persisted scheduler-preference acceptance test passed, then its container and anonymous volume
+  were removed.
+- Full Ruff with `--no-cache` and `git diff --check` passed. No separate frontend package/checker
+  exists; server-rendered page and endpoint coverage exercise the UI contract.
+- No schema, provider, live source, production database, deployment, or scheduler run was added.

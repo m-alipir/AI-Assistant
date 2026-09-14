@@ -600,6 +600,51 @@ def test_onboarding_is_optional_and_reuses_safe_admin_entry_points(tmp_path: Pat
     )
 
 
+def test_control_center_scheduler_reuses_persisted_onboarding_preference() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    repository = FakeOnboardingRepository()
+    repository.preference = SchedulerPreference(enabled=True, daily_time="07:30")
+    scheduler = DailyScheduler(True, "07:30", "Europe/Istanbul", _unused_run, _unused_claim)
+    scheduler.state.next_run = "2026-09-15T07:30:00+03:00"
+    scheduler.state.last_run = "completed"
+    scheduler.state.last_summary = "processed=2"
+    app.state.onboarding_repository = repository
+    app.state.scheduler = scheduler
+
+    with TestClient(app) as client:
+        page = client.get("/admin/control-center/scheduler")
+        saved = client.post(
+            "/admin/onboarding/scheduler", json={"enabled": False, "daily_time": "09:15"}
+        )
+        scheduler.state.running = True
+        busy = client.post(
+            "/admin/onboarding/scheduler", json={"enabled": True, "daily_time": "10:00"}
+        )
+        scheduler.state.running = False
+        invalid = client.post(
+            "/admin/onboarding/scheduler", json={"enabled": True, "daily_time": "09:15:30"}
+        )
+
+    assert page.status_code == 200
+    assert "2026-09-15T07:30:00+03:00" in page.text
+    assert "Persisted preference: enabled at 07:30." in page.text
+    assert "/admin/onboarding/scheduler" in page.text
+    assert "innerHTML" not in page.text
+    assert saved.json() == {"enabled": False, "daily_time": "09:15"}
+    assert busy.status_code == 409
+    assert invalid.status_code == 422
+    assert repository.preference == SchedulerPreference(enabled=False, daily_time="09:15")
+
+
+def test_control_center_scheduler_handles_unavailable_configuration() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    with TestClient(app) as client:
+        response = client.get("/admin/control-center/scheduler")
+
+    assert response.status_code == 200
+    assert "Schedule settings are temporarily unavailable." in response.text
+
+
 async def _unused_run() -> dict[str, object]:
     raise AssertionError("onboarding must not run ingestion")
 

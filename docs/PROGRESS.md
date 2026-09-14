@@ -582,6 +582,14 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 14 Control Center Scheduler UI: focused Admin/scheduler
+  coverage passed 34 tests with 1 opt-in PostgreSQL skip; the full offline suite passed 289 tests
+  with 6 opt-in PostgreSQL skips. A uniquely named disposable pgvector PostgreSQL database
+  migrated to `20260914_0026`, and persisted scheduler-preference acceptance passed before its
+  container and anonymous volume were removed. Full Ruff with `--no-cache` and `git diff --check`
+  passed. No separate frontend package/checker exists; server-rendered page and endpoint coverage
+  exercised the UI contract. No provider, live source, production database, deployment automation,
+  or scheduler run occurred.
 - 2026-09-14: Managed-source Stage 13 Control Center Search / Memory: focused Admin/Search
   coverage passed 34 tests; the full offline suite passed 287 tests with 6 opt-in PostgreSQL
   skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
@@ -993,6 +1001,13 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed the isolated Control Center Scheduler UI slice in
+  `feature/db-managed-sources`. The new Scheduler page exposes existing daily briefing state,
+  timezone, next/last run status, persisted preference, and bounded scheduled-run history. Its
+  save form reuses the onboarding scheduler endpoint, retaining backend validation, idle-run 409
+  protection, DB persistence, and runtime reconfiguration without a YAML path or frontend
+  scheduler logic. Existing onboarding, `/admin`, Gmail/AI settings, deployment, and main-worktree
+  behavior remain untouched.
 - 2026-09-14: Completed the isolated Control Center Search / Memory slice in
   `feature/db-managed-sources`. The new read-only page reuses existing deterministic retrieval
   and optional bounded Ask callbacks, displays safe compact source/title/date snippets, and opens
