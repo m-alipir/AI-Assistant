@@ -1,0 +1,10 @@
+{% extends "admin_shell.html" %}
+{% block content %}
+  <main>
+    <section>
+      <p><a href="/admin/control-center/briefings">← Briefings</a></p>
+      <h1>Briefing</h1>
+      {% if unavailable %}<p class="bad" role="status">Briefing history is temporarily unavailable.</p>{% elif briefing.status == 'Incomplete' %}<p class="bad" role="status">This saved briefing is incomplete; generated content is unavailable.</p>{% else %}<p class="muted">{{ briefing.created_at or 'Timestamp unavailable' }} · {{ briefing.status }}</p><pre class="briefing-content">{{ briefing.rendered }}</pre>{% endif %}
+    </section>
+  </main>
+{% endblock %}

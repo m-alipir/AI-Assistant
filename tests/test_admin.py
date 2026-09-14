@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -375,6 +376,103 @@ def test_control_center_dashboard_shows_safe_operational_summary(
     assert "Last Gmail sync" in operations.text
     assert "Last YouTube sync" in operations.text
     assert "Manual Run" in operations.text
+
+
+def test_control_center_briefings_show_saved_and_incomplete_history(
+    monkeypatch
+) -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    async def history(_request):
+        return {
+            "items": [
+                {
+                    "id": "saved-briefing",
+                    "created_at": "14.09.2026 15:00",
+                    "rendered": "Saved briefing content. <script>alert(1)</script>",
+                    "status": "Saved",
+                    "summary": "Saved briefing content.",
+                },
+                {
+                    "id": "incomplete-briefing",
+                    "created_at": None,
+                    "rendered": "",
+                    "status": "Incomplete",
+                    "summary": "Generated content is unavailable for this saved record.",
+                },
+            ],
+            "error": None,
+        }
+
+    async def detail(_request, briefing_id):
+        for item in (await history(None))["items"]:
+            if item["id"] == briefing_id:
+                return {"item": item, "error": None}
+        return {"item": None, "error": None}
+
+    monkeypatch.setattr(admin, "_control_center_briefing_history", history)
+    monkeypatch.setattr(admin, "_control_center_briefing", detail)
+    with TestClient(app) as client:
+        response = client.get("/admin/control-center/briefings")
+        detail_response = client.get("/admin/control-center/briefings/saved-briefing")
+        missing_response = client.get("/admin/control-center/briefings/missing")
+
+    assert response.status_code == 200
+    assert "14.09.2026 15:00" in response.text
+    assert "Timestamp unavailable" in response.text
+    assert "Saved" in response.text
+    assert "Incomplete" in response.text
+    assert "/admin/control-center/briefings/saved-briefing" in response.text
+    assert detail_response.status_code == 200
+    assert "Saved briefing content." in detail_response.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in detail_response.text
+    assert "<script>alert(1)</script>" not in detail_response.text
+    assert missing_response.status_code == 404
+
+
+def test_control_center_briefings_handle_empty_and_unavailable_history(monkeypatch) -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    async def empty_history(_request):
+        return {"items": [], "error": None}
+
+    monkeypatch.setattr(admin, "_control_center_briefing_history", empty_history)
+    with TestClient(app) as client:
+        empty = client.get("/admin/control-center/briefings")
+
+    async def unavailable_history(_request):
+        return {"items": [], "error": "unavailable"}
+
+    monkeypatch.setattr(admin, "_control_center_briefing_history", unavailable_history)
+
+    async def unavailable_detail(_request, _briefing_id):
+        return {"item": None, "error": "unavailable"}
+
+    monkeypatch.setattr(admin, "_control_center_briefing", unavailable_detail)
+    with TestClient(app) as client:
+        unavailable = client.get("/admin/control-center/briefings")
+        unavailable_detail_response = client.get("/admin/control-center/briefings/saved")
+
+    assert "No saved briefings yet." in empty.text
+    assert unavailable.status_code == 503
+    assert "Briefing history is temporarily unavailable." in unavailable.text
+    assert unavailable_detail_response.status_code == 503
+
+
+def test_control_center_briefing_view_converts_only_timezone_aware_timestamps() -> None:
+    saved = admin._control_center_briefing_view(
+        {
+            "id": "saved",
+            "created_at": datetime(2026, 9, 14, 12, tzinfo=UTC),
+            "rendered": "Saved content.",
+        }
+    )
+    naive = admin._control_center_briefing_view(
+        {"id": "naive", "created_at": datetime(2026, 9, 14, 12), "rendered": "Saved."}
+    )
+
+    assert saved["created_at"] == "14.09.2026 15:00"
+    assert naive["created_at"] is None
 
 
 def test_onboarding_is_optional_and_reuses_safe_admin_entry_points(tmp_path: Path) -> None:

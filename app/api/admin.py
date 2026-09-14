@@ -473,6 +473,76 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
     }
 
 
+def _control_center_briefing_view(row: Mapping[str, object]) -> dict[str, object]:
+    """Build a bounded, escaped-template-ready view of one persisted briefing."""
+    rendered = str(row.get("rendered") or "")
+    created_at = row.get("created_at")
+    timestamp = format_istanbul(created_at) if isinstance(created_at, datetime) else None
+    return {
+        "id": str(row.get("id") or ""),
+        "created_at": timestamp,
+        "rendered": rendered,
+        "status": "Saved" if rendered.strip() else "Incomplete",
+        "summary": compact_sentences(rendered, limit=1, max_chars=240)
+        if rendered.strip()
+        else "Generated content is unavailable for this saved record.",
+    }
+
+
+async def _control_center_briefing_history(request: Request) -> dict[str, object]:
+    """Read a small, newest-first history without invoking briefing generation."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return {"items": [], "error": "unavailable"}
+    try:
+        async with engine.connect() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, created_at, rendered FROM briefings "
+                            "ORDER BY created_at DESC LIMIT 50"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except Exception:
+        logger.warning("control_center_briefing_history_read_failed")
+        return {"items": [], "error": "unavailable"}
+    return {"items": [_control_center_briefing_view(row) for row in rows], "error": None}
+
+
+async def _control_center_briefing(request: Request, briefing_id: str) -> dict[str, object]:
+    """Read one persisted briefing for the Control Center without reprocessing it."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return {"item": None, "error": "unavailable"}
+    try:
+        async with engine.connect() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, created_at, rendered FROM briefings "
+                            "WHERE id = :id"
+                        ),
+                        {"id": briefing_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+    except Exception:
+        logger.warning("control_center_briefing_read_failed")
+        return {"item": None, "error": "unavailable"}
+    return {
+        "item": _control_center_briefing_view(row) if row is not None else None,
+        "error": None,
+    }
+
+
 @router.get("/status")
 async def status(request: Request) -> dict[str, object]:
     metrics = await request.app.state.metrics_provider()
@@ -618,6 +688,58 @@ async def control_center_page(request: Request) -> HTMLResponse:
         request=request,
         name="admin_control_center.html",
         context=context,
+    )
+
+
+@router.get("/control-center/briefings", response_class=HTMLResponse)
+async def control_center_briefings_page(request: Request) -> HTMLResponse:
+    """Render the read-only saved briefing history."""
+    history = await _control_center_briefing_history(request)
+    context = {
+        "request": request,
+        "history": history,
+        "page_title": "Briefings",
+        "active_page": "briefings",
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_briefings.html",
+        context=context,
+        status_code=503 if history["error"] else 200,
+    )
+
+
+@router.get("/control-center/briefings/{briefing_id}", response_class=HTMLResponse)
+async def control_center_briefing_detail_page(
+    briefing_id: str, request: Request
+) -> HTMLResponse:
+    """Render one saved briefing's complete persisted generated content."""
+    result = await _control_center_briefing(request, briefing_id)
+    if result["error"]:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_briefing_detail.html",
+            context={
+                "request": request,
+                "briefing": None,
+                "unavailable": True,
+                "page_title": "Briefing",
+                "active_page": "briefings",
+            },
+            status_code=503,
+        )
+    if result["item"] is None:
+        raise HTTPException(404, "briefing not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_briefing_detail.html",
+        context={
+            "request": request,
+            "briefing": result["item"],
+            "unavailable": False,
+            "page_title": "Briefing",
+            "active_page": "briefings",
+        },
     )
 
 

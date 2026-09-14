@@ -8,7 +8,7 @@ Make the database the runtime source-of-truth.
 
 - Worktree: `C:\Users\Mali\Documents\ChatGPT\AI-Personal-Assistant-db-managed-sources`
 - Branch: `feature/db-managed-sources`
-- Stage 11 implementation: complete
+- Stage 12 implementation: complete
 - The worktree was clean when this handoff was updated on 2026-09-14.
 - Read this file and `docs/PROGRESS.md` before starting. Keep each next slice narrow and create
   one focused commit only after its targeted/full tests, Ruff, and `git diff --check` pass.
@@ -75,6 +75,11 @@ Make the database the runtime source-of-truth.
 - The Control Center dashboard at `/admin/control-center` is an operational read-only view over
   existing Admin/runtime data: health, latest run and briefing, scheduler state, source health,
   connection readiness, and available provider usage. It adds no source-management rules or API.
+- The Control Center Briefings page at `/admin/control-center/briefings` and its detail route read
+  existing persisted briefing rows only. It bounds history to 50 rows, escapes full generated
+  content, distinguishes saved from incomplete rows, and converts only timezone-aware timestamps
+  to Istanbul time; naive legacy timestamps remain unavailable rather than receiving an assumed
+  offset.
 
 ## Important Files
 
@@ -88,7 +93,8 @@ Make the database the runtime source-of-truth.
 - `app/main.py`
 - `app/api/admin.py`
 - `app/templates/admin_shell.html`, `app/templates/admin_control_center.html`,
-  `app/templates/admin_sources.html`, `app/templates/admin_dashboard.html`
+  `app/templates/admin_sources.html`, `app/templates/admin_briefings.html`,
+  `app/templates/admin_briefing_detail.html`, `app/templates/admin_dashboard.html`
 - `app/telegram/service.py`
 - `app/jobs/rss_runtime.py`
 - `app/jobs/youtube_runtime.py`
@@ -287,3 +293,14 @@ acceptance.
 - Full Ruff with `--no-cache` and `git diff --check` passed.
 - The dashboard uses the existing Admin/runtime services only; no new endpoint, schema, provider,
   live source, production database, deployment, or source-management behavior was added.
+
+### Stage 12 Briefings history verification
+
+- Focused Admin/briefing coverage passed 30 tests.
+- Full offline suite passed 284 tests with 6 opt-in PostgreSQL tests skipped.
+- A uniquely named disposable pgvector PostgreSQL container migrated to `20260914_0026`; direct
+  briefing history/detail read acceptance verified persisted content and timezone-aware Istanbul
+  rendering, then the container and anonymous volume were removed.
+- Full Ruff with `--no-cache` and `git diff --check` passed.
+- No schema, provider, live source, production database, deployment, or briefing mutation was
+  added.

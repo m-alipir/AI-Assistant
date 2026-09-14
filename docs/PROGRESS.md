@@ -582,6 +582,13 @@ removable adapters/services, and the existing database and domain model remain c
 None. Credentials are not required for offline tests or local defaults.
 
 ## Tests
+- 2026-09-14: Managed-source Stage 12 Control Center Briefings history/detail: focused Admin and
+  briefing coverage passed 30 tests; the full offline suite passed 284 tests with 6 opt-in
+  PostgreSQL skips. A uniquely named disposable pgvector PostgreSQL database migrated to
+  `20260914_0026`; direct persisted briefing history/detail reads verified complete generated
+  content and timezone-aware Istanbul conversion before its container and anonymous volume were
+  removed. Full Ruff with `--no-cache` and `git diff --check` passed. No provider, live source,
+  production database, deployment automation, or main-worktree mutation occurred.
 - 2026-09-14: Managed-source Stage 11 Control Center operational dashboard: focused Admin
   coverage passed 20 tests and the full offline suite passed 281 tests with 6 opt-in PostgreSQL
   skips. A uniquely named disposable pgvector PostgreSQL database migrated to `20260914_0026` and
@@ -978,6 +985,12 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-14: Completed the isolated Control Center Briefings history and detail slice in
+  `feature/db-managed-sources`. The read-only pages list the newest 50 persisted briefings with
+  status and summary, render complete escaped generated content, and distinguish empty,
+  unavailable, incomplete, and unknown states. Istanbul rendering uses only timezone-aware values;
+  naive legacy timestamps are not shifted. Existing `/admin/briefings/{id}`, feedback, storage,
+  scheduler, Search/Memory, AI settings, and main-worktree behavior remain untouched.
 - 2026-09-14: Implemented the isolated Control Center operational dashboard in
   `feature/db-managed-sources`. It presents database/source health, last ingestion and next
   briefing status, source counts and recent failures, the latest briefing, Telegram/Gmail/provider
