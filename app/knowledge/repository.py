@@ -119,6 +119,8 @@ class HybridRetriever:
                 continue
             lexical = self._lexical(event, query.text)
             semantic = self._cosine(event.embedding, query.embedding)
+            if lexical == 0.0 and semantic == 0.0:
+                continue
             candidates.append(
                 RetrievedEvent(
                     event=event,

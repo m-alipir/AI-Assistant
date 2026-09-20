@@ -81,6 +81,29 @@ async def test_empty_search_never_calls_a_model_or_invents_an_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unmatched_search_does_not_return_zero_score_events() -> None:
+    async def fetch(_: SearchFilters):
+        return [
+            event(
+                "amd",
+                "AMD update",
+                datetime(2026, 9, 7, tzinfo=UTC),
+                entities=["AMD"],
+                topic="chips",
+            )
+        ], []
+
+    response = await answer_question(
+        SearchFilters(question="qzv-unique-smoke-2026"), KnowledgeSearchService(fetch), None
+    )
+
+    assert response.status == "insufficient_sources"
+    assert response.events == []
+    assert response.answer_tr == "Yeterli kaynak bulunamadı."
+    assert response.llm["provider_calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_bounded_reasoner_context_returns_inferences_separate_from_verified_facts() -> None:
     recorded_prompts: list[str] = []
 

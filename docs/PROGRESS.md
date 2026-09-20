@@ -1,9 +1,12 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.1 — Telegram bot interface (implementation authorized; M21 pilot
-observation continues independently)
-**Last updated:** 2026-09-14
+**Current milestone:** M22.1 — Telegram bot interface (safety/recovery smoke partially passed;
+search no-match regression fix pending production deployment; M21 pilot observation continues
+independently)
+**Last updated:** 2026-09-20
+**Completion estimate:** ~83% (20 of 24 tracked milestone entries complete; M9, M17, M21, and
+M22.1 remain open)
 
 ## Rules for Codex
 - Read this file before every task.
@@ -377,7 +380,7 @@ is labelled rather than translated at read time.
 ---
 
 ## M17 — Production operations verification
-**Status:** [!] BLOCKED / DEFERRED — VPS ready when
+**Status:** [~] IN PROGRESS — core production deployment verified; backup/TLS/restore checks remain
 
 - [x] offline production preflight remains covered: fail-closed settings, Admin/origin controls,
   source-fetch restrictions, Compose network/least-privilege topology, and generated migration SQL
@@ -391,8 +394,10 @@ is labelled rather than translated at read time.
   namespaces; direct DB, Gmail-token, OpenRouter-secret, and shell access remain prohibited
 - [!] staging VPS backup and isolated restore observation — BLOCKED / DEFERRED: VPS ready when
 - [!] runtime-role grant and remote PostgreSQL TLS observation — pending VPS validation
-- [!] staging/production Compose startup, TLS proxy, authenticated Admin, health/readiness, and
-  migration-revision observation — BLOCKED / DEFERRED: VPS ready when
+- [~] staging/production Compose startup, authenticated Admin, health/readiness, and migration
+  observation — production `6ed822a`, app/database health, successful migrations, Control Center
+  access through the SSH tunnel, Memory Search POST `200`, and authenticated wrong-origin POST
+  rejection `403` are verified; TLS-proxy and full checklist observation remain pending
 - [!] explicitly approved controlled fresh-briefing verification, if a newly persisted Turkish
   snapshot is required — BLOCKED / DEFERRED: VPS ready when; never enable the scheduler or use
   providers implicitly
@@ -402,8 +407,9 @@ is labelled rather than translated at read time.
 
 **Acceptance:** a staging or production operator records the safe checklist observations after a
 tested backup/restore and confirms the hardened deployment, migration revision, and reader behavior
-without exposing secrets or enabling unapproved live integrations. Offline evidence alone cannot
-close this milestone. This milestone remains incomplete until the deferred observations are recorded.
+without exposing secrets or enabling unapproved live integrations. Core deployment observations are
+now recorded, but this milestone remains incomplete until the backup/restore, runtime-role/TLS, and
+remaining deferred observations are recorded.
 
 ---
 
@@ -473,7 +479,8 @@ failure cannot roll back a persisted briefing or stop ingestion; disabled defaul
 ---
 
 ## M22.1 — Telegram bot interface
-**Status:** [~] IN PROGRESS — offline implementation complete; VDS smoke test pending
+**Status:** [~] IN PROGRESS — safety/recovery smoke partially passed; search no-match regression
+blocks production acceptance
 
 - [x] add a disabled-by-default Telegram Bot API adapter without duplicating Search, Ask, briefing,
   interest, or notification business logic
@@ -497,8 +504,11 @@ failure cannot roll back a persisted briefing or stop ingestion; disabled defaul
   replies safely within Telegram message limits
 - [x] add fake-transport unit/integration coverage with no live Telegram or paid-provider calls;
   update production Compose, environment examples, security notes, and VDS runbook
-- [ ] complete an explicit VDS smoke test for webhook verification, unauthorized-user rejection,
-  duplicate-update suppression, all approved commands, safe failure behavior, and restart recovery
+- [x] verify the deployed polling worker and Telegram command responses; production has 6 managed
+  sources, 2 enabled
+- [!] complete the explicit VDS safety/recovery smoke: unauthorized identities, duplicate-update
+  suppression, restart recovery, and temporary Telegram failure isolation passed; the approved
+  command matrix is blocked by an `/ara` no-match regression found in production
 
 **Acceptance:** only allow-listed identities can use the bot; duplicate Telegram updates cannot
 repeat a model call or feedback action; approved commands return bounded, sourced results using the
@@ -554,16 +564,18 @@ work.
 - [~] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
   regression harness
 - [x] **M22 — Notification delivery:** disabled-by-default, privacy-minimized ntfy adapter
-- [ ] **M22.1 — Telegram bot interface:** allow-listed, webhook-based access to existing bounded
-  briefing, Search, Ask, status, feedback, and notification services
+- [~] **M22.1 — Telegram bot interface:** production polling/command smoke verified; explicit
+  safety/recovery acceptance remains for the allow-listed briefing, Search, Ask, status, feedback,
+  and notification services
 - [ ] **M23 — Document ingestion:** isolated Docling boundary, only after explicit feature approval
 - [ ] **M24 — User/mobile API and generated SDK:** stabilize the user API before OpenAPI Generator
 - [ ] **M25+ — Tasks, mobile sync, and actions:** TaskService/Vikunja decision, then client sync and
   least-privilege MCP-compatible tools
 
-**Sequencing rule:** M17 and linked M9 live observations remain deferred until the necessary
-environment is available. M19 is authorized by the project owner; later integrations remain
-removable adapters/services, and the existing database and domain model remain canonical.
+**Sequencing rule:** M17 and linked M9 live observations remain open and must be completed as
+explicit operational checks; do not infer backup, TLS, restore, or scheduler acceptance from the
+deployment smoke alone. M19 is authorized by the project owner; later integrations remain removable
+adapters/services, and the existing database and domain model remain canonical.
 
 ---
 
@@ -584,9 +596,29 @@ removable adapters/services, and the existing database and domain model remain c
   (separate future scope; not part of AI Assistant M18)
 
 ## Blockers
-None. Credentials are not required for offline tests or local defaults.
+M22.1 production acceptance is blocked until the search no-match fix is deployed and re-tested:
+an unmatched `/ara` query returned unrelated existing TechCrunch results (also through localhost
+Memory Search) instead of no sufficient sources. Local regression coverage passes; do not close
+M22.1 until production confirms the fix and the remaining safe-command checks pass.
 
 ## Tests
+- 2026-09-20: M22.1 VDS safety/recovery smoke partially passed: an unauthorized group chat was
+  rejected without changing `telegram_updates`/`llm_calls`; controlled duplicate replay was
+  idempotent; polling offset remained continuous across a poller restart; disconnecting only the
+  poller's secondary network left app health/readiness and the poller healthy; and bounded `/yardim`
+  plus authorized `/durum` responses worked. The smoke found a real no-match search regression:
+  `/ara qzv-unique-smoke-2026` returned unrelated existing results rather than a safe insufficient-
+  sources response, with no LLM call. M22.1 remains open pending deployment/retest.
+- 2026-09-20: Added the minimal shared-retriever guard and regression test for zero-score events;
+  `tests/test_search.py` passed (9 passed) and Ruff passed. The full suite was attempted but hung at
+  `tests/test_admin.py::test_admin_run_callback` and was stopped; no provider or ingestion work was
+  triggered.
+- 2026-09-20: Verified production state after deploying `6ed822a`: app and database healthy;
+  migrations completed successfully; Telegram polling is running and commands work; the Control
+  Center works through the documented SSH tunnel; production contains 6 managed sources with 2
+  enabled; Memory Search POST returned HTTP 200; and an authenticated wrong-origin POST returned
+  HTTP 403 as expected. No new feature implementation or scheduler/provider-triggering run was
+  performed.
 - 2026-09-14: Control Center smoke-regression validation: 51 focused Admin/security tests passed.
   Dashboard Telegram status now recognizes the separate polling deployment from non-secret mode
   state, and authenticated POST forms accept only the exact documented `http://localhost:8000`
@@ -1063,6 +1095,15 @@ None. Credentials are not required for offline tests or local defaults.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-20: Safety/recovery smoke exposed a production search bug: no-match `/ara` queries were
+  returning zero-score recent events. Added a focused regression test and the smallest shared
+  `HybridRetriever` fix; local search tests and Ruff pass. Production deploy/retest is required
+  before M22.1 can close.
+- 2026-09-20: Reconciled production status after the `6ed822a` deployment. Recorded healthy app/
+  database state, successful migrations, working Telegram polling and commands, 6 managed sources
+  with 2 enabled, SSH-tunnel Control Center access, successful Memory Search POST, and expected
+  authenticated wrong-origin rejection. M17 and M22.1 now distinguish verified deployment smoke
+  from remaining backup, TLS/restore, scheduler, and Telegram safety/recovery acceptance.
 - 2026-09-14: Fixed two production Control Center issues. Dashboard status no longer requires a
   Telegram handler in the web process when the supported separate polling worker is configured.
   Admin CSRF now has a narrow localhost SSH-tunnel exception tied to `https://localhost`, while
