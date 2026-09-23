@@ -1,8 +1,25 @@
 # Encrypted PostgreSQL backup and restore
 
-These commands are an operator runbook for a Linux VPS. The repository tests only verify the
-scripts and configuration offline; every real backup/restore acceptance item remains
-`pending VPS validation`.
+These commands are an operator runbook for a Linux VPS. Production recovery was validated on
+2026-09-20 with an off-host age identity and an isolated PG17 restore target.
+
+## Recovery identity management
+
+- Generate the age identity only on a trusted off-host operator device. Keep the identity file
+  outside the repository and outside the encrypted-backup tree with directory mode `700` and file
+  mode `600`. The current operator convention is
+  `~/.local/share/personal-intelligence-recovery/production-backup.agekey`; this records a location
+  expectation, not the private key.
+- Never copy the private identity to the VPS, application containers, backup directory, logs,
+  tickets, prompts, or Git. Keep it separate from `APP_ENCRYPTION_KEY`; rotating one must not replace
+  or reveal the other. A second protected offline/password-manager copy is recommended for device
+  loss, under the same access restrictions.
+- Derive the public recipient with `age-keygen -y <identity-file>`. Only this public recipient may be
+  provisioned on the VPS, currently at `/etc/personal-intelligence/backup_age_recipient`. Public
+  recipients are configuration, not recovery secrets.
+- Store encrypted backup artifacts separately from the identity. The VPS staging location is
+  `/var/backups/personal-intelligence`; copy each `.dump.age` and `.sha256` pair to protected
+  off-host backup storage and verify the checksum there.
 
 ## Backup
 
@@ -36,7 +53,15 @@ alembic current
 alembic upgrade head
 ```
 
-Acceptance remains `pending VPS validation` until an operator verifies checksum validation,
-successful restore, Alembic head, representative provenance queries, retention compatibility,
-recovery time, and removal of the isolated database. Record only dates, durations, revision IDs,
-and aggregate results; never record DSNs, tokens, email data, or decrypted dump contents.
+When the identity must remain off the VPS, decrypt on the trusted operator device and stream the
+plaintext archive over SSH directly into a disposable restore container. The container must have no
+production volume or network, and its data directory should use tmpfs. The private identity never
+crosses SSH. Remove the disposable container after verification so its plaintext archive and
+restored database do not persist; retain the encrypted backup and checksum.
+
+Production acceptance was observed on 2026-09-20: off-host checksum validation and decryption
+produced a PG custom archive; a network-disabled, tmpfs-backed PG17 container restored it through
+revision `20260914_0027`; 34 public tables and representative aggregate counts matched production;
+the disposable plaintext/restore target was removed while production remained healthy. Record only
+dates, revision IDs, durations, and aggregate results; never record DSNs, tokens, email data,
+decrypted dump contents, or the private identity.

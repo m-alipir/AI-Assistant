@@ -1,12 +1,10 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.1 — Telegram bot interface (safety/recovery smoke partially passed;
-search no-match regression fix pending production deployment; M21 pilot observation continues
-independently)
+**Current milestone:** M21 — Source expansion and evals (M17 production operations verification is
+complete; M9 scheduler acceptance remains separate and deferred)
 **Last updated:** 2026-09-20
-**Completion estimate:** ~83% (20 of 24 tracked milestone entries complete; M9, M17, M21, and
-M22.1 remain open)
+**Completion estimate:** ~92% (22 of 24 tracked milestone entries complete; M9 and M21 remain open)
 
 ## Rules for Codex
 - Read this file before every task.
@@ -380,7 +378,8 @@ is labelled rather than translated at read time.
 ---
 
 ## M17 — Production operations verification
-**Status:** [~] IN PROGRESS — core production deployment verified; backup/TLS/restore checks remain
+**Status:** [x] COMPLETE — all architecture-applicable production, recovery, and reader observations
+verified
 
 - [x] offline production preflight remains covered: fail-closed settings, Admin/origin controls,
   source-fetch restrictions, Compose network/least-privilege topology, and generated migration SQL
@@ -392,24 +391,42 @@ is labelled rather than translated at read time.
 - [x] M16 migration `20260908_0015` is explicitly included in the operational verification path
 - [x] Hermes is documented as a separate orchestration layer with generic future domain API
   namespaces; direct DB, Gmail-token, OpenRouter-secret, and shell access remain prohibited
-- [!] staging VPS backup and isolated restore observation — BLOCKED / DEFERRED: VPS ready when
-- [!] runtime-role grant and remote PostgreSQL TLS observation — pending VPS validation
-- [~] staging/production Compose startup, authenticated Admin, health/readiness, and migration
-  observation — production `6ed822a`, app/database health, successful migrations, Control Center
-  access through the SSH tunnel, Memory Search POST `200`, and authenticated wrong-origin POST
-  rejection `403` are verified; TLS-proxy and full checklist observation remain pending
-- [!] explicitly approved controlled fresh-briefing verification, if a newly persisted Turkish
-  snapshot is required — BLOCKED / DEFERRED: VPS ready when; never enable the scheduler or use
-  providers implicitly
-- [!] close M9 rebuilt-container second manual-run and explicitly enabled scheduler smoke
-  observations, then reconcile the M9 status without duplicating provider work — BLOCKED / DEFERRED:
-  Docker daemon available when
+- [x] production encrypted backup and isolated restore observation: PG17 custom dump encrypted with
+  a permanent off-host age identity, checksum verified off-host, and restored into a disposable
+  network-disabled tmpfs PostgreSQL container without copying the private identity to the VPS.
+  Schema/migration/count checks matched production; the plaintext archive and restore target were
+  removed while encrypted backup copies and the public recipient were retained
+- [x] production runtime-role observation: app and Telegram poller use dedicated
+  `intelligence_runtime` sessions rather than the migration/admin role; the role is login-only,
+  owns no objects, has no role memberships or database/schema creation rights, has documented CRUD
+  table and sequence grants, and has no elevated table grants. The previously shared runtime/admin
+  configuration was corrected and affected credentials were rotated without exposing replacement
+  values
+- [x] database TLS applicability observed without changing architecture: production uses local
+  Compose PostgreSQL on an internal-only Docker network with no published database port, so remote
+  hostname/certificate TLS is not applicable. The documented `verify-full`/CA path remains
+  unexercised and becomes required only if production moves to remote/managed PostgreSQL
+- [x] architecture-applicable deployment checklist observed: only SSH is publicly listening; UFW
+  defaults to deny inbound and permits only SSH; app port `8000` is loopback-only; no TLS proxy is
+  installed; health/readiness return `200`; unauthenticated Admin returns `401`; invalid Host returns
+  `400`; docs/OpenAPI return `404`; Admin responses carry no-store, CSP, frame, referrer, and
+  nosniff headers. Authenticated Control Center and POST behavior through the documented SSH tunnel
+  were already verified. Internet-facing TLS proxy forwarding is not applicable to this SSH-only
+  deployment
+- [x] explicitly approved single fresh-briefing observation: one manual run fetched 20 RSS items,
+  processed 7, made 35 provider calls, persisted 7 events and one new briefing, and left scheduler
+  disabled. Three gatekeeper failures and one YouTube caption-access failure were isolated safely;
+  briefing render/persistence had no failures. The new structured briefing rendered one sourced
+  card with Turkish summary and `Ne değişti`; viewing it made no additional provider call
+- [x] M17 scheduler-off requirement observed after the manual run. The rebuilt-container second-run
+  and explicitly enabled scheduler smoke remain separate M9 acceptance work and are not an M17
+  blocker
 
 **Acceptance:** a staging or production operator records the safe checklist observations after a
 tested backup/restore and confirms the hardened deployment, migration revision, and reader behavior
 without exposing secrets or enabling unapproved live integrations. Core deployment observations are
-now recorded, but this milestone remains incomplete until the backup/restore, runtime-role/TLS, and
-remaining deferred observations are recorded.
+now recorded and all checks applicable to the current architecture are complete. This milestone
+is complete. Remote database TLS becomes acceptance work only if that architecture is adopted.
 
 ---
 
@@ -437,7 +454,7 @@ secrets never appear; metadata-only audit persists without request content.
 ---
 
 ## M21 — Source expansion and evals
-**Status:** [~] IN PROGRESS
+**Status:** [~] IN PROGRESS — fresh isolated RSSHub pilot Day 1 of 7 recorded; route decision pending
 
 - [x] add a sanitized, offline golden quality dataset for gatekeeper, extractor, briefing, Search,
   fact/inference separation, and source prompt-injection contracts
@@ -447,7 +464,8 @@ secrets never appear; metadata-only audit persists without request content.
   profile; normal RSS/YouTube, Gmail, OpenRouter, and scheduler paths remain outside it
 - [~] persist aggregate-only route metrics (availability, latency, freshness, duplicates,
   retained candidates, and error rate); run the approved profile once daily for seven days and
-  capture host-side RSSHub memory before the per-route `keep / disable / needs-auth` decision
+  capture host-side RSSHub memory before the per-route `keep / disable / needs-auth` decision.
+  Fresh pilot Day 1/7 ran on 2026-09-21; do not combine it with the stale 2026-09-10 observation
 - [x] add an explicit, separately budgeted manual provider-evaluation option with a sanitized
   Promptfoo-compatible configuration, separate scoped-key variable, one model, five cases,
   300-output-token cap, one-request-per-minute limit, and sharing disabled
@@ -459,6 +477,11 @@ improves source coverage without becoming a runtime dependency or lowering core 
 `/github/trending/:since/:language/:spoken_language?` requires `GITHUB_ACCESS_TOKEN`, which this
 pilot must not request or create. Current RSSHub upstream has no Reddit route namespace; Reddit is
 excluded from this pilot.
+
+**Fresh pilot Day 1 findings (2026-09-21):** 7/15 routes were available. Apple Security Releases,
+AP Top News, and all six The Verge routes recorded safe `ProviderError` failures; all six Hacker News
+routes and Epic Free Games were available. This is observation-only evidence, not a keep/disable/
+needs-auth decision.
 
 ---
 
@@ -479,8 +502,7 @@ failure cannot roll back a persisted briefing or stop ingestion; disabled defaul
 ---
 
 ## M22.1 — Telegram bot interface
-**Status:** [~] IN PROGRESS — safety/recovery smoke partially passed; search no-match regression
-blocks production acceptance
+**Status:** [x] COMPLETE — production safety/recovery smoke passed after the no-match retrieval fix
 
 - [x] add a disabled-by-default Telegram Bot API adapter without duplicating Search, Ask, briefing,
   interest, or notification business logic
@@ -506,9 +528,10 @@ blocks production acceptance
   update production Compose, environment examples, security notes, and VDS runbook
 - [x] verify the deployed polling worker and Telegram command responses; production has 6 managed
   sources, 2 enabled
-- [!] complete the explicit VDS safety/recovery smoke: unauthorized identities, duplicate-update
-  suppression, restart recovery, and temporary Telegram failure isolation passed; the approved
-  command matrix is blocked by an `/ara` no-match regression found in production
+- [x] complete the explicit VDS safety/recovery smoke: unauthorized identities, duplicate-update
+  suppression, restart recovery, temporary Telegram failure isolation, and safe approved-command
+  behavior all passed in production; no-match and positive-match Search behavior were re-tested
+  after deployment of `44c7e70`
 
 **Acceptance:** only allow-listed identities can use the bot; duplicate Telegram updates cannot
 repeat a model call or feedback action; approved commands return bounded, sourced results using the
@@ -555,27 +578,25 @@ and correlation keeps claims and inferences separate with bounded context.
 
 ## Approved implementation sequence after M19
 
-The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. M20 and M22 are complete;
-M22.1 is the authorized implementation milestone while the M21 observation-only pilot remains
-open independently. Future milestones are planned and their scope must not be pulled into active
-work.
+The detailed, updateable plan is `docs/OPEN_SOURCE_INTEGRATION_PLAN.md`. M20, M22, and M22.1 are
+complete; the M21 observation-only pilot remains open independently. Future milestones are planned
+and their scope must not be pulled into active work.
 
 - [x] **M20 — Full-article ingestion:** safe bounded article fetch plus Trafilatura extraction
 - [~] **M21 — Source expansion and evals:** isolated RSSHub pilot plus sanitized promptfoo quality
   regression harness
 - [x] **M22 — Notification delivery:** disabled-by-default, privacy-minimized ntfy adapter
-- [~] **M22.1 — Telegram bot interface:** production polling/command smoke verified; explicit
-  safety/recovery acceptance remains for the allow-listed briefing, Search, Ask, status, feedback,
-  and notification services
+- [x] **M22.1 — Telegram bot interface:** allow-listed production polling, safe commands, duplicate
+  suppression, restart recovery, and Telegram failure isolation verified
 - [ ] **M23 — Document ingestion:** isolated Docling boundary, only after explicit feature approval
 - [ ] **M24 — User/mobile API and generated SDK:** stabilize the user API before OpenAPI Generator
 - [ ] **M25+ — Tasks, mobile sync, and actions:** TaskService/Vikunja decision, then client sync and
   least-privilege MCP-compatible tools
 
-**Sequencing rule:** M17 and linked M9 live observations remain open and must be completed as
-explicit operational checks; do not infer backup, TLS, restore, or scheduler acceptance from the
-deployment smoke alone. M19 is authorized by the project owner; later integrations remain removable
-adapters/services, and the existing database and domain model remain canonical.
+**Sequencing rule:** M17 production operations acceptance is complete. M9 scheduler observations
+remain separate and must not be inferred from M17's scheduler-off checks. M21 is the active
+observation milestone; later integrations remain removable adapters/services, and the existing
+database and domain model remain canonical.
 
 ---
 
@@ -596,19 +617,76 @@ adapters/services, and the existing database and domain model remain canonical.
   (separate future scope; not part of AI Assistant M18)
 
 ## Blockers
-M22.1 production acceptance is blocked until the search no-match fix is deployed and re-tested:
-an unmatched `/ara` query returned unrelated existing TechCrunch results (also through localhost
-Memory Search) instead of no sufficient sources. Local regression coverage passes; do not close
-M22.1 until production confirms the fix and the remaining safe-command checks pass.
+No active M17 or M22.1 blocker. Remaining open work is the M21 observation and separate deferred M9
+scheduler acceptance. Remote PostgreSQL TLS and an internet-facing TLS proxy become acceptance work
+only if those architectures are adopted.
 
 ## Tests
+- 2026-09-21: M21 fresh isolated RSSHub pilot Day 1/7: the unique local Compose project ran only the
+  explicit 15-route profile with normal app suppressed, scheduler/Gmail disabled, and OpenRouter
+  empty. It persisted aggregate-only observations: 7/15 available (46.67%), 435.9 ms mean available
+  route latency, 87 fresh/retained candidates, 6.98% duplicate rate, and 53.33% maintenance error
+  rate. Apple Security Releases, AP Top News, and six The Verge routes recorded `ProviderError`;
+  six Hacker News routes and Epic Free Games were available. RSSHub memory was 165.5 MiB before and
+  247.4 MiB after the run, within its 512 MiB limit. No provider, Gmail, scheduler, normal runtime,
+  production Compose, source promotion, or final route decision was used.
+- 2026-09-20: Closed M17 after permanent off-host age recovery validation. Generated the private
+  identity only on the trusted operator workstation outside the repository and encrypted-backup
+  tree, mode `600`; provisioned only its public recipient on the VPS. A fresh production PG17 custom
+  dump was encrypted directly to that recipient, copied off-host with its checksum, checksum-checked,
+  and decrypted off-host to a valid `PGDMP` archive. The decrypted stream crossed SSH without the
+  identity and was restored only into a network-disabled, tmpfs-backed disposable PG17 container.
+  Restore checks matched revision `20260914_0027`, 34 public tables, 31 events, 8 briefings, 150 LLM
+  calls, 26 Telegram updates, and 6 managed/2 enabled sources. The disposable container, plaintext
+  archive, and restored database were removed; encrypted off-host/VPS backups and the public
+  recipient remain. Production app/database stayed healthy. No ingestion, scheduler, Telegram,
+  migration, provider, or live-database write was triggered.
+- 2026-09-20: Completed the architecture-applicable M17 deployment and fresh-briefing observations.
+  The VPS exposed only SSH; UFW was active with default-deny inbound; app remained loopback-only;
+  PostgreSQL had no published port; and no reverse proxy was installed. Health/readiness returned
+  `200`, unauthenticated Admin `401`, invalid Host `400`, docs/OpenAPI `404`, and Admin returned the
+  expected no-store/CSP/frame/referrer/nosniff headers. One explicitly approved manual run fetched
+  20 RSS items, processed 7, made 35 provider calls, persisted 7 events and one new briefing, and
+  completed with three isolated gatekeeper failures plus one safe YouTube caption-access failure.
+  The new briefing had one structured content row with title, Turkish summary, `Ne değişti`, and a
+  source link; render/persistence failures were zero. Viewing it left `llm_calls=150`, confirming no
+  read-time provider call. Scheduler stayed disabled; app remained healthy and Telegram polling
+  running. No second ingestion run was attempted.
+- 2026-09-20: M17 production database-role validation found app, poller, and migration configured
+  with the same `postgres` superuser. Applied the existing `ops/bootstrap-database-roles.sql` source
+  of truth to create `intelligence_runtime`, then verified `NOSUPERUSER`, `NOCREATEDB`,
+  `NOCREATEROLE`, `NOINHERIT`, `NOREPLICATION`, login-only status, database `CONNECT`, schema
+  `USAGE` without `CREATE`, complete documented CRUD/sequence grants, zero elevated table grants,
+  zero owned objects, and zero role memberships. Recreated only app/poller with scheduler,
+  managed-source bootstrap, and Gmail disabled; `/health` and `/ready` passed and two live
+  application sessions used `intelligence_runtime`. A credential exposed during the operator drill
+  was rotated; replacement values were not logged, migration login succeeded, Compose/migration
+  credentials matched, and secret/config modes were `600`. TLS observation recorded the actual
+  topology: internal-only Docker database network, no published PostgreSQL port, server SSL off,
+  and two non-TLS runtime sessions. No ingestion, scheduler run, Telegram command, migration,
+  provider call, or application behavior change was triggered.
+- 2026-09-20: M17 production backup/restore validation passed without provider, ingestion, scheduler,
+  Telegram, or live-database writes. A PG17 custom dump was encrypted with a temporary age key and
+  checksum-verified; archive inspection found 179 entries, 68 table definitions, and 34 table-data
+  entries. Restore into an isolated disposable PostgreSQL container completed successfully. Isolated
+  and production checks matched: 34 public tables, Alembic revision `20260914_0027`, `events=24`,
+  `telegram_updates=26`, and `llm_calls=115`. The temporary age key, encrypted/plaintext drill
+  artifacts, container, and internal network were removed. Long-term off-host key management was not
+  validated.
+- 2026-09-20: M22.1 production acceptance completed after deploying `44c7e70`: unauthorized
+  group identity rejection, duplicate-update idempotency, polling offset continuity across restart,
+  Telegram network-failure isolation, bounded command behavior, and the controlled `/sor` check
+  passed. `/ara qzv-unique-smoke-2026` and `/ara AMD` safely returned insufficient sources, while
+  `/ara Moonshot` returned two matching retained events. No ingestion was triggered; the single
+  `/sor` verification was the intentional provider-backed smoke call.
 - 2026-09-20: M22.1 VDS safety/recovery smoke partially passed: an unauthorized group chat was
   rejected without changing `telegram_updates`/`llm_calls`; controlled duplicate replay was
   idempotent; polling offset remained continuous across a poller restart; disconnecting only the
   poller's secondary network left app health/readiness and the poller healthy; and bounded `/yardim`
   plus authorized `/durum` responses worked. The smoke found a real no-match search regression:
   `/ara qzv-unique-smoke-2026` returned unrelated existing results rather than a safe insufficient-
-  sources response, with no LLM call. M22.1 remains open pending deployment/retest.
+  sources response, with no LLM call. The subsequent `44c7e70` deployment and positive-match
+  verification completed M22.1.
 - 2026-09-20: Added the minimal shared-retriever guard and regression test for zero-score events;
   `tests/test_search.py` passed (9 passed) and Ruff passed. The full suite was attempted but hung at
   `tests/test_admin.py::test_admin_run_callback` and was stopped; no provider or ingestion work was
@@ -1095,6 +1173,35 @@ M22.1 until production confirms the fix and the remaining safe-command checks pa
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-21: Started a fresh M21 seven-day RSSHub observation window with Day 1 of the existing
+  exact 15-route isolated profile. Captured aggregate route health and 512 MiB-bound memory only;
+  no core source/runtime configuration or provider path changed. Route decisions remain deferred
+  until the seven-day report.
+- 2026-09-20: Completed M17 with permanent off-host age recovery-key management and a full isolated
+  restore drill. The private identity never entered the VPS, repository, backup tree, logs, or
+  application secret set; only the public recipient was provisioned. Off-host checksum/decryption,
+  isolated PG17 restore, migration/schema/count checks, and secure disposable cleanup passed.
+  M21 is now the active milestone; M9 scheduler acceptance remains separate and deferred.
+- 2026-09-20: Finished all M17 live observations applicable to the current internal-DB,
+  SSH-tunnel-only architecture, including firewall/port boundaries, HTTP security behavior, and one
+  fresh structured Turkish briefing. Remote DB TLS and an internet-facing TLS proxy were recorded as
+  conditional rather than forced architecture changes; M9 scheduler smoke remains separate. M17
+  stays open solely for durable off-host age recovery-key management.
+- 2026-09-20: Completed the M17 production runtime-role validation and remediation. Production had
+  been using the migration/admin `postgres` role at runtime; app and poller now use the verified
+  least-privilege `intelligence_runtime` role and remain healthy. Rotated credentials affected by
+  the drill and tightened production env-file permissions. The local internal PostgreSQL topology
+  was confirmed to be non-TLS by design; remote hostname/certificate TLS validation remains open
+  until production uses a remote database endpoint.
+- 2026-09-20: Completed the M17 encrypted backup and isolated restore validation on production. The
+  backup was generated with PG17 tooling in the database image, encrypted with a temporary drill-only
+  age key, restored only into disposable tmpfs PostgreSQL, and matched production schema/revision and
+  representative aggregate counts. Temporary secrets and artifacts were cleaned up; runtime-role/TLS
+  validation and long-term off-host key management remain open.
+- 2026-09-20: Closed M22.1 after deploying `44c7e70` and completing the Telegram safety/recovery
+  smoke. Confirmed unauthorized rejection, duplicate suppression, restart offset continuity,
+  failure isolation, bounded commands, safe no-match Search, positive Search matching, and the
+  intentional `/sor` provider smoke. M17 is now the active milestone.
 - 2026-09-20: Safety/recovery smoke exposed a production search bug: no-match `/ara` queries were
   returning zero-score recent events. Added a focused regression test and the smallest shared
   `HybridRetriever` fix; local search tests and Ruff pass. Production deploy/retest is required
