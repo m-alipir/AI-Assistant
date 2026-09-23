@@ -16,7 +16,7 @@ venv/
 *.egg-info/
 
 # Graphify generates local reports, indexes, caches, and machine-specific state.
-graphify-out/
+/graphify-out/
 dist/
 build/
 data/
