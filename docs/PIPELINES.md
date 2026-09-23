@@ -117,7 +117,9 @@ Reasoner output must be structured:
    is persisted; this is not a second LLM/editor call.
 7. Validate final structure and atomically drain a bounded outbox batch into one briefing and its
    item mapping. On render/persistence failure, leave the outbox untouched for the next run.
-8. Deliver via configured adapters.
+8. Persist the new briefing before delivery, then deliver it through configured adapters. The
+   existing Telegram adapter renders the same bounded `/ozet` projection; duplicate delivery is
+   suppressed by the channel-scoped notification key. Empty runs do not reach this step.
 
 ## G. Failure behavior
 - One bad feed must not abort the entire daily run.

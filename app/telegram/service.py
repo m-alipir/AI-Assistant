@@ -293,14 +293,39 @@ class TelegramWebhookHandler:
             TelegramMessage("Komut bulunamadı. Kullanılabilir komutlar için /yardim yazın."),
         )
 
-    async def _send_briefing(self, actor: Actor) -> None:
-        try:
-            briefing = await self._latest_briefing()
-        except LookupError:
-            await self._bot.send_message(
-                actor.chat_id, TelegramMessage("Henüz kaydedilmiş özet yok.")
-            )
-            return
+    async def send_briefing(
+        self,
+        chat_id: int,
+        briefing: dict[str, object],
+        calibration_candidates: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Deliver a persisted briefing through the same renderer as ``/ozet``."""
+        actor = next(
+            (
+                Actor(user_id, allowed_chat_id)
+                for user_id, allowed_chat_id in self._settings.telegram_allowed_actor_pair_list
+                if allowed_chat_id == chat_id
+            ),
+            None,
+        )
+        if actor is None:
+            raise TelegramDeliveryError("telegram_destination_not_allowed")
+        await self._send_briefing(actor, briefing, calibration_candidates)
+
+    async def _send_briefing(
+        self,
+        actor: Actor,
+        briefing: dict[str, object] | None = None,
+        calibration_candidates: list[dict[str, str]] | None = None,
+    ) -> None:
+        if briefing is None:
+            try:
+                briefing = await self._latest_briefing()
+            except LookupError:
+                await self._bot.send_message(
+                    actor.chat_id, TelegramMessage("Henüz kaydedilmiş özet yok.")
+                )
+                return
         items = briefing.get("items")
         if not isinstance(items, list):
             await self._bot.send_message(
@@ -338,6 +363,38 @@ class TelegramWebhookHandler:
                     for index, chunk in enumerate(chunks)
                 ],
             )
+        if calibration_candidates:
+            event_ids = [candidate["event_id"] for candidate in calibration_candidates]
+            subjects = {
+                candidate["event_id"]: candidate["subject"] for candidate in calibration_candidates
+            }
+            calibration_tokens = await self._create_feedback_tokens(
+                actor, briefing_id, event_ids, subjects
+            )
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage(
+                    "İlk 14 günlük ayar: Bu konularla ilgileniyor musunuz? "
+                    "Evet/Hayır seçin."
+                ),
+            )
+            for candidate in calibration_candidates:
+                event_id = candidate["event_id"]
+                token = calibration_tokens.get(event_id)
+                if token is None:
+                    continue
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage(
+                        f"{candidate['subject']} ile ilgileniyor musunuz?",
+                        feedback_keyboard(
+                            token,
+                            positive_text="Evet",
+                            negative_text="Hayır",
+                            include_not_useful=False,
+                        ),
+                    ),
+                )
 
     async def _send_search(
         self, actor: Actor, argument: str, callback: SearchCallback, label: str, command: str
@@ -603,7 +660,11 @@ class TelegramWebhookHandler:
             )
 
     async def _create_feedback_tokens(
-        self, actor: Actor, briefing_id: str, event_ids: list[str]
+        self,
+        actor: Actor,
+        briefing_id: str,
+        event_ids: list[str],
+        subjects: dict[str, str] | None = None,
     ) -> dict[str, str]:
         if not briefing_id:
             return {}
@@ -616,8 +677,8 @@ class TelegramWebhookHandler:
                 await session.execute(
                     text(
                         "INSERT INTO telegram_feedback_tokens "
-                        "(token, actor_pair_hash, briefing_id, event_id, expires_at) "
-                        "VALUES (:token, :actor_hash, :briefing_id, :event_id, "
+                        "(token, actor_pair_hash, briefing_id, event_id, subject, expires_at) "
+                        "VALUES (:token, :actor_hash, :briefing_id, :event_id, :subject, "
                         "now() + interval '24 hours')"
                     ),
                     {
@@ -625,6 +686,7 @@ class TelegramWebhookHandler:
                         "actor_hash": actor.pair_hash,
                         "briefing_id": briefing_id,
                         "event_id": event_id,
+                        "subject": (subjects or {}).get(event_id),
                     },
                 )
                 values[event_id] = token
@@ -640,7 +702,7 @@ class TelegramWebhookHandler:
             row = (
                 await session.execute(
                     text(
-                        "SELECT briefing_id, event_id FROM telegram_feedback_tokens "
+                        "SELECT briefing_id, event_id, subject FROM telegram_feedback_tokens "
                         "WHERE token = :token AND actor_pair_hash = :actor_hash "
                         "AND expires_at > now() FOR UPDATE"
                     ),
@@ -650,7 +712,11 @@ class TelegramWebhookHandler:
             if row is None:
                 return "Bu geri bildirim artık geçerli değil. Yeni bir /ozet isteyin."
             result = await record_briefing_feedback(
-                session, str(row["briefing_id"]), str(row["event_id"]), action
+                session,
+                str(row["briefing_id"]),
+                str(row["event_id"]),
+                action,
+                subject=str(row["subject"]) if row.get("subject") else None,
             )
             await session.execute(
                 text("DELETE FROM telegram_feedback_tokens WHERE token = :token"), {"token": token}

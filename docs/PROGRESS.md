@@ -1,9 +1,9 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M21 — Source expansion and evals (M17 production operations verification is
-complete; M9 scheduler acceptance remains separate and deferred)
-**Last updated:** 2026-09-20
+**Current milestone:** M22.2 — Scheduled Telegram daily assistant (M21 RSSHub observation explicitly
+deferred)
+**Last updated:** 2026-09-23
 **Completion estimate:** ~92% (22 of 24 tracked milestone entries complete; M9 and M21 remain open)
 
 ## Rules for Codex
@@ -540,6 +540,26 @@ content appears in Git, logs, callback responses, or notification history.
 
 ---
 
+## M22.2 — Scheduled Telegram daily assistant
+**Status:** [~] IMPLEMENTED — production enablement remains operator configuration
+
+- [x] keep the existing daily scheduler, normal RSS/YouTube/Gmail runtime, coordinator, durable
+  briefing outbox, and channel-scoped notification dispatcher
+- [x] deliver the newly persisted briefing through the existing `/ozet` renderer after a non-empty
+  run; empty runs do not notify
+- [x] preserve briefing/ingestion state when Telegram delivery fails and reuse notification
+  idempotency for retries/restarts
+- [x] ask up to three metadata-derived interest questions during the first 14 successfully
+  delivered local briefing days, using one-use existing Telegram feedback tokens
+- [x] apply calibration answers as bounded adaptive signals without an additional model call
+- [x] add migration, regression tests, configuration examples, and the production runbook steps
+- [ ] operator enables `SCHEDULER_DAILY_TIME=12:30`, Telegram notification destination, and performs
+  the first controlled production smoke
+
+**Scope note:** M21 RSSHub work is not a prerequisite and was not continued.
+
+---
+
 ## M20 — Full-article ingestion
 **Status:** [x] COMPLETE
 
@@ -622,6 +642,13 @@ scheduler acceptance. Remote PostgreSQL TLS and an internet-facing TLS proxy bec
 only if those architectures are adopted.
 
 ## Tests
+- 2026-09-23: M22.2 release-targeted offline regressions passed: 45 tests covering Telegram,
+  calibration, notifications, scheduler, RSS runtime, and briefing behavior, with 2 upstream
+  deprecation warnings. Ruff, compileall, Alembic head/SQL generation, and `git diff --check` passed.
+  The full offline suite had previously passed: 308 passed, 6 opt-in PostgreSQL skips, and 2
+  upstream deprecation warnings. A fresh full-suite rerun stops at the first TestClient test because
+  the installed Starlette/httpx/anyio stack hangs even for a bare FastAPI app; no Telegram, source,
+  Gmail, database, or provider request was made.
 - 2026-09-21: M21 fresh isolated RSSHub pilot Day 1/7: the unique local Compose project ran only the
   explicit 15-route profile with normal app suppressed, scheduler/Gmail disabled, and OpenRouter
   empty. It persisted aggregate-only observations: 7/15 available (46.67%), 435.9 ms mean available
@@ -1173,6 +1200,13 @@ only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-23: Implemented M22.2 scheduled Telegram daily assistant behavior. The existing normal
+  RSS/YouTube/Gmail runtime now identifies a newly persisted briefing and sends it through the
+  existing `/ozet` renderer and channel-scoped notification idempotency. Empty runs stay silent;
+  delivery errors remain isolated. Added bounded metadata-derived calibration questions for the
+  first 14 successful local briefing days, durable progress/subject migration, small adaptive
+  feedback updates, offline regressions, and 12:30 production configuration guidance. M21 RSSHub
+  observation was not continued.
 - 2026-09-21: Started a fresh M21 seven-day RSSHub observation window with Day 1 of the existing
   exact 15-route isolated profile. Captured aggregate route health and 512 MiB-bound memory only;
   no core source/runtime configuration or provider path changed. Route decisions remain deferred

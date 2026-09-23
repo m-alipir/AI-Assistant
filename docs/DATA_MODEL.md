@@ -185,7 +185,10 @@ OAuth secrets/tokens must not be plaintext columns here.
   Telegram payload is retained. The update ID is the durable replay barrier before a model call or
   feedback mutation.
 - `telegram_feedback_tokens`: short-lived random actor-bound tokens that map one rendered briefing
-  item to an allowed feedback action. Tokens expire after 24h and are deleted on use.
+  item to an allowed feedback action. Calibration tokens may carry one bounded event-metadata
+  subject. Tokens expire after 24h and are deleted on use.
+- `control_center_settings.telegram_calibration_days` and `telegram_calibration_last_day`: durable
+  cap/progress for the first 14 distinct local briefing days of Telegram calibration.
 - `notification_deliveries`: delivery idempotency is scoped by `channel` plus logical key, so a
   Telegram destination and ntfy do not suppress each other.
 

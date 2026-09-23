@@ -364,4 +364,22 @@ Consequences: the Control Center works through the private localhost tunnel whil
 ports, and public hosts remain rejected. The application still binds only to the deployment's
 existing loopback publication; no public port or secret is exposed.
 
+---
+
+## D031 — Scheduled Telegram delivery is a post-persistence projection
+**Date:** 2026-09-23
+**Status:** Accepted
+
+The existing scheduled normal runtime remains the only ingestion/briefing path. After a new
+briefing is atomically persisted, the existing channel-scoped notification dispatcher invokes the
+existing Telegram `/ozet` renderer for configured allow-listed destinations. Empty runs do not
+create a notification. Telegram failure is recorded as delivery failure and cannot roll back the
+briefing, outbox drain, or source result.
+
+The first fourteen distinct local briefing days may render at most three entity/topic candidates
+from persisted event metadata. Existing actor-bound callback tokens carry the selected subject;
+answers record feedback and move the adaptive profile by at most 0.1 per answer. Durable progress
+prevents calibration from continuing after day fourteen without adding an LLM call or a second bot
+workflow.
+
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.

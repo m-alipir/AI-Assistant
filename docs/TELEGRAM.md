@@ -54,8 +54,8 @@ TELEGRAM_ENABLED=true
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://intelligence.example.com/integrations/telegram/webhook
 TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
-# Optional; every listed chat must already occur in TELEGRAM_ALLOWED_ACTOR_PAIRS.
-TELEGRAM_NOTIFICATION_CHAT_IDS=
+# Proactive daily briefings; every listed chat must already occur in TELEGRAM_ALLOWED_ACTOR_PAIRS.
+TELEGRAM_NOTIFICATION_CHAT_IDS=<numeric-chat-id>
 TELEGRAM_MAX_REQUEST_BYTES=8192
 TELEGRAM_RATE_LIMIT_PER_MINUTE=10
 TELEGRAM_GLOBAL_RATE_LIMIT_PER_MINUTE=20
@@ -67,9 +67,9 @@ container UID `10001` and mode `0400`. The webhook secret is 32–256 URL-safe c
 host paths only for the deployment command, then start with the optional secret mount:
 
 ```text
-docker compose --env-file /etc/personal-intelligence/app.env \
+docker compose --env-file .env.production \
   -f compose.production.yaml -f compose.telegram.production.yaml up -d --build
-docker compose --env-file /etc/personal-intelligence/app.env \
+docker compose --env-file .env.production \
   -f compose.production.yaml -f compose.telegram.production.yaml exec app \
   python -m app.telegram.configure_webhook
 ```
@@ -77,6 +77,12 @@ docker compose --env-file /etc/personal-intelligence/app.env \
 The setup command reads the mounted files and prints only a success/failure category. It configures
 only `message` and `callback_query` updates with two Telegram-to-app connections. It is never run
 automatically at startup. Do not use polling in this deployment.
+
+When `SCHEDULER_ENABLED=true` and `SCHEDULER_DAILY_TIME=12:30`, each successful run delivers the
+new persisted briefing to every `TELEGRAM_NOTIFICATION_CHAT_IDS` destination. Empty runs do not
+send a message. The first 14 successfully delivered briefing days may include up to three
+metadata-derived interest questions; their one-use buttons update the existing adaptive profile
+in small increments and then stop automatically.
 
 ## Outbound-only polling deployment
 
@@ -95,7 +101,7 @@ TELEGRAM_POLLING_MAX_BACKOFF_SECONDS=30
 Mount only the existing bot-token and runtime database secret files, then use the polling overlay:
 
 ```text
-docker compose --env-file /etc/personal-intelligence/app.env \
+docker compose --env-file .env.production \
   -f compose.production.yaml -f compose.telegram.polling.production.yaml up -d --build
 ```
 

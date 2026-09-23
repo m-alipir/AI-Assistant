@@ -214,14 +214,20 @@ def split_plain_text(value: str, *, maximum: int = MAX_MESSAGE_CHARS) -> list[st
     return chunks
 
 
-def feedback_keyboard(token: str) -> dict[str, object]:
+def feedback_keyboard(
+    token: str,
+    *,
+    positive_text: str = "Daha fazla",
+    negative_text: str = "Daha az",
+    include_not_useful: bool = True,
+) -> dict[str, object]:
     """Build fixed actions; server-side token lookup supplies the event and actor binding."""
+    buttons = [
+        {"text": positive_text, "callback_data": f"f:{token}:more"},
+        {"text": negative_text, "callback_data": f"f:{token}:less"},
+    ]
+    if include_not_useful:
+        buttons.append({"text": "Faydalı değil", "callback_data": f"f:{token}:not_useful"})
     return {
-        "inline_keyboard": [
-            [
-                {"text": "Daha fazla", "callback_data": f"f:{token}:more"},
-                {"text": "Daha az", "callback_data": f"f:{token}:less"},
-                {"text": "Faydalı değil", "callback_data": f"f:{token}:not_useful"},
-            ]
-        ]
+        "inline_keyboard": [buttons]
     }

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import secrets
 import uuid
@@ -82,6 +83,7 @@ from app.telegram.core import TelegramBotClient
 from app.telegram.service import TelegramWebhookHandler
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -350,18 +352,10 @@ def create_app(
                 timeout_seconds=active_settings.telegram_request_timeout_seconds,
                 retries=active_settings.telegram_max_retries,
             )
-            for chat_id in active_settings.telegram_notification_chat_id_list:
-                async def send_telegram_notification(
-                    notification: Notification, *, destination: int = chat_id
-                ) -> None:
-                    assert telegram_bot is not None
-                    await telegram_bot.send_notification(destination, notification)
-
-                channel = f"tg-{hashlib.sha256(str(chat_id).encode()).hexdigest()[:20]}"
-                notification_dispatchers.append(
-                    database_dispatcher(sessions, send_telegram_notification, channel=channel)
-                )
-        app.state.notifications_enabled = bool(notification_dispatchers)
+        app.state.notifications_enabled = bool(
+            notification_dispatchers
+            or (telegram_bot is not None and active_settings.telegram_notification_chat_id_list)
+        )
 
         async def reembed_knowledge(limit: int = 50) -> int:
             """Explicit operator action; startup and scheduled jobs never call this routine."""
@@ -542,28 +536,121 @@ def create_app(
         async def fetch_gmail_account(account: GmailAccountRecord, refresh_token: str) -> object:
             return await gmail_client.sync(refresh_token, account.history_id)
 
+        async def latest_briefing_id() -> str | None:
+            async with sessions() as session:
+                value = await session.scalar(
+                    text("SELECT id FROM briefings ORDER BY created_at DESC LIMIT 1")
+                )
+            return str(value) if value is not None else None
+
+        async def telegram_calibration_candidates(briefing_id: str) -> list[dict[str, str]]:
+            async with sessions() as session:
+                days = await session.scalar(
+                    text("SELECT telegram_calibration_days FROM control_center_settings WHERE id")
+                )
+                if int(days or 0) >= 14:
+                    return []
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT bi.event_id, bi.section, "
+                            "coalesce(m.entities_json, '[]') AS entities_json, "
+                            "coalesce(m.topics_json, '[]') AS topics_json "
+                            "FROM briefing_items bi "
+                            "LEFT JOIN event_search_metadata m ON m.event_id = bi.event_id "
+                            "WHERE bi.briefing_id = :briefing_id ORDER BY bi.section, bi.event_id"
+                        ),
+                        {"briefing_id": briefing_id},
+                    )
+                ).mappings().all()
+            candidates: list[dict[str, str]] = []
+            seen: set[str] = set()
+            for row in rows:
+                if str(row["section"]) == "World in Brief":
+                    continue
+                subjects = _json_strings(row["entities_json"]) + _json_strings(row["topics_json"])
+                for subject in subjects:
+                    normalized = " ".join(subject.split())[:128]
+                    if not normalized or normalized.casefold() in seen:
+                        continue
+                    seen.add(normalized.casefold())
+                    candidates.append({"event_id": str(row["event_id"]), "subject": normalized})
+                    break
+                if len(candidates) == 3:
+                    break
+            return candidates
+
+        async def record_telegram_calibration_day(local_day: date) -> None:
+            async with sessions.begin() as session:
+                await session.execute(
+                    text(
+                        "UPDATE control_center_settings SET "
+                        "telegram_calibration_days = least(14, telegram_calibration_days + 1), "
+                        "telegram_calibration_last_day = :local_day "
+                        "WHERE id AND telegram_calibration_days < 14 "
+                        "AND (telegram_calibration_last_day IS NULL "
+                        "OR telegram_calibration_last_day <> :local_day)"
+                    ),
+                    {"local_day": local_day},
+                )
+
         async def deliver_run_notifications(
-            result: dict[str, object], gmail_items: list[BriefingItem]
+            result: dict[str, object],
+            gmail_items: list[BriefingItem],
+            briefing_id: str | None = None,
         ) -> list[str]:
-            """Deliver minimal post-persistence notices without changing a completed run result."""
-            if not notification_dispatchers:
-                return ["disabled"]
+            """Deliver post-persistence notifications without changing a completed run result."""
+            dispatchers = list(notification_dispatchers)
             local_day = datetime.now(UTC).astimezone(
                 ZoneInfo(active_settings.app_timezone)
-            ).date().isoformat()
+            ).date()
+            if telegram_bot is not None:
+                for chat_id in active_settings.telegram_notification_chat_id_list:
+                    async def send_telegram_notification(
+                        notification: Notification,
+                        *,
+                        destination: int = chat_id,
+                        current_briefing_id: str | None = briefing_id,
+                    ) -> None:
+                        assert telegram_bot is not None
+                        if notification.kind == NotificationKind.BRIEFING_READY:
+                            handler = getattr(app.state, "telegram_command_handler", None)
+                            if handler is None or current_briefing_id is None:
+                                raise RuntimeError("telegram_briefing_handler_unavailable")
+                            await handler.send_briefing(
+                                destination,
+                                await agent_briefing_detail(current_briefing_id),
+                                await telegram_calibration_candidates(current_briefing_id),
+                            )
+                            try:
+                                await record_telegram_calibration_day(local_day)
+                            except Exception:
+                                logger.warning(
+                                    "telegram_calibration_progress_unavailable",
+                                    extra={"diagnostic_category": "telegram_calibration_state"},
+                                )
+                            return
+                        await telegram_bot.send_notification(destination, notification)
+
+                    channel = f"tg-{hashlib.sha256(str(chat_id).encode()).hexdigest()[:20]}"
+                    dispatchers.append(
+                        database_dispatcher(
+                            sessions, send_telegram_notification, channel=channel
+                        )
+                    )
+            if not dispatchers:
+                return ["disabled"]
             admin_link = (
                 f"{active_settings.admin_public_origin}/admin"
                 if active_settings.admin_public_origin
                 else None
             )
             notifications: list[Notification] = []
-            counts = result.get("counts")
-            processed = int(counts.get("processed", 0)) if isinstance(counts, dict) else 0
-            if processed:
+            if briefing_id:
                 notifications.append(
                     Notification(
                         idempotency_key=notification_key(
-                            NotificationKind.BRIEFING_READY, local_day
+                            NotificationKind.BRIEFING_READY, briefing_id
                         ),
                         kind=NotificationKind.BRIEFING_READY,
                         title="Günlük özet hazır",
@@ -601,7 +688,7 @@ def create_app(
             results = await asyncio.gather(
                 *(
                     dispatcher.deliver(notification)
-                    for dispatcher in notification_dispatchers
+                    for dispatcher in dispatchers
                     for notification in notifications
                 )
             )
@@ -609,6 +696,7 @@ def create_app(
 
         async def run_rss_now() -> dict[str, object]:
             """Run independently bounded Gmail, YouTube, and RSS paths in one briefing cycle."""
+            previous_briefing_id = await latest_briefing_id()
             model_settings = load_model_settings(active_settings.admin_models_path)
             router = Router(
                 OpenRouterClient(
@@ -719,8 +807,11 @@ def create_app(
                 result["message"] += f" Gmail sync had {gmail_run.failed} safe failure(s)."
             if youtube_run.failed:
                 result["message"] += f" YouTube sync had {youtube_run.failed} safe failure(s)."
+            created_briefing_id = await latest_briefing_id()
+            if created_briefing_id == previous_briefing_id:
+                created_briefing_id = None
             result["notifications"] = await deliver_run_notifications(
-                result, gmail_run.action_items
+                result, gmail_run.action_items, created_briefing_id
             )
             return result
 
@@ -1357,6 +1448,18 @@ app = create_app()
 
 def _missing_gmail_cipher(value: str) -> str:
     raise ValueError("Gmail token cipher is unavailable")
+
+
+def _json_strings(value: object) -> list[str]:
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return []
+    return (
+        [str(item) for item in parsed if isinstance(item, str)]
+        if isinstance(parsed, list)
+        else []
+    )
 
 
 async def _reblock_retry(

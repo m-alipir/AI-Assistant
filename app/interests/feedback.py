@@ -25,6 +25,7 @@ async def record_briefing_feedback(
     event_id: str,
     action: str,
     *,
+    subject: str | None = None,
     now: datetime | None = None,
 ) -> FeedbackResult:
     """Record one allowed signal without allowing a UI to alter ranking rules directly."""
@@ -45,7 +46,8 @@ async def record_briefing_feedback(
         raise LookupError("briefing item not found")
     section = _display_section(str(item["section"]))
     subjects = _json_strings(item["entities_json"])
-    subject = (subjects or [str(item["canonical_title"])])[0][:256]
+    selected_subject = str(subject or (subjects or [str(item["canonical_title"])])[0])[:256]
+    calibration = subject is not None
     recorded_action = {
         "more": "explicit_more",
         "less": "explicit_less",
@@ -57,19 +59,36 @@ async def record_briefing_feedback(
             "INSERT INTO feedback_events (subject, action, occurred_at) "
             "VALUES (:subject, :action, :occurred_at)"
         ),
-        {"subject": subject, "action": recorded_action, "occurred_at": occurred_at},
+        {
+            "subject": selected_subject,
+            "action": "positive" if calibration and action == "more" else (
+                "negative" if calibration else recorded_action
+            ),
+            "occurred_at": occurred_at,
+        },
     )
     if section != "Dünyada Neler Oldu? / World in Brief" and action in {"more", "less"}:
         delta = 1 if action == "more" else -1
-        await connection.execute(
-            text(
-                "INSERT INTO interest_profile (subject, base, explicit, adaptive) "
-                "VALUES (:subject, 0, :delta, 0) "
-                "ON CONFLICT (subject) DO UPDATE SET explicit = "
-                "greatest(-10, least(10, interest_profile.explicit + :delta))"
-            ),
-            {"subject": subject, "delta": delta},
-        )
+        if calibration:
+            await connection.execute(
+                text(
+                    "INSERT INTO interest_profile (subject, base, explicit, adaptive) "
+                    "VALUES (:subject, 0, 0, :delta) "
+                    "ON CONFLICT (subject) DO UPDATE SET adaptive = "
+                    "greatest(-1, least(1, interest_profile.adaptive + :delta))"
+                ),
+                {"subject": selected_subject, "delta": delta / 10},
+            )
+        else:
+            await connection.execute(
+                text(
+                    "INSERT INTO interest_profile (subject, base, explicit, adaptive) "
+                    "VALUES (:subject, 0, :delta, 0) "
+                    "ON CONFLICT (subject) DO UPDATE SET explicit = "
+                    "greatest(-10, least(10, interest_profile.explicit + :delta))"
+                ),
+                {"subject": selected_subject, "delta": delta},
+            )
     if section == "Dünyada Neler Oldu? / World in Brief":
         return FeedbackResult(
             "recorded",
@@ -80,6 +99,8 @@ async def record_briefing_feedback(
         return FeedbackResult(
             "recorded", "not_useful", "Faydalı değil geri bildiriminiz kaydedildi."
         )
+    if calibration:
+        return FeedbackResult("recorded", action, "İlgi ayarı kaydedildi.")
     return FeedbackResult(
         "recorded",
         action,

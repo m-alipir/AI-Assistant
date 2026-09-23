@@ -9,8 +9,8 @@ network, and requires authenticated HTTPS Admin access.
 
 1. Create a dedicated non-login deploy user; protect the Docker socket because Docker daemon
    access is equivalent to access to running container secrets.
-2. Put a root-owned production environment file outside the repository, for example
-   `/etc/personal-intelligence/app.env` (`chmod 600`). Do not copy a real file into Git.
+2. Protect the existing production environment file at
+   `~/AI-Assistant/.env.production` (`chmod 600`). Do not copy a real file into Git.
 3. Set at least the following values. Replace the domain and values; do not reuse these examples.
 
 ```dotenv
@@ -29,6 +29,7 @@ FORCE_HTTPS=true
 ALLOW_PRIVATE_SOURCE_URLS=false
 ALLOW_INSECURE_SOURCE_URLS=false
 SCHEDULER_ENABLED=false
+SCHEDULER_DAILY_TIME=12:30
 GMAIL_ENABLED=false
 AGENT_API_ENABLED=false
 RETENTION_ENABLED=true
@@ -50,7 +51,9 @@ stable Fernet key; changing it requires Gmail reauthorization. When Gmail is ena
 `GMAIL_OAUTH_REDIRECT_URI=https://intelligence.example.com/admin/gmail/callback` exactly in both
 this file and Google Cloud Console.
 
-Telegram remains disabled unless the separate M22.1 configuration is complete. Follow
+Telegram remains disabled unless the separate M22.1 configuration is complete. For proactive daily
+briefings, set `TELEGRAM_NOTIFICATION_CHAT_IDS` to the same allow-listed chat ID as the actor pair.
+Follow
 `docs/TELEGRAM.md`: keep its token and webhook secret in files owned by UID `10001`, add only the
 non-secret webhook URL and exact actor pairs to the protected environment file, then use
 `compose.telegram.production.yaml` as an explicit second Compose file. The reverse proxy must cap
@@ -67,8 +70,9 @@ the webhook request body/rate/timeout and omit its body and secret header from a
 
 Run Compose with the same file used for interpolation and the app environment:
 
-```powershell
-docker compose --env-file /etc/personal-intelligence/app.env `
+```bash
+cd ~/AI-Assistant
+docker compose --env-file .env.production \
   -f compose.production.yaml up -d --build
 ```
 
@@ -80,6 +84,35 @@ Check `docker compose -f compose.production.yaml ps`, request `/health` through 
 sign in to `/admin`. Production startup intentionally fails if admin authentication, HTTPS origin,
 host allow-list, or public/HTTPS source restrictions are missing. API docs are disabled in this
 mode. Keep `SCHEDULER_ENABLED=false` until a manual ingestion test succeeds.
+
+## Enable the 12:30 Telegram assistant
+
+After the manual ingestion check succeeds, set these non-secret values in the protected env file:
+
+```dotenv
+APP_TIMEZONE=Europe/Istanbul
+SCHEDULER_DAILY_TIME=12:30
+SCHEDULER_ENABLED=true
+TELEGRAM_ENABLED=true
+TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
+TELEGRAM_NOTIFICATION_CHAT_IDS=<numeric-chat-id>
+```
+
+Keep the existing `TELEGRAM_MODE` and token/database secret-file settings. Use the matching
+Telegram Compose overlay already used by the VDS deployment, then verify the scheduler panel and
+Telegram process:
+
+```text
+docker compose --env-file .env.production \
+  -f compose.production.yaml -f compose.telegram.polling.production.yaml up -d --build
+docker compose --env-file .env.production \
+  -f compose.production.yaml -f compose.telegram.polling.production.yaml ps
+```
+
+The migration service applies the calibration columns before the app starts. At the next local
+12:30, a newly persisted briefing is sent to the configured chat; a no-new-item run stays silent.
+Keep only one scheduler app replica and one polling worker. Webhook deployments use
+`compose.telegram.production.yaml` instead, with the existing explicit webhook setup command.
 
 ## M17 production verification checklist
 

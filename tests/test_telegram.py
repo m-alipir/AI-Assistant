@@ -423,6 +423,49 @@ def test_search_output_only_keeps_safe_https_provenance_links() -> None:
     assert "127.0.0.1" not in text
 
 
+@pytest.mark.asyncio
+async def test_proactive_briefing_reuses_the_ozet_renderer_and_calibration_buttons() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("proactive delivery must not call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+
+    async def tokens(
+        actor: Actor,
+        briefing_id: str,
+        event_ids: list[str],
+        subjects: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        return {event_id: "a" * 20 for event_id in event_ids}
+
+    handler._create_feedback_tokens = tokens  # type: ignore[method-assign]
+    await handler.send_briefing(
+        42,
+        {
+            "id": "briefing-1",
+            "created_at": "2026-09-23T09:30:00+03:00",
+            "items": [
+                {
+                    "event_id": "event-1",
+                    "section": "For You",
+                    "title": "GPU announcement",
+                    "summary": "A compact summary.",
+                    "source_links": ["https://example.test/story"],
+                }
+            ],
+        },
+        [{"event_id": "event-1", "subject": "GPU"}],
+    )
+
+    messages = [call for call in sent if call["method"] == "sendMessage"]
+    assert any("GPU announcement" in str(call["text"]) for call in messages)
+    assert any("GPU ile ilgileniyor musunuz?" in str(call["text"]) for call in messages)
+    assert any("f:" in str(call.get("reply_markup")) for call in messages)
+
+
 def _handler(
     *,
     ask: Callable[..., Awaitable[dict[str, object]]],
@@ -537,11 +580,13 @@ class _FeedbackStore:
     async def execute(self, statement: object, parameters: object = None) -> _MappingResult:
         query = str(statement)
         values = parameters if isinstance(parameters, dict) else {}
-        if "SELECT briefing_id, event_id FROM telegram_feedback_tokens" in query:
+        if "SELECT briefing_id, event_id" in query:
             token = str(values.get("token", ""))
             if token in self.expired_tokens or self.tokens.get(token) != values.get("actor_hash"):
                 return _MappingResult(None)
-            return _MappingResult({"briefing_id": "briefing-1", "event_id": "event-1"})
+            return _MappingResult(
+                {"briefing_id": "briefing-1", "event_id": "event-1", "subject": None}
+            )
         if "FROM briefing_items bi" in query:
             return _MappingResult(
                 {"section": "For You", "canonical_title": "Fixture", "entities_json": "[]"}
