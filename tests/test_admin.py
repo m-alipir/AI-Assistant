@@ -624,6 +624,7 @@ def test_control_center_scheduler_reuses_persisted_onboarding_preference() -> No
 
     with TestClient(app) as client:
         page = client.get("/admin/control-center/scheduler")
+        expected_next_run = scheduler.state.next_run
         saved = client.post(
             "/admin/onboarding/scheduler", json={"enabled": False, "daily_time": "09:15"}
         )
@@ -637,7 +638,7 @@ def test_control_center_scheduler_reuses_persisted_onboarding_preference() -> No
         )
 
     assert page.status_code == 200
-    assert "2026-09-15T07:30:00+03:00" in page.text
+    assert expected_next_run is not None and expected_next_run in page.text
     assert "Persisted preference: enabled at 07:30." in page.text
     assert "/admin/onboarding/scheduler" in page.text
     assert "innerHTML" not in page.text

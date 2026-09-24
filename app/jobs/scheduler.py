@@ -104,7 +104,10 @@ class DailyScheduler:
 
     async def run_due(self, now: datetime | None = None) -> bool:
         local_now = (now or datetime.now(UTC)).astimezone(self._timezone)
-        if not self.state.enabled or local_now.time() < self._at:
+        if not self.state.enabled:
+            return False
+        self.state.last_skip_reason = None
+        if local_now.time() < self._at:
             return False
         if not await self._claim(local_now.date()):
             self.state.last_skip_reason = "already_claimed_for_local_day"
@@ -143,7 +146,15 @@ class DailyScheduler:
             next_run = self.next_at()
             self.state.next_run = next_run.isoformat()
             await asyncio.sleep(max((next_run - datetime.now(UTC)).total_seconds(), 1))
-            await self.run_due()
+            while True:
+                if await self.run_due():
+                    break
+                if (
+                    not self.state.enabled
+                    or self.state.last_skip_reason == "already_claimed_for_local_day"
+                ):
+                    break
+                await asyncio.sleep(max((next_run - datetime.now(UTC)).total_seconds(), 1))
 
 
 def _safe_summary(result: dict[str, object]) -> str:

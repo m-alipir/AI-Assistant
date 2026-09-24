@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.2 — Scheduled Telegram daily assistant (M21 RSSHub observation explicitly
 deferred)
-**Last updated:** 2026-09-23
+**Last updated:** 2026-09-24
 **Completion estimate:** ~92% (22 of 24 tracked milestone entries complete; M9 and M21 remain open)
 
 ## Rules for Codex
@@ -243,6 +243,7 @@ Gmail remain independently usable if a YouTube source or caption request fails.
 - [x] PostgreSQL `scheduled_runs.run_date` remains the durable one-claim-per-local-day guard
 - [x] claimed schedule rows persist a safe completion status, timestamp, and aggregate-only summary
 - [x] restart/repeated scheduler attempts safely report the already-claimed local-day skip
+- [x] early wakeups retry the same local-day target until due or durably claimed
 - [x] a shared non-queuing coordinator makes concurrent manual/scheduled runs skip rather than
   overlap provider work
 - [x] empty/no-new-item runs retain zero provider/editor work and do not create a briefing
@@ -250,9 +251,9 @@ Gmail remain independently usable if a YouTube source or caption request fails.
   scheduled-run history without source payloads or secrets
 
 **Acceptance:** with scheduling explicitly enabled, a single local-day scheduled claim survives
-restart and prevents a second briefing/LLM run; a concurrent manual run is safely skipped or the
-scheduled attempt records an active-run skip. Empty runs create neither a briefing nor an editor
-call.
+restart and prevents a second briefing/LLM run; an early wakeup cannot advance past an unclaimed
+local day. A concurrent manual run is safely skipped or the scheduled attempt records an active-run
+skip. Empty runs create neither a briefing nor an editor call.
 
 **Use:** set `APP_TIMEZONE=Europe/Istanbul`, `SCHEDULER_DAILY_TIME=08:00`, and
 `SCHEDULER_ENABLED=true` in `.env`, then rebuild/restart. First choose a time a few minutes ahead,
@@ -642,6 +643,10 @@ scheduler acceptance. Remote PostgreSQL TLS and an internet-facing TLS proxy bec
 only if those architectures are adopted.
 
 ## Tests
+- 2026-09-24: Deterministic scheduler boundary regression reproduced an early wake crossing the
+  Istanbul 14:00 deadline and verified retries plus consecutive local-day claims. Scheduler/Admin
+  tests: 36 passed. Full offline suite: 310 passed, 6 PostgreSQL integration skips, and 2 upstream
+  deprecation warnings. Ruff, compileall, and `git diff --check` passed.
 - 2026-09-23: M22.2 release-targeted offline regressions passed: 45 tests covering Telegram,
   calibration, notifications, scheduler, RSS runtime, and briefing behavior, with 2 upstream
   deprecation warnings. Ruff, compileall, Alembic head/SQL generation, and `git diff --check` passed.
@@ -1200,6 +1205,10 @@ only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-24: Fixed the daily scheduler boundary race: a non-due wake retries the pinned scheduled
+  target instead of recomputing tomorrow; the existing durable per-day claim remains the duplicate
+  guard. Added deterministic early-wakeup and consecutive-day coverage. Also replaced a stale fixed
+  `next_run` assertion in the Admin test with the runtime value. No production deployment or push.
 - 2026-09-23: Implemented M22.2 scheduled Telegram daily assistant behavior. The existing normal
   RSS/YouTube/Gmail runtime now identifies a newly persisted briefing and sends it through the
   existing `/ozet` renderer and channel-scoped notification idempotency. Empty runs stay silent;
