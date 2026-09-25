@@ -695,6 +695,10 @@ proxy become acceptance work only if those architectures are adopted.
   scrolled locally and edit/save/status controls remained reachable. Chrome CLI could not produce a
   390 CSS px viewport. `/admin` has an adjacent unrelated table causing 85px page overflow at 500px.
   Temporary screenshots were removed; no live data or provider call was used.
+- 2026-09-25: VDS checkout updated and the production Compose app/poller rebuilt with the existing
+  deployment overlay and protected environment. App/database health and local `/health` returned
+  success by exit-code-only checks; deployment log content was left for the operator to inspect.
+  Telegram delivery, source editing, and timed briefing behavior remain operator acceptance work.
 - 2026-09-25: Docker-enabled release gate: fresh disposable pgvector/PostgreSQL migrated to
   `20260923_0028`; 345 tests passed, none skipped or failed. Three stale migration assertions and
   one source-delete fixture expectation were updated to match current schema/disabled-by-default
