@@ -265,10 +265,20 @@ def test_admin_csv_and_bulk_url_preview_import_and_error_mapping() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
     repository = ImportRepository()
     app.state.source_repository = repository
+    queued: list[str] = []
+
+    async def queue_question(source_id: str) -> str:
+        queued.append(source_id)
+        return "delivered"
+
+    app.state.queue_source_category_question = queue_question
     with TestClient(app) as client:
         csv_preview = client.post("/admin/csv/preview", json={"csv": VALID_CSV})
         csv_import = client.post("/admin/csv/import", json={"csv": VALID_CSV})
         csv_repeat = client.post("/admin/csv/import", json={"csv": VALID_CSV})
+        csv_unknown = client.post(
+            "/admin/csv/import", json={"csv": "url\nhttps://unknown-csv.test/feed"}
+        )
         csv_malformed = client.post(
             "/admin/csv/preview", json={"csv": 'url\n"https://example.test/feed'}
         )
@@ -286,6 +296,9 @@ def test_admin_csv_and_bulk_url_preview_import_and_error_mapping() -> None:
     assert csv_preview.status_code == 200
     assert csv_import.json()["counts"]["created"] == 2
     assert csv_repeat.json()["counts"]["created"] == 0
+    assert csv_import.json()["sources"][0]["source"]["category"] == "technology"
+    assert csv_import.json()["sources"][1]["source"]["category"] == "programming"
+    assert csv_unknown.json()["counts"]["created"] == 1
     assert csv_malformed.status_code == 400
     assert csv_malformed.json()["detail"]["code"] == "malformed_csv"
     assert bulk_preview.status_code == 200
@@ -293,6 +306,7 @@ def test_admin_csv_and_bulk_url_preview_import_and_error_mapping() -> None:
     assert bulk_repeat.json()["counts"]["created"] == 0
     assert bulk_empty.status_code == 422
     assert bulk_empty.json()["detail"]["code"] == "invalid_bulk_url_structure"
+    assert queued == ["created-3", "created-4"]
 
     class UnavailableRepository:
         async def list(self) -> list[dict[str, Any]]:

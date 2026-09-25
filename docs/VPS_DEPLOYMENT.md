@@ -29,7 +29,7 @@ FORCE_HTTPS=true
 ALLOW_PRIVATE_SOURCE_URLS=false
 ALLOW_INSECURE_SOURCE_URLS=false
 SCHEDULER_ENABLED=false
-SCHEDULER_DAILY_TIME=12:30
+SCHEDULER_DAILY_TIME=14:00
 GMAIL_ENABLED=false
 AGENT_API_ENABLED=false
 RETENTION_ENABLED=true
@@ -85,13 +85,13 @@ sign in to `/admin`. Production startup intentionally fails if admin authenticat
 host allow-list, or public/HTTPS source restrictions are missing. API docs are disabled in this
 mode. Keep `SCHEDULER_ENABLED=false` until a manual ingestion test succeeds.
 
-## Enable the 12:30 Telegram assistant
+## Enable the scheduled Telegram assistant
 
 After the manual ingestion check succeeds, set these non-secret values in the protected env file:
 
 ```dotenv
 APP_TIMEZONE=Europe/Istanbul
-SCHEDULER_DAILY_TIME=12:30
+SCHEDULER_DAILY_TIME=14:00
 SCHEDULER_ENABLED=true
 TELEGRAM_ENABLED=true
 TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
@@ -109,8 +109,10 @@ docker compose --env-file .env.production \
   -f compose.production.yaml -f compose.telegram.polling.production.yaml ps
 ```
 
-The migration service applies the calibration columns before the app starts. At the next local
-12:30, a newly persisted briefing is sent to the configured chat; a no-new-item run stays silent.
+The migration service applies the calibration columns before the app starts. Verify any saved
+Control Center scheduler preference: it can override the environment time. Preparation starts
+15 minutes before the effective local delivery time; a fresh briefing is held until that time,
+or sent when ready with a delay note if processing runs late. A no-new-item run stays silent.
 Keep only one scheduler app replica and one polling worker. Webhook deployments use
 `compose.telegram.production.yaml` instead, with the existing explicit webhook setup command.
 

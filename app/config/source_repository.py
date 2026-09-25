@@ -24,6 +24,26 @@ _MANAGED_COLUMNS = (
     "last_error_category, next_retry_at, last_successful_strategy, detected_language, "
     "created_at, updated_at"
 )
+_KNOWN_SOURCE_CATEGORIES = {
+    "openai.com": "Technology > Artificial Intelligence",
+    "huggingface.co": "Technology > Artificial Intelligence",
+    "arstechnica.com": "Technology",
+    "bleepingcomputer.com": "Technology > Cybersecurity",
+    "sciencedaily.com": "Science",
+    "techcrunch.com": "Technology > Startups",
+    "theregister.com": "Technology",
+}
+
+
+def _category_from_source_metadata(kind: SourceKind, endpoint: str) -> str | None:
+    """Infer only categories that are clear from a known publisher domain."""
+    if kind != "rss":
+        return None
+    hostname = (urlsplit(endpoint).hostname or "").casefold().rstrip(".")
+    for domain, category in _KNOWN_SOURCE_CATEGORIES.items():
+        if hostname == domain or hostname.endswith(f".{domain}"):
+            return category
+    return None
 
 
 class SourceRepositoryError(RuntimeError):
@@ -70,6 +90,8 @@ class ManagedSourceCreate(BaseModel):
         self.endpoint = canonicalize_endpoint(self.kind, self.endpoint)
         if self.kind == "rss" and self.language is not None:
             raise ValueError("language preference is supported only for YouTube sources")
+        if self.category is None:
+            self.category = _category_from_source_metadata(self.kind, self.endpoint)
         return self
 
 
@@ -273,6 +295,25 @@ class SourceRepository:
             )
         return [dict(row) for row in rows]
 
+    async def list_pending_categories(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, object]]:
+        """List a bounded, stable page of sources that still need a category decision."""
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        bounded_limit = min(max(limit, 1), 100)
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, category FROM managed_sources WHERE category IS NULL "
+                        "ORDER BY created_at, id LIMIT :limit OFFSET :offset"
+                    ),
+                    {"limit": bounded_limit, "offset": offset},
+                )
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
     async def get(self, source_id: str) -> dict[str, object] | None:
         async with self._sessions() as session:
             row = (
@@ -367,6 +408,26 @@ class SourceRepository:
             except IntegrityError as error:
                 raise SourceAlreadyExists("source endpoint is already managed") from error
         return dict(row)
+
+    async def set_category_if_missing(self, source_id: str, category: str) -> str:
+        """Assign a validated category once without changing any other source setting."""
+        category_value = ManagedSourceUpdate(category=category).category
+        if category_value is None:
+            raise ValueError("category cannot be null")
+        async with self._sessions.begin() as session:
+            changed = await session.scalar(
+                text(
+                    "UPDATE managed_sources SET category = :category, updated_at = now() "
+                    "WHERE id = :id AND category IS NULL RETURNING id"
+                ),
+                {"id": source_id, "category": category_value},
+            )
+            if changed is not None:
+                return "updated"
+            existing = await session.scalar(
+                text("SELECT id FROM managed_sources WHERE id = :id"), {"id": source_id}
+            )
+            return "already_set" if existing is not None else "not_found"
 
     async def set_enabled(self, source_id: str, enabled: bool) -> bool:
         async with self._sessions.begin() as session:

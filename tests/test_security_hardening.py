@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.briefing.presentation import safe_links
-from app.collectors.rss import _validate_connected_peer, _validate_remote_url
+from app.collectors.article import ArticleFetcher
+from app.collectors.rss import HttpFeedFetcher, _validate_connected_peer, _validate_remote_url
 from app.config.settings import Settings
 from app.db.session import create_engine
 from app.main import create_app
@@ -276,6 +277,47 @@ def test_outbound_feed_validation_rejects_http_and_private_networks(monkeypatch)
             allow_private_hosts=False,
             allow_insecure_http=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_feed_and_article_fetchers_ignore_environment_proxies(monkeypatch) -> None:
+    import httpx
+
+    clients: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self, **options: object) -> None:
+            clients.append(options)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def stream(self, *_: object, **__: object):
+            raise httpx.ConnectError("offline fixture")
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setattr(
+        "app.collectors.rss.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 0))],
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+    with pytest.raises(ProviderError):
+        await HttpFeedFetcher(
+            retries=0, allow_private_hosts=False, allow_insecure_http=False
+        ).fetch("https://feeds.example.test/feed.xml")
+    with pytest.raises(ProviderError):
+        await ArticleFetcher(
+            retries=0, allow_private_hosts=False, allow_insecure_http=False
+        ).fetch("https://news.example.test/article")
+
+    assert len(clients) == 2
+    assert all(client.get("trust_env") is False for client in clients)
 
 
 def test_presentation_links_reject_local_or_credential_bearing_targets() -> None:

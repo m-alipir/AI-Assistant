@@ -25,7 +25,7 @@
 | RSS/YouTube URLs | SSRF, redirects/DNS rebinding to private addresses, hostile payload | strict URL allow-lists, production HTTPS/public DNS and connected-peer checks, redirect/timeout/size/item/XML bounds | compromised public sources remain untrusted input |
 | LLM prompts/Search | prompt injection, invented claims, over-sharing Gmail/history | untrusted JSON encoding, bounded content, source-locator plus lexical grounding, Gmail classification-only Search data, facts/inferences separated | grounding is conservative lexical evidence, not semantic proof; review provider policy |
 | Read-only Agent API | orchestration layer becomes a path to operational secrets, private email, or host control | disabled-by-default distinct bearer token, bounded projection/pagination/request-response sizes, rate limit, metadata-only audit, no-store response | process-local rate limit; multi-replica use needs shared limiting and any future write scope needs independent authorization design |
-| Telegram webhook | forged/replayed update, unauthorized chat, model-cost abuse, token/body logging | default-off HTTPS webhook, constant-time secret header, exact user/chat pairs, bounded JSON, durable update IDs, per-actor/global limits, plain-text replies, metadata-only records | process-local rate/concurrency and a bounded stale-claim recovery require a shared lease/limiter before multi-replica use |
+| Telegram webhook | forged/replayed update, unauthorized chat, model-cost abuse, token/body logging | default-off HTTPS webhook, constant-time secret header, exact user/chat pairs, bounded JSON, durable update IDs, per-actor/global limits, plain-text replies, metadata-only records; category answers require an exact chat-scoped delivery receipt | process-local rate/concurrency and a bounded stale-claim recovery require a shared lease/limiter before multi-replica use |
 
 ## Admin and browser access
 - Development defaults keep `ADMIN_AUTH_ENABLED=false` for `localhost` only. Do not expose this
@@ -118,7 +118,8 @@ Log metadata (model, token usage, hash, latency, status), not sensitive prompt p
   loopback/private IP literals, and common local-only hostnames before rendering.
 
 ## Network/runtime
-- Outbound requests only to configured sources/providers.
+- Outbound requests only to configured sources/providers. RSS and article fetches connect directly;
+  inherited HTTP proxy environment variables are ignored so peer checks cover the destination.
 - Set timeouts and response-size limits.
 - Validate MIME/content types where applicable.
 - Keep containers non-root where practical.

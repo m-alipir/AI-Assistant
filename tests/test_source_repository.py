@@ -67,6 +67,50 @@ def test_managed_source_models_enforce_kind_metadata_and_patch_nullability() -> 
     assert ManagedSourceUpdate(category=None).model_dump(exclude_unset=True) == {"category": None}
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "expected_category"),
+    [
+        ("https://openai.com/news/rss.xml", "Technology > Artificial Intelligence"),
+        ("https://feeds.arstechnica.com/arstechnica/index", "Technology"),
+        ("https://www.sciencedaily.com/rss/top/science.xml", "Science"),
+    ],
+)
+def test_managed_source_create_infers_only_clear_known_rss_categories(
+    endpoint: str, expected_category: str
+) -> None:
+    source = ManagedSourceCreate(
+        kind="rss", name="Known publisher", endpoint=endpoint, stream=SourceStream.WORLD
+    )
+
+    assert source.category == expected_category
+    assert source.stream is SourceStream.WORLD
+
+
+def test_managed_source_create_leaves_ambiguous_and_youtube_categories_pending() -> None:
+    unknown = ManagedSourceCreate(
+        kind="rss", name="Unknown publisher", endpoint="https://example.test/feed"
+    )
+    lookalike = ManagedSourceCreate(
+        kind="rss",
+        name="Lookalike publisher",
+        endpoint="https://openai.com.example.test/feed",
+    )
+    youtube = ManagedSourceCreate(
+        kind="youtube", name="Unknown channel", endpoint="UCVBX2n_5egE9XuJL8NUS0Xg"
+    )
+    explicit = ManagedSourceCreate(
+        kind="rss",
+        name="Named category",
+        endpoint="https://example.test/another-feed",
+        category="Research > Robotics",
+    )
+
+    assert unknown.category is None
+    assert lookalike.category is None
+    assert youtube.category is None
+    assert explicit.category == "Research > Robotics"
+
+
 def test_managed_source_database_id_is_runtime_only() -> None:
     source = RssSourceConfig(
         name="Feed",
@@ -97,17 +141,16 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
     try:
         async with engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260914_0026"
+        assert revision == "20260923_0028"
 
         created = await repository.create(
             ManagedSourceCreate(
                 kind="rss",
                 name="Managed integration feed",
                 endpoint=endpoint,
-                stream=SourceStream.TECH,
-                enabled=True,
+                stream=SourceStream.WORLD,
+                enabled=False,
                 priority=10,
-                category="technology",
                 freshness_hours=24,
             )
         )
@@ -130,6 +173,17 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
         )
         assert updated["name"] == "Updated feed"
         assert updated["category"] is None
+        assert (
+            await repository.set_category_if_missing(source_id, "Research > Robotics")
+            == "updated"
+        )
+        assert await repository.set_category_if_missing(source_id, "Science") == "already_set"
+        assert await repository.set_category_if_missing(str(uuid.uuid4()), "Science") == "not_found"
+        categorized = await repository.get(source_id)
+        assert categorized is not None
+        assert categorized["category"] == "Research > Robotics"
+        assert categorized["enabled"] is False
+        assert categorized["stream"] == SourceStream.WORLD.value
 
         await repository.record_failure(source_id, error_category="rss_feed_access_error")
         await repository.record_failure(source_id, error_category="rss_feed_access_error")
@@ -150,6 +204,7 @@ async def test_managed_source_crud_health_and_safe_delete_in_postgres() -> None:
         assert healthy["next_retry_at"] is None
         assert healthy["last_successful_strategy"] == "rss_atom"
 
+        assert await repository.set_enabled(source_id, True)
         with pytest.raises(EnabledSourceDeleteBlocked):
             await repository.delete(source_id)
         assert await repository.set_enabled(source_id, False)

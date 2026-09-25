@@ -44,10 +44,15 @@ class RunCounts:
     failed: int = 0
     briefing_render_errors: int = 0
     briefing_persistence_errors: int = 0
+    gatekeeper_errors: int = 0
     post_llm_blocked: int = 0
     extractor_errors: int = 0
     article_fetch_errors: int = 0
     event_persistence_errors: int = 0
+    item_processing_errors: int = 0
+    source_fetch_errors: int = 0
+    source_cooldowns: int = 0
+    source_health_persistence_errors: int = 0
     provider_busy: int = 0
     budget_exhausted: int = 0
     llm_calls: int = 0
@@ -68,9 +73,14 @@ class RunCounts:
                 "failure_categories": {
                     "briefing_render_error": self.briefing_render_errors,
                     "briefing_persistence_error": self.briefing_persistence_errors,
+                    "gatekeeper_error": self.gatekeeper_errors,
                     "extractor_error": self.extractor_errors,
                     "article_fetch_error": self.article_fetch_errors,
                     "event_persistence_error": self.event_persistence_errors,
+                    "item_processing_error": self.item_processing_errors,
+                    "source_fetch_error": self.source_fetch_errors,
+                    "source_cooldown": self.source_cooldowns,
+                    "source_health_persistence_error": self.source_health_persistence_errors,
                     "provider_busy": self.provider_busy,
                     "budget_exhausted": self.budget_exhausted,
                 },
@@ -187,6 +197,7 @@ class RssRuntimeJob:
                     return
                 except Exception:
                     counts.failed += 1
+                    counts.gatekeeper_errors += 1
                     counts.errors.append(f"{item.source_name}: gatekeeper_error")
                     return
                 if not gate.relevant and gate.global_importance < 7:
@@ -258,9 +269,10 @@ class RssRuntimeJob:
                     )
                 )
                 counts.processed += 1
-            except Exception as error:  # Individual item failure must not abort other feeds/items.
+            except Exception:  # Individual item failure must not abort other feeds/items.
                 counts.failed += 1
-                counts.errors.append(f"{item.source_name}: {type(error).__name__}")
+                counts.item_processing_errors += 1
+                counts.errors.append(f"{item.source_name}: item_processing_error")
             finally:
                 counts.llm_calls += len(self._flow._router.calls) - calls_before
 
@@ -298,20 +310,23 @@ class RssRuntimeJob:
                                 "rss", source.name, strategy
                             )  # type: ignore[attr-defined]
                         except Exception:
-                            pass
+                            counts.source_health_persistence_errors += 1
+                            counts.errors.append("source_health_persistence_error")
                         return source, items, None, not_modified
                     except Exception as error:
                         try:
                             await self._source_failed("rss", source.name, error)  # type: ignore[attr-defined]
                         except Exception:
-                            pass
+                            counts.source_health_persistence_errors += 1
+                            counts.errors.append("source_health_persistence_error")
                         if self._source_repository is not None and source.managed_source_id:
                             try:
                                 await self._source_repository.record_failure(
                                     source.managed_source_id, error_category="rss_feed_access_error"
                                 )
                             except Exception:
-                                pass
+                                counts.source_health_persistence_errors += 1
+                                counts.errors.append("source_health_persistence_error")
                         return source, None, error, False
 
             collected = await asyncio.gather(
@@ -321,9 +336,11 @@ class RssRuntimeJob:
                 name = source.name  # type: ignore[attr-defined]
                 if items is None:
                     if error is None:
+                        counts.source_cooldowns += 1
                         counts.errors.append(f"{name}: source_cooldown")
                     else:
                         counts.failed += 1
+                        counts.source_fetch_errors += 1
                         counts.errors.append(f"{name}: source_fetch_error")
                     continue
                 if self._source_repository is not None and source.managed_source_id:
@@ -333,7 +350,8 @@ class RssRuntimeJob:
                             strategy="rss_not_modified" if not_modified else "rss_atom",
                         )
                     except Exception:
-                        counts.errors.append(f"{name}: source_health_persistence_error")
+                        counts.source_health_persistence_errors += 1
+                        counts.errors.append("source_health_persistence_error")
                 if not_modified:
                     counts.not_modified += 1
                     continue

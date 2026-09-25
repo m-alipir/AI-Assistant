@@ -55,6 +55,33 @@ def test_ntfy_is_disabled_by_default_and_fails_closed_when_enabled() -> None:
     assert settings.ntfy_token_value == "high-entropy-token-value-0123456789"
 
 
+def test_telegram_source_operator_is_one_exact_allowlisted_chat() -> None:
+    common = {
+        "_env_file": None,
+        "telegram_enabled": True,
+        "telegram_mode": "polling",
+        "telegram_bot_token": "123456789:telegram-token-for-tests",
+    }
+    single_chat = Settings(**common, telegram_allowed_actor_pairs="42:42")
+    assert single_chat.telegram_source_operator_chat_id == 42
+
+    with pytest.raises(ValidationError, match="TELEGRAM_SOURCE_OPERATOR_CHAT_ID"):
+        Settings(**common, telegram_allowed_actor_pairs="42:42,43:43")
+    with pytest.raises(ValidationError, match="TELEGRAM_SOURCE_OPERATOR_CHAT_ID"):
+        Settings(
+            **common,
+            telegram_allowed_actor_pairs="42:42,43:43",
+            telegram_source_operator_chat_id=99,
+        )
+
+    explicit = Settings(
+        **common,
+        telegram_allowed_actor_pairs="42:42,43:43",
+        telegram_source_operator_chat_id=43,
+    )
+    assert explicit.telegram_source_operator_chat_id == 43
+
+
 def test_gmail_enabled_requires_client_credentials_and_valid_fernet_key() -> None:
     with pytest.raises(ValidationError, match="client credentials"):
         Settings(_env_file=None, gmail_enabled=True)

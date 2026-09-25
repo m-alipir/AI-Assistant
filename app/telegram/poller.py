@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config.settings import Settings, get_settings
 from app.telegram.core import TelegramBotClient, TelegramDeliveryError
 from app.telegram.service import TelegramUpdate, TelegramWebhookHandler
+from app.telegram.source_categories import run_source_category_question_worker
 
 
 class _UpdateOffset(BaseModel):
@@ -136,6 +137,16 @@ async def main() -> int:
         timeout_seconds=settings.telegram_request_timeout_seconds,
         retries=settings.telegram_max_retries,
     )
+    source_category_worker = asyncio.create_task(
+        run_source_category_question_worker(
+            app.state.source_repository,
+            app.state.sessions,
+            settings,
+            bot,
+            stop_event,
+        ),
+        name="telegram-source-category-questions",
+    )
     try:
         await TelegramPoller(
             settings,
@@ -144,6 +155,9 @@ async def main() -> int:
             TelegramPollingCursor(app.state.sessions),
         ).run(stop_event)
     finally:
+        stop_event.set()
+        source_category_worker.cancel()
+        await asyncio.gather(source_category_worker, return_exceptions=True)
         await app.state.engine.dispose()
     return 0
 

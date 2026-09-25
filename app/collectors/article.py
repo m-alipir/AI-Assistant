@@ -51,7 +51,7 @@ class ArticleFetcher:
     async def _fetch_once(self, url: str) -> ArticleContent:
         current = url
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self._timeout), follow_redirects=False
+            timeout=httpx.Timeout(self._timeout), follow_redirects=False, trust_env=False
         ) as client:
             for redirects in range(self._max_redirects + 1):
                 _validate_remote_url(

@@ -190,9 +190,14 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
         "failure_categories": {
             "briefing_render_error": 0,
             "briefing_persistence_error": 0,
+            "gatekeeper_error": 0,
             "extractor_error": 0,
             "article_fetch_error": 0,
             "event_persistence_error": 0,
+            "item_processing_error": 0,
+            "source_fetch_error": 0,
+            "source_cooldown": 0,
+            "source_health_persistence_error": 0,
             "provider_busy": 0,
             "budget_exhausted": 0,
         },
@@ -254,8 +259,92 @@ async def test_rss_runtime_persists_source_success_and_safe_access_failure() -> 
         collector=BrokenCollector(),
         source_repository=repository,
     )
-    await failed.run()
+    failed_result = await failed.run()
     assert repository.failures == [("managed-rss", "rss_feed_access_error")]
+    assert failed_result["counts"]["failed"] == 1
+    assert failed_result["counts"]["failure_categories"]["source_fetch_error"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_failure_counts_source_health_persistence_errors_without_details() -> None:
+    source = RssSourceConfig(
+        name="Managed RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+        managed_source_id="managed-rss",
+    )
+
+    class BrokenCollector:
+        async def collect(self, source, *, fetched_at):
+            raise RuntimeError("provider response must stay private")
+
+    class BrokenSourceRepository:
+        async def record_failure(self, source_id: str, *, error_category: str) -> bool:
+            raise RuntimeError("database detail must stay private")
+
+    async def broken_source_failed(kind: str, name: str, error: BaseException) -> None:
+        raise RuntimeError("health callback detail must stay private")
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("failed collection cannot persist events")
+
+    async def persist_briefing(items) -> None:
+        raise AssertionError("failed collection cannot persist a briefing")
+
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        collector=BrokenCollector(),
+        source_failed=broken_source_failed,
+        source_repository=BrokenSourceRepository(),
+    ).run()
+
+    categories = result["counts"]["failure_categories"]
+    assert result["counts"]["failed"] == 1
+    assert categories["source_fetch_error"] == 1
+    assert categories["source_health_persistence_error"] == 2
+    assert "provider response must stay private" not in result["message"]
+    assert "database detail must stay private" not in result["message"]
+    assert "health callback detail must stay private" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_source_success_health_error_marks_run_failed_safely() -> None:
+    source = RssSourceConfig(
+        name="Managed RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+        managed_source_id="managed-rss",
+    )
+    repository = FakeSourceRepository()
+
+    async def source_succeeded(kind: str, name: str, strategy: str) -> None:
+        raise RuntimeError("private health persistence detail")
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("empty feed cannot persist events")
+
+    async def persist_briefing(items) -> None:
+        raise AssertionError("empty feed cannot persist a briefing")
+
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        FakeFlow(),
+        persist_event,
+        persist_briefing,
+        collector=RssCollector(FixtureFetcher(b"<rss><channel /></rss>")),
+        source_succeeded=source_succeeded,
+        source_repository=repository,
+    ).run()
+
+    assert repository.successes == [("managed-rss", "rss_atom")]
+    assert result["status"] == "completed_with_errors"
+    assert result["counts"]["failure_categories"]["source_health_persistence_error"] == 1
+    assert "private health persistence detail" not in result["message"]
 
 
 @pytest.mark.asyncio

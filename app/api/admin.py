@@ -249,6 +249,37 @@ def _raise_delimited_import_http_error(error: Exception) -> None:
     raise error
 
 
+async def _queue_imported_category_questions(
+    request: Request, result: dict[str, object]
+) -> None:
+    """Immediately ask about at most three new ambiguous imports; the DB scan handles the rest."""
+    queue_question = getattr(request.app.state, "queue_source_category_question", None)
+    sources = result.get("sources")
+    if not callable(queue_question) or not isinstance(sources, list):
+        return
+    queued = 0
+    for item in sources:
+        if not isinstance(item, dict) or item.get("status") != "created":
+            continue
+        source = item.get("source")
+        source_id = item.get("source_id")
+        if not isinstance(source, dict) or source.get("category") is not None:
+            continue
+        if not isinstance(source_id, str) or not source_id:
+            continue
+        try:
+            result_status = await queue_question(source_id)
+        except Exception:
+            logger.warning(
+                "admin_source_category_question_failed",
+                extra={"diagnostic_category": "category_question_queue_unavailable"},
+            )
+            break
+        queued += 1
+        if result_status == "failed" or queued >= 3:
+            break
+
+
 async def _admin_sources(request: Request) -> list[dict[str, object]]:
     repository = _source_repository(request)
     try:
@@ -1019,10 +1050,12 @@ async def import_source_pack(
     upload: SourcePackUpload, request: Request
 ) -> dict[str, object]:
     try:
-        return await SourcePackService(_source_repository(request)).import_pack(upload.yaml)
+        result = await SourcePackService(_source_repository(request)).import_pack(upload.yaml)
     except Exception as error:
         _raise_source_pack_http_error(error)
         raise AssertionError("unreachable") from error
+    await _queue_imported_category_questions(request, result)
+    return result
 
 
 @router.post("/opml/preview")
@@ -1037,10 +1070,12 @@ async def preview_opml(upload: OpmlUpload, request: Request) -> dict[str, object
 @router.post("/opml/import")
 async def import_opml(upload: OpmlUpload, request: Request) -> dict[str, object]:
     try:
-        return await OpmlService(_source_repository(request)).import_opml(upload.opml)
+        result = await OpmlService(_source_repository(request)).import_opml(upload.opml)
     except Exception as error:
         _raise_opml_http_error(error)
         raise AssertionError("unreachable") from error
+    await _queue_imported_category_questions(request, result)
+    return result
 
 
 @router.post("/csv/preview")
@@ -1055,10 +1090,12 @@ async def preview_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
 @router.post("/csv/import")
 async def import_csv(upload: CsvUpload, request: Request) -> dict[str, object]:
     try:
-        return await CsvImportService(_source_repository(request)).import_csv(upload.csv)
+        result = await CsvImportService(_source_repository(request)).import_csv(upload.csv)
     except Exception as error:
         _raise_delimited_import_http_error(error)
         raise AssertionError("unreachable") from error
+    await _queue_imported_category_questions(request, result)
+    return result
 
 
 @router.post("/bulk-urls/preview")
@@ -1073,10 +1110,12 @@ async def preview_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str
 @router.post("/bulk-urls/import")
 async def import_bulk_urls(upload: BulkUrlUpload, request: Request) -> dict[str, object]:
     try:
-        return await BulkUrlService(_source_repository(request)).import_urls(upload.urls)
+        result = await BulkUrlService(_source_repository(request)).import_urls(upload.urls)
     except Exception as error:
         _raise_delimited_import_http_error(error)
         raise AssertionError("unreachable") from error
+    await _queue_imported_category_questions(request, result)
+    return result
 
 
 @router.get("/sources/{source_id}")
@@ -1096,6 +1135,18 @@ async def create_source(
     except Exception as error:
         _raise_source_http_error(error)
         raise AssertionError("unreachable") from error
+    await _queue_imported_category_questions(
+        request,
+        {
+            "sources": [
+                {
+                    "status": "created",
+                    "source": {"category": row.get("category")},
+                    "source_id": str(row["id"]),
+                }
+            ]
+        },
+    )
     return _source_view(row)
 
 

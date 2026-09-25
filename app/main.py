@@ -1,12 +1,13 @@
 """FastAPI application factory and production ASGI entrypoint."""
 
 import asyncio
-import hashlib
 import json
 import logging
+import math
+import re
 import secrets
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from urllib.parse import urlsplit, urlunsplit
@@ -48,7 +49,12 @@ from app.ingestion.source_health import database_source_health
 from app.jobs.gmail_runtime import GmailAccountRecord, GmailRuntimeJob
 from app.jobs.retention import RetentionJob, RetentionScheduler
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
-from app.jobs.scheduler import DailyScheduler, RuntimeRunCoordinator
+from app.jobs.scheduler import (
+    DailyScheduler,
+    RuntimeRunCoordinator,
+    format_failure_summary,
+    wait_until,
+)
 from app.jobs.youtube_runtime import YouTubeRuntimeJob
 from app.knowledge.reembedding import ReembeddingRecord, ReembeddingService
 from app.knowledge.search import (
@@ -73,6 +79,7 @@ from app.notifications.core import (
     Notification,
     NotificationKind,
     database_dispatcher,
+    deliver_ordered,
     notification_key,
 )
 from app.notifications.ntfy import NtfyNotifier
@@ -81,9 +88,26 @@ from app.security import ProcessRateLimiter, opaque_client_key
 from app.telegram.api import router as telegram_router
 from app.telegram.core import TelegramBotClient
 from app.telegram.service import TelegramWebhookHandler
+from app.telegram.source_categories import (
+    run_source_category_question_worker,
+    send_source_category_question,
+    source_category_question_was_delivered,
+    telegram_delivery_channel,
+)
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
 logger = logging.getLogger(__name__)
+
+
+def _delivery_delay_note(target_at: datetime, delivered_at: datetime) -> str | None:
+    """Return a short local-time note only when delivery missed its configured target."""
+    seconds_late = (delivered_at.astimezone(UTC) - target_at.astimezone(UTC)).total_seconds()
+    if seconds_late <= 0:
+        return None
+    total_seconds = math.ceil(seconds_late)
+    minutes, seconds = divmod(total_seconds, 60)
+    delay = f"{minutes} dk {seconds} sn" if minutes else f"{seconds} sn"
+    return f"Hedef {target_at.strftime('%H:%M')} idi; {delay} gecikme."
 
 
 def create_app(
@@ -106,6 +130,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
+        source_category_worker_task: asyncio.Task[None] | None = None
+        source_category_worker_stop: asyncio.Event | None = None
         if active_settings.managed_sources_bootstrap:
             repository = getattr(lifespan_app.state, "source_repository", None)
             if repository is None:
@@ -124,7 +150,22 @@ def create_app(
             scheduler.start()
         if retention_scheduler:
             retention_scheduler.start()
+        if active_settings.telegram_enabled and active_settings.telegram_mode == "webhook":
+            source_category_worker = getattr(
+                lifespan_app.state, "run_source_category_question_worker", None
+            )
+            if callable(source_category_worker):
+                source_category_worker_stop = asyncio.Event()
+                source_category_worker_task = asyncio.create_task(
+                    source_category_worker(source_category_worker_stop),
+                    name="telegram-source-category-questions",
+                )
         yield
+        if source_category_worker_stop is not None:
+            source_category_worker_stop.set()
+        if source_category_worker_task is not None:
+            source_category_worker_task.cancel()
+            await asyncio.gather(source_category_worker_task, return_exceptions=True)
         if retention_scheduler:
             await retention_scheduler.stop()
         if scheduler:
@@ -352,6 +393,22 @@ def create_app(
                 timeout_seconds=active_settings.telegram_request_timeout_seconds,
                 retries=active_settings.telegram_max_retries,
             )
+
+        async def queue_source_category_question(source_id: str) -> str:
+            result = await send_source_category_question(
+                sessions, active_settings, telegram_bot, source_id
+            )
+            return result.status
+
+        async def source_category_question_delivered(source_id: str, chat_id: int) -> bool:
+            return await source_category_question_was_delivered(sessions, source_id, chat_id)
+
+        app.state.queue_source_category_question = queue_source_category_question
+        app.state.run_source_category_question_worker = lambda stop_event: (
+            run_source_category_question_worker(
+                source_repository, sessions, active_settings, telegram_bot, stop_event
+            )
+        )
         app.state.notifications_enabled = bool(
             notification_dispatchers
             or (telegram_bot is not None and active_settings.telegram_notification_chat_id_list)
@@ -555,7 +612,10 @@ def create_app(
                         text(
                             "SELECT bi.event_id, bi.section, "
                             "coalesce(m.entities_json, '[]') AS entities_json, "
-                            "coalesce(m.topics_json, '[]') AS topics_json "
+                            "coalesce(m.topics_json, '[]') AS topics_json, "
+                            "ARRAY(SELECT es.canonical_url FROM event_sources es "
+                            "WHERE es.event_id = bi.event_id AND es.canonical_url IS NOT NULL "
+                            "ORDER BY es.canonical_url LIMIT 5) AS source_urls "
                             "FROM briefing_items bi "
                             "LEFT JOIN event_search_metadata m ON m.event_id = bi.event_id "
                             "WHERE bi.briefing_id = :briefing_id ORDER BY bi.section, bi.event_id"
@@ -563,22 +623,7 @@ def create_app(
                         {"briefing_id": briefing_id},
                     )
                 ).mappings().all()
-            candidates: list[dict[str, str]] = []
-            seen: set[str] = set()
-            for row in rows:
-                if str(row["section"]) == "World in Brief":
-                    continue
-                subjects = _json_strings(row["entities_json"]) + _json_strings(row["topics_json"])
-                for subject in subjects:
-                    normalized = " ".join(subject.split())[:128]
-                    if not normalized or normalized.casefold() in seen:
-                        continue
-                    seen.add(normalized.casefold())
-                    candidates.append({"event_id": str(row["event_id"]), "subject": normalized})
-                    break
-                if len(candidates) == 3:
-                    break
-            return candidates
+            return select_telegram_calibration_candidates(rows)
 
         async def record_telegram_calibration_day(local_day: date) -> None:
             async with sessions.begin() as session:
@@ -598,12 +643,24 @@ def create_app(
             result: dict[str, object],
             gmail_items: list[BriefingItem],
             briefing_id: str | None = None,
+            delivery_target_at: datetime | None = None,
         ) -> list[str]:
             """Deliver post-persistence notifications without changing a completed run result."""
             dispatchers = list(notification_dispatchers)
-            local_day = datetime.now(UTC).astimezone(
-                ZoneInfo(active_settings.app_timezone)
-            ).date()
+            local_now = datetime.now(UTC).astimezone(ZoneInfo(active_settings.app_timezone))
+            local_day = (
+                delivery_target_at.astimezone(ZoneInfo(active_settings.app_timezone)).date()
+                if delivery_target_at is not None
+                else local_now.date()
+            )
+            delivery_note = None
+            if delivery_target_at is not None:
+                delivered_at = await wait_until(
+                    delivery_target_at,
+                    now=lambda: datetime.now(UTC),
+                )
+                if briefing_id:
+                    delivery_note = _delivery_delay_note(delivery_target_at, delivered_at)
             if telegram_bot is not None:
                 for chat_id in active_settings.telegram_notification_chat_id_list:
                     async def send_telegram_notification(
@@ -621,6 +678,7 @@ def create_app(
                                 destination,
                                 await agent_briefing_detail(current_briefing_id),
                                 await telegram_calibration_candidates(current_briefing_id),
+                                delivery_note=delivery_note,
                             )
                             try:
                                 await record_telegram_calibration_day(local_day)
@@ -632,7 +690,7 @@ def create_app(
                             return
                         await telegram_bot.send_notification(destination, notification)
 
-                    channel = f"tg-{hashlib.sha256(str(chat_id).encode()).hexdigest()[:20]}"
+                    channel = telegram_delivery_channel(chat_id)
                     dispatchers.append(
                         database_dispatcher(
                             sessions, send_telegram_notification, channel=channel
@@ -671,6 +729,7 @@ def create_app(
                     )
                 )
             if result.get("status") in {"failed", "completed_with_errors"}:
+                failure_summary = format_failure_summary(result)
                 notifications.append(
                     Notification(
                         idempotency_key=notification_key(
@@ -680,21 +739,20 @@ def create_app(
                         title="İşlem uyarısı",
                         body=(
                             "Günlük işlem güvenli hata durumu ile tamamlandı. "
-                            "Ayrıntılar yönetim panelinde."
+                            f"{failure_summary}. Ayrıntılar yönetim panelinde."
+                            if failure_summary
+                            else "Günlük işlem güvenli hata durumu ile tamamlandı. "
+                            "Hata türü sayımı yok. Ayrıntılar yönetim panelinde."
                         ),
                         link=admin_link,
                     )
                 )
-            results = await asyncio.gather(
-                *(
-                    dispatcher.deliver(notification)
-                    for dispatcher in dispatchers
-                    for notification in notifications
-                )
-            )
+            results = await deliver_ordered(dispatchers, notifications)
             return [delivery.status for delivery in results] or ["no_notification"]
 
-        async def run_rss_now() -> dict[str, object]:
+        async def run_rss_now(
+            delivery_target_at: datetime | None = None,
+        ) -> dict[str, object]:
             """Run independently bounded Gmail, YouTube, and RSS paths in one briefing cycle."""
             previous_briefing_id = await latest_briefing_id()
             model_settings = load_model_settings(active_settings.admin_models_path)
@@ -803,6 +861,14 @@ def create_app(
             rss_counts["llm_cache_hits"] = sum(
                 int(flow["cache_hits"]) for flow in rss_counts["llm_breakdown_by_flow"].values()
             )
+            if (
+                result.get("status") == "completed"
+                and (
+                    gmail_run.failed
+                    or youtube_counts.get("status") in {"failed", "completed_with_errors"}
+                )
+            ):
+                result["status"] = "completed_with_errors"
             if gmail_run.failed:
                 result["message"] += f" Gmail sync had {gmail_run.failed} safe failure(s)."
             if youtube_run.failed:
@@ -811,7 +877,7 @@ def create_app(
             if created_briefing_id == previous_briefing_id:
                 created_briefing_id = None
             result["notifications"] = await deliver_run_notifications(
-                result, gmail_run.action_items, created_briefing_id
+                result, gmail_run.action_items, created_briefing_id, delivery_target_at
             )
             return result
 
@@ -820,8 +886,10 @@ def create_app(
         async def run_manual_now() -> dict[str, object]:
             return await run_coordinator.run("manual", run_rss_now)
 
-        async def run_scheduled_now() -> dict[str, object]:
-            return await run_coordinator.run("scheduled", run_rss_now)
+        async def run_scheduled_now(delivery_target_at: datetime) -> dict[str, object]:
+            return await run_coordinator.run(
+                "scheduled", lambda: run_rss_now(delivery_target_at)
+            )
 
         app.state.run_coordinator = run_coordinator
         app.state.run_callback = run_manual_now
@@ -1127,14 +1195,24 @@ def create_app(
                 lines.append(f"- {row['id']} · {row['kind']} · {row['name']} ({state})")
             return "\n".join(lines)
 
-        async def telegram_add_source(kind: str, endpoint: str, name: str) -> str:
+        async def telegram_add_source(
+            kind: str, endpoint: str, name: str, _chat_id: int
+        ) -> str:
             try:
                 source = await source_repository.create(
-                    ManagedSourceCreate(kind=kind, endpoint=endpoint, name=name, enabled=True)
+                    ManagedSourceCreate(kind=kind, endpoint=endpoint, name=name, enabled=False)
                 )
             except Exception:
                 return "Kaynak yönetimi şu anda kullanılamıyor."
-            return f"{source['name']} eklendi ve aktif edildi. Kimlik: {source['id']}"
+            if source.get("category") is None:
+                try:
+                    await queue_source_category_question(str(source["id"]))
+                except Exception:
+                    logger.warning(
+                        "telegram_source_category_question_failed",
+                        extra={"diagnostic_category": "category_question_queue_unavailable"},
+                    )
+            return f"{source['name']} eklendi ve pasif bırakıldı. Kimlik: {source['id']}"
 
         async def telegram_disable_source(source_id: str) -> str:
             try:
@@ -1224,6 +1302,8 @@ def create_app(
                 interests=telegram_interests,
                 set_interest=telegram_set_interest,
                 source_repository=source_repository,
+                queue_source_category_question=queue_source_category_question,
+                source_category_question_delivered=source_category_question_delivered,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler
@@ -1460,6 +1540,104 @@ def _json_strings(value: object) -> list[str]:
         if isinstance(parsed, list)
         else []
     )
+
+
+_CALIBRATION_EVENT_WORDS = frozenset(
+    {"conference", "congress", "convention", "disrupt", "expo", "festival", "mwc", "summit", "wwdc"}
+)
+_CALIBRATION_SINGLE_WORD_PUBLISHERS = frozenset({"nytimes", "techcrunch"})
+_CALIBRATION_GENERIC_SUBJECTS = frozenset(
+    {"ai", "industry", "startup", "startups", "tech", "technology"}
+)
+_CALIBRATION_VARIANT_SUFFIXES = frozenset(
+    {
+        "development", "developments", "feature", "features", "gelişme", "gelişmeleri",
+        "güncelleme", "güncellemeleri", "news", "update", "updates",
+    }
+)
+
+
+def select_telegram_calibration_candidates(
+    rows: Iterable[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    """Choose concrete subjects, skipping global news and obvious source/event labels."""
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if str(row.get("section", "")) == "World in Brief":
+            continue
+        source_urls = row.get("source_urls")
+        publisher_keys = (
+            {
+                key
+                for url in source_urls
+                if isinstance(url, str) and (key := _source_site_key(url))
+            }
+            if isinstance(source_urls, list)
+            else set()
+        )
+        subjects = _json_strings(row.get("entities_json")) + _json_strings(
+            row.get("topics_json")
+        )
+        for subject in subjects:
+            normalized = " ".join(subject.split())[:128]
+            key = _calibration_subject_key(normalized)
+            if not key or key in seen:
+                continue
+            words = re.findall(r"[^\W_]+", normalized.casefold())
+            is_publisher = bool(_calibration_publisher_keys(normalized) & publisher_keys)
+            if is_publisher and len(words) == 1:
+                is_publisher = key in _CALIBRATION_SINGLE_WORD_PUBLISHERS
+            if is_publisher:
+                continue
+            seen.add(key)
+            candidates.append({"event_id": str(row.get("event_id", "")), "subject": normalized})
+            break
+        if len(candidates) == 3:
+            break
+    return candidates
+
+
+def _calibration_subject_key(value: str) -> str:
+    words = re.findall(r"[^\W_]+", value.casefold())
+    compact = "".join(words)
+    if (
+        any(_is_calibration_year(word) for word in words)
+        or any(word in _CALIBRATION_EVENT_WORDS for word in words)
+        or "demoday" in compact
+        or "googleio" in compact
+    ):
+        return ""
+    while words and words[-1] in _CALIBRATION_VARIANT_SUFFIXES:
+        words.pop()
+    key = " ".join(words)
+    return "" if key in _CALIBRATION_GENERIC_SUBJECTS else key
+
+
+def _is_calibration_year(value: str) -> bool:
+    return len(value) == 4 and value.isdigit() and value.startswith(("19", "20"))
+
+
+def _calibration_publisher_keys(value: str) -> set[str]:
+    words = re.findall(r"[^\W_]+", value.casefold())
+    keys = {"".join(words)} if words else set()
+    if words and words[0] == "the":
+        words = words[1:]
+    if words:
+        keys.add("".join(words))
+    if len(words) > 1:
+        keys.add("".join(word[0] for word in words[:-1]) + words[-1])
+    return keys
+
+
+def _source_site_key(value: str) -> str:
+    try:
+        host = (urlsplit(value).hostname or "").casefold().removeprefix("www.")
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    return "".join(re.findall(r"[^\W_]+", host.split(".", 1)[0]))
 
 
 async def _reblock_retry(

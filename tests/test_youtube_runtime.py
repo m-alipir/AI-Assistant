@@ -185,6 +185,7 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
             "event_persistence_error": 0,
             "briefing_item_error": 0,
             "processing_error": 0,
+            "source_health_persistence_error": 0,
             "provider_busy": 0,
             "budget_exhausted": 0,
         },

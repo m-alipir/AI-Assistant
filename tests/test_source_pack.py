@@ -220,11 +220,27 @@ async def test_repository_unavailable_is_safe_for_preview_and_import() -> None:
 
 def test_admin_source_pack_api_maps_pack_and_repository_errors() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
-    app.state.source_repository = PackRepository()
+    repository = PackRepository()
+    app.state.source_repository = repository
+    queued: list[str] = []
+
+    async def queue_question(source_id: str) -> str:
+        queued.append(source_id)
+        return "delivered"
+
+    app.state.queue_source_category_question = queue_question
     with TestClient(app) as client:
         preview = client.post("/admin/source-packs/preview", json={"yaml": VALID_PACK})
         imported = client.post("/admin/source-packs/import", json={"yaml": VALID_PACK})
         repeated = client.post("/admin/source-packs/import", json={"yaml": VALID_PACK})
+        ambiguous = client.post(
+            "/admin/source-packs/import",
+            json={
+                "yaml": "name: Unknown\nsources:\n"
+                "  - name: Unknown\n    type: RSS\n"
+                "    url: https://unknown-pack.test/feed\n"
+            },
+        )
         malformed = client.post(
             "/admin/source-packs/preview", json={"yaml": "name: [broken"}
         )
@@ -245,6 +261,9 @@ def test_admin_source_pack_api_maps_pack_and_repository_errors() -> None:
         "internal_duplicates": 0,
         "invalid": 0,
     }
+    assert ambiguous.json()["counts"]["created"] == 1
+    assert queued == ["created-3"]
+    assert repository.rows["created-3"]["category"] is None
     assert malformed.status_code == 400
     assert malformed.json()["detail"]["code"] == "malformed_yaml"
     assert invalid.status_code == 422

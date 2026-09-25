@@ -1,5 +1,6 @@
 """Provider-neutral notification delivery with durable idempotency boundaries."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,6 +15,7 @@ class NotificationKind(StrEnum):
     BRIEFING_READY = "briefing_ready"
     ACTIONABLE_MAIL = "actionable_mail"
     OPERATIONAL_FAILURE = "operational_failure"
+    SOURCE_CATEGORY_QUESTION = "source_category_question"
 
 
 class Notification(BaseModel):
@@ -84,6 +86,20 @@ def notification_key(kind: NotificationKind, identity: str) -> str:
     return f"{kind}:{digest}"
 
 
+async def deliver_ordered(
+    dispatchers: list[NotificationDispatcher], notifications: list[Notification]
+) -> list[DeliveryResult]:
+    """Deliver each channel's messages in order while allowing separate channels to progress."""
+    async def deliver_channel(dispatcher: NotificationDispatcher) -> list[DeliveryResult]:
+        return [
+            await dispatcher.deliver(notification)
+            for notification in notifications
+        ]
+
+    per_channel = await asyncio.gather(*(deliver_channel(item) for item in dispatchers))
+    return [result for channel_results in per_channel for result in channel_results]
+
+
 def database_dispatcher(
     sessions: async_sessionmaker[AsyncSession], send: SendNotification, *, channel: str = "ntfy"
 ) -> NotificationDispatcher:
@@ -137,3 +153,67 @@ def database_dispatcher(
             )
 
     return NotificationDispatcher(send, claim, mark_delivered, mark_failed)
+
+
+async def notification_delivery_status(
+    sessions: async_sessionmaker[AsyncSession], idempotency_key: str, channel: str
+) -> str | None:
+    """Read a bounded per-channel receipt without returning notification or recipient data."""
+    async with sessions() as session:
+        value = await session.scalar(
+            text(
+                "SELECT status FROM notification_deliveries "
+                "WHERE channel = :channel AND idempotency_key = :key"
+            ),
+            {"channel": channel, "key": idempotency_key},
+        )
+    return str(value) if value is not None else None
+
+
+async def notification_delivery_state(
+    sessions: async_sessionmaker[AsyncSession], idempotency_key: str, channel: str
+) -> tuple[str | None, int, int | None]:
+    """Read only the status, bounded attempt count, and age of one channel receipt."""
+    async with sessions() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT status, attempts, "
+                    "floor(extract(epoch FROM now() - updated_at))::integer AS age_seconds "
+                    "FROM notification_deliveries "
+                    "WHERE channel = :channel AND idempotency_key = :key"
+                ),
+                {"channel": channel, "key": idempotency_key},
+            )
+        ).mappings().one_or_none()
+    if row is None:
+        return None, 0, None
+    return str(row["status"]), int(row["attempts"]), int(row["age_seconds"])
+
+
+async def release_stale_pending_delivery(
+    sessions: async_sessionmaker[AsyncSession],
+    idempotency_key: str,
+    channel: str,
+    *,
+    stale_after_seconds: int,
+) -> bool:
+    """Release a crashed pending claim so a bounded retry can recover after restart."""
+    if stale_after_seconds < 1:
+        raise ValueError("stale_after_seconds must be positive")
+    async with sessions.begin() as session:
+        result = await session.execute(
+            text(
+                "UPDATE notification_deliveries SET status = 'failed', "
+                "failure_category = 'notification_lease_expired', updated_at = now() "
+                "WHERE channel = :channel AND idempotency_key = :key AND status = 'pending' "
+                "AND updated_at < now() - (:stale_after_seconds * interval '1 second') "
+                "RETURNING idempotency_key"
+            ),
+            {
+                "channel": channel,
+                "key": idempotency_key,
+                "stale_after_seconds": stale_after_seconds,
+            },
+        )
+    return result.scalar_one_or_none() is not None

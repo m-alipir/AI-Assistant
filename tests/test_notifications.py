@@ -5,6 +5,7 @@ from app.notifications.core import (
     NotificationDispatcher,
     NotificationError,
     NotificationKind,
+    deliver_ordered,
     notification_key,
 )
 from app.notifications.ntfy import NtfyNotifier
@@ -62,6 +63,34 @@ async def test_dispatcher_records_failure_without_raising_to_completed_caller() 
     assert result.status == "failed"
     assert result.category == "NotificationError"
     assert failures == ["NotificationError"]
+
+
+@pytest.mark.asyncio
+async def test_ordered_delivery_finishes_briefing_before_operational_warning() -> None:
+    sent: list[NotificationKind] = []
+
+    async def claim(_: Notification) -> bool:
+        return True
+
+    async def send(notification: Notification) -> None:
+        sent.append(notification.kind)
+
+    async def record(_: Notification, __: str | None) -> None:
+        return None
+
+    briefing = _notification()
+    warning = Notification(
+        idempotency_key=notification_key(NotificationKind.OPERATIONAL_FAILURE, "day"),
+        kind=NotificationKind.OPERATIONAL_FAILURE,
+        title="İşlem uyarısı",
+        body="Güvenli hata sayımları mevcut.",
+    )
+    dispatcher = NotificationDispatcher(send, claim, record, record)
+
+    results = await deliver_ordered([dispatcher], [briefing, warning])
+
+    assert sent == [NotificationKind.BRIEFING_READY, NotificationKind.OPERATIONAL_FAILURE]
+    assert [result.status for result in results] == ["delivered", "delivered"]
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from app.config.source_repository import (
     SourceAlreadyExists,
     SourceNotFound,
 )
+from app.notifications.core import Notification
 from app.telegram.api import router
 from app.telegram.core import (
     TelegramBotClient,
@@ -26,6 +27,13 @@ from app.telegram.core import (
 )
 from app.telegram.poller import TelegramPoller
 from app.telegram.service import Actor, TelegramUpdate, TelegramWebhookHandler, _search_text
+from app.telegram.source_categories import (
+    dispatch_pending_source_category_questions,
+    send_source_category_question,
+    source_category_question,
+    source_category_question_was_delivered,
+    telegram_delivery_channel,
+)
 
 TOKEN = "123456789:telegram-token-for-offline-tests"
 SECRET = "telegram_webhook_secret_with_adequate_entropy_123"
@@ -75,9 +83,20 @@ class _SourceRepository:
             name=source.name,
             canonical_endpoint=source.endpoint,
             enabled=source.enabled,
+            stream=source.stream.value,
+            category=source.category,
         )
         self.rows[str(row["id"])] = row
         return dict(row)
+
+    async def set_category_if_missing(self, source_id: str, category: str) -> str:
+        row = self.rows.get(source_id)
+        if row is None:
+            return "not_found"
+        if row["category"] is not None:
+            return "already_set"
+        row["category"] = category
+        return "updated"
 
     async def set_enabled(self, source_id: str, enabled: bool) -> bool:
         row = self.rows.get(source_id)
@@ -255,8 +274,9 @@ async def test_telegram_control_commands_reuse_injected_runtime_callbacks() -> N
     async def sources() -> str:
         return "Takip edilen kaynaklar\n- rss-example · RSS · Example (aktif)"
 
-    async def add_source(kind: str, endpoint: str, name: str) -> str:
+    async def add_source(kind: str, endpoint: str, name: str, chat_id: int) -> str:
         assert (kind, endpoint, name) == ("rss", "https://example.test/feed", "Example")
+        assert chat_id == 42
         return "Example eklendi ve aktif edildi."
 
     async def set_interest(subject: str, enabled: bool) -> str:
@@ -297,6 +317,7 @@ async def test_telegram_source_commands_complete_chat_first_safe_crud() -> None:
         "/kaynak_ekle rss HTTPS://Example.Test:443/feed.xml#ignored Example Feed",
         "/kaynaklar",
         "/kaynak source-1",
+        "/kaynak_ac source-1",
         "/kaynak_sil source-1",
         "/kaynak_kapat source-1",
         "/kaynak_ac source-1",
@@ -309,18 +330,19 @@ async def test_telegram_source_commands_complete_chat_first_safe_crud() -> None:
         )
 
     messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
-    assert messages[0] == "Example Feed eklendi ve aktif edildi. Kimlik: source-1"
-    assert "source-1 · rss · Example Feed (aktif, sağlıklı)" in messages[1]
+    assert messages[0] == "Example Feed eklendi ve pasif bırakıldı. Kimlik: source-1"
+    assert "source-1 · rss · Example Feed (pasif, sağlıklı)" in messages[1]
     assert "Adres: https://example.test/feed.xml" in messages[2]
-    assert messages[3].startswith("Aktif kaynak silinemez.")
-    assert messages[4:] == [
+    assert messages[3:] == [
+        "Kaynak etkinleştirildi.",
+        "Aktif kaynak silinemez. Önce /kaynak_kapat <kaynak-kimliği> kullanın.",
         "Kaynak devre dışı bırakıldı.",
         "Kaynak etkinleştirildi.",
         "Kaynak devre dışı bırakıldı.",
         "Kaynak silindi.",
     ]
     assert repository.rows == {}
-    assert finished == [(update_id, "completed") for update_id in range(60, 68)]
+    assert finished == [(update_id, "completed") for update_id in range(60, 69)]
 
 
 @pytest.mark.asyncio
@@ -336,8 +358,9 @@ async def test_telegram_source_failures_have_concise_turkish_messages() -> None:
     async def sources() -> str:
         return "Takip edilen kaynaklar\n- rss-example · RSS · Example (aktif)"
 
-    async def add_source(kind: str, endpoint: str, name: str) -> str:
+    async def add_source(kind: str, endpoint: str, name: str, chat_id: int) -> str:
         assert (kind, endpoint, name) == ("rss", "https://example.test/feed", "Example")
+        assert chat_id == 42
         return "Example eklendi ve aktif edildi."
 
     async def set_interest(subject: str, enabled: bool) -> str:
@@ -462,8 +485,356 @@ async def test_proactive_briefing_reuses_the_ozet_renderer_and_calibration_butto
 
     messages = [call for call in sent if call["method"] == "sendMessage"]
     assert any("GPU announcement" in str(call["text"]) for call in messages)
-    assert any("GPU ile ilgileniyor musunuz?" in str(call["text"]) for call in messages)
+    assert any(
+        "GPU hakkındaki haberler ve gelişmeler ilginizi çekiyor mu?" in str(call["text"])
+        for call in messages
+    )
     assert any("f:" in str(call.get("reply_markup")) for call in messages)
+
+
+@pytest.mark.asyncio
+async def test_late_proactive_briefing_header_explains_delivery_delay() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("proactive delivery must not call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+
+    async def tokens(
+        actor: Actor,
+        briefing_id: str,
+        event_ids: list[str],
+        subjects: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        return {}
+
+    handler._create_feedback_tokens = tokens  # type: ignore[method-assign]
+    await handler.send_briefing(
+        42,
+        {"id": "briefing-1", "created_at": "2026-09-25T11:08:34Z", "items": []},
+        delivery_note="Hedef 14:00 idi; 8 dk 34 sn gecikme.",
+    )
+
+    first_message = next(call for call in sent if call["method"] == "sendMessage")
+    assert first_message["text"] == (
+        "Günlük Özet · 25.09.2026 14:08 · Hedef 14:00 idi; 8 dk 34 sn gecikme."
+    )
+
+
+@pytest.mark.asyncio
+async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedback() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("briefing delivery must not call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+
+    async def tokens(
+        actor: Actor,
+        briefing_id: str,
+        event_ids: list[str],
+        subjects: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        return {event_id: "b" * 20 for event_id in event_ids}
+
+    handler._create_feedback_tokens = tokens  # type: ignore[method-assign]
+    await handler.send_briefing(
+        42,
+        {
+            "id": "briefing-2",
+            "created_at": "2026-09-25T11:00:00+00:00",
+            "items": [
+                {
+                    "event_id": "world-event",
+                    "section": "World in Brief",
+                    "title": "Waymo expands its robotaxi fleet",
+                    "summary": "Waymo is expanding its driverless taxi service to new cities.",
+                    "what_changed": "Waymo expanded its driverless taxi service to new cities.",
+                    "why_important": "It gives more riders access to autonomous transport.",
+                    "source_links": ["https://example.test/waymo"],
+                },
+                {
+                    "event_id": "tech-event",
+                    "section": "Tech & Industry",
+                    "title": "Google Photos adds AI collages",
+                    "summary": "Google Photos is making AI collages available on Android and iOS.",
+                    "what_changed": "AI collages are now available on Android and iOS.",
+                    "why_important": "The feature is no longer limited to a small test group.",
+                    "published_at": "2026-09-24T11:30:00+00:00",
+                    "source_links": [
+                        "http://example.test/unsafe",
+                        "https://127.0.0.1/private",
+                        "https://example.test/photos",
+                    ],
+                },
+                {
+                    "event_id": "you-event",
+                    "section": "For You",
+                    "title": "NVIDIA expands its developer tools",
+                    "summary": "NVIDIA added new tools for developers.",
+                    "source_links": ["https://example.test/nvidia"],
+                },
+                {
+                    "event_id": "watch-event",
+                    "section": "Worth Watching",
+                    "title": "A useful robotics interview",
+                    "summary": "The interview explains recent robotics work.",
+                    "source_links": ["https://example.test/video"],
+                },
+                {
+                    "event_id": "action-event",
+                    "section": "Action Required",
+                    "title": "Reply to the recruiter",
+                    "summary": "The recruiter requested a response by Friday.",
+                    "email_action": {"classification": "recruiter"},
+                },
+            ],
+        },
+        [{"event_id": "tech-event", "subject": "Google Photos"}],
+    )
+
+    messages = [call for call in sent if call["method"] == "sendMessage"]
+    assert messages[0]["text"] == "Günlük Özet · 25.09.2026 14:00"
+    item_messages = messages[1:6]
+    assert [str(call["text"]).splitlines()[0] for call in item_messages] == [
+        "Takip Etmen Gerekenler",
+        "Senin İçin",
+        "Teknoloji ve Endüstri",
+        "Dünyada Neler Oldu?",
+        "İzlemeye Değer",
+    ]
+    tech_text = str(item_messages[2]["text"])
+    assert "Google Photos adds AI collages" in tech_text
+    assert "Google Photos is making AI collages available on Android and iOS." in tech_text
+    assert "Neden önemli: The feature is no longer limited to a small test group." in tech_text
+    assert "AI collages are now available on Android and iOS." not in tech_text
+    assert "Yayın: 24.09.2026 14:30" in tech_text
+    assert "https://example.test/photos" in tech_text
+    assert "http://example.test/unsafe" not in tech_text
+    assert "https://127.0.0.1/private" not in tech_text
+    assert item_messages[0].get("reply_markup") is None
+    assert all(call.get("reply_markup") for call in item_messages[1:])
+    assert "Google Photos hakkındaki haberler ve gelişmeler ilginizi çekiyor mu?" in str(
+        messages[-1]["text"]
+    )
+
+
+def test_source_category_question_is_stable_chat_scoped_and_endpoint_free() -> None:
+    first = source_category_question("source-1")
+    duplicate = source_category_question("source-1")
+    other = source_category_question("source-2")
+
+    assert first.idempotency_key == duplicate.idempotency_key
+    assert first.idempotency_key != other.idempotency_key
+    assert first.kind.value == "source_category_question"
+    assert "source-1" in first.body
+    assert "https://" not in first.body
+    assert telegram_delivery_channel(42) == telegram_delivery_channel(42)
+    assert telegram_delivery_channel(42) != telegram_delivery_channel(43)
+
+
+@pytest.mark.asyncio
+async def test_pending_category_survives_disabled_telegram_then_delivers_once() -> None:
+    receipts: dict[tuple[str, str], dict[str, object]] = {}
+    sent: list[tuple[int, str]] = []
+
+    class Result:
+        def __init__(self, value: object = None) -> None:
+            self.value = value
+
+        def mappings(self) -> "Result":
+            return self
+
+        def one_or_none(self) -> object:
+            return self.value
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    class Session:
+        async def execute(self, statement: object, params: dict[str, object]) -> Result:
+            query = str(statement)
+            receipt_key = (str(params["channel"]), str(params["key"]))
+            if query.startswith("SELECT status, attempts"):
+                return Result(receipts.get(receipt_key))
+            if query.startswith("INSERT INTO notification_deliveries"):
+                if receipt_key not in receipts:
+                    receipts[receipt_key] = {
+                        "status": "pending",
+                        "attempts": 1,
+                        "age_seconds": 0,
+                    }
+                    return Result(receipt_key[1])
+                if receipts[receipt_key]["status"] == "failed":
+                    receipts[receipt_key]["status"] = "pending"
+                    receipts[receipt_key]["attempts"] = int(receipts[receipt_key]["attempts"]) + 1
+                    receipts[receipt_key]["age_seconds"] = 0
+                    return Result(receipt_key[1])
+                return Result()
+            if "SET status = 'delivered'" in query:
+                receipts[receipt_key]["status"] = "delivered"
+            elif "SET status = 'failed'" in query:
+                receipts[receipt_key]["status"] = "failed"
+            return Result()
+
+        async def scalar(self, statement: object, params: dict[str, object]) -> str | None:
+            value = receipts.get((str(params["channel"]), str(params["key"])))
+            return str(value["status"]) if value is not None else None
+
+    class SessionContext:
+        async def __aenter__(self) -> Session:
+            return Session()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    class Sessions:
+        def begin(self) -> SessionContext:
+            return SessionContext()
+
+        def __call__(self) -> SessionContext:
+            return SessionContext()
+
+    class Bot:
+        async def send_notification(self, chat_id: int, notification: Notification) -> None:
+            sent.append((chat_id, notification.body))
+
+    class PendingRepository:
+        async def list_pending_categories(
+            self, *, limit: int, offset: int
+        ) -> list[dict[str, object]]:
+            assert (limit, offset) == (100, 0)
+            return [{"id": "source-1", "category": None}]
+
+    repository = PendingRepository()
+    disabled = _settings(telegram_enabled=False, telegram_allowed_actor_pairs="42:42")
+    disabled_results, disabled_offset = await dispatch_pending_source_category_questions(
+        repository, Sessions(), disabled, Bot()
+    )  # type: ignore[arg-type]
+    assert disabled_results == []
+    assert disabled_offset == 0
+    assert sent == []
+
+    settings = _settings(telegram_allowed_actor_pairs="42:42")
+    first, next_offset = await dispatch_pending_source_category_questions(
+        repository, Sessions(), settings, Bot()
+    )  # type: ignore[arg-type]
+    duplicate = await send_source_category_question(
+        Sessions(), settings, Bot(), "source-1"
+    )  # type: ignore[arg-type]
+
+    assert [result.status for result in first] == ["delivered"]
+    assert next_offset == 1
+    assert duplicate.status == "duplicate_skipped"
+    assert await source_category_question_was_delivered(Sessions(), "source-1", 42)  # type: ignore[arg-type]
+    assert not await source_category_question_was_delivered(Sessions(), "source-1", 43)  # type: ignore[arg-type]
+    assert len(sent) == 1
+    assert sent[0][0] == 42
+    assert "https://" not in sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_telegram_source_category_answer_is_explicit_targeted_and_non_destructive() -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("category handling must never call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    repository = _SourceRepository(
+        [
+            _managed_source_row(id="pending", enabled=False),
+            _managed_source_row(id="assigned", enabled=True, category="Technology"),
+        ]
+    )
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+    handler._source_repository = repository  # type: ignore[assignment]
+    handler._settings = _settings(
+        telegram_allowed_actor_pairs="42:42,43:43",
+        telegram_source_operator_chat_id=42,
+    )
+    answered: list[tuple[str, int]] = []
+
+    async def question_delivered(source_id: str, chat_id: int) -> bool:
+        answered.append((source_id, chat_id))
+        return (source_id, chat_id) in {
+            ("pending", 42),
+            ("assigned", 42),
+            ("stale", 42),
+        }
+
+    handler._source_category_question_delivered = question_delivered
+    commands = [
+        (101, 42, 42, "/kaynak_kategori pending Technology > Artificial Intelligence"),
+        (102, 42, 42, "/kaynak_kategori pending Science"),
+        (103, 42, 42, "/kaynak_kategori stale Science"),
+        (104, 42, 42, "/kaynak_kategori assigned Research"),
+        (105, 43, 43, "/kaynak_kategori pending Finance"),
+        (106, 42, 42, "/kaynak_kategori pending " + "x" * 129),
+        (107, 99, 42, "/kaynak_kategori pending Finance"),
+    ]
+    for update_id, user_id, chat_id, command in commands:
+        await handler.process_update(
+            TelegramUpdate.model_validate(
+                _payload(update_id, user_id=user_id, chat_id=chat_id, text=command)
+            )
+        )
+
+    messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
+    assert repository.rows["pending"]["category"] == "Technology > Artificial Intelligence"
+    assert repository.rows["pending"]["enabled"] is False
+    assert repository.rows["assigned"]["category"] == "Technology"
+    assert answered == [
+        ("pending", 42),
+        ("pending", 42),
+        ("stale", 42),
+        ("assigned", 42),
+        ("pending", 43),
+    ]
+    assert "Kategori kaydedildi" in messages[0]
+    assert "zaten" in messages[1].casefold()
+    assert "bulunamadı" in messages[2].casefold()
+    assert "değiştirilmedi" in messages[3].casefold()
+    assert "bu sohbet" in messages[4].casefold()
+    assert "128" in messages[5]
+    assert len(messages) == 6
+
+
+@pytest.mark.asyncio
+async def test_telegram_source_add_stays_disabled_and_queues_operator_category_question(
+) -> None:
+    async def ask(_: object) -> dict[str, object]:
+        raise AssertionError("source management must never call a model")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=ask, claim=claim)
+    repository = _SourceRepository()
+    handler._source_repository = repository  # type: ignore[assignment]
+    questions: list[str] = []
+
+    async def queue_question(source_id: str) -> str:
+        questions.append(source_id)
+        return "delivered"
+
+    handler._queue_source_category_question = queue_question
+    await handler.process_update(
+        TelegramUpdate.model_validate(
+            _payload(108, text="/kaynak_ekle rss https://unknown.example.test/feed Unknown")
+        )
+    )
+
+    row = repository.rows["source-1"]
+    assert row["enabled"] is False
+    assert row["category"] is None
+    assert questions == ["source-1"]
+    assert "pasif" in str(sent[0]["text"]).casefold()
+    assert "https://unknown.example.test/feed" not in str(sent[0]["text"])
 
 
 def _handler(
@@ -604,6 +975,7 @@ def _callback_handler(
     store: _FeedbackStore,
     *,
     allowed_pairs: str = "42:42",
+    operator_chat_id: int | None = None,
 ) -> tuple[TelegramWebhookHandler, list[dict[str, object]], list[tuple[int, str]]]:
     async def ask(_: object) -> dict[str, object]:
         raise AssertionError("callback must not invoke a model")
@@ -613,7 +985,10 @@ def _callback_handler(
 
     handler, sent, finished = _handler(ask=ask, claim=claim)
     handler._sessions = store  # type: ignore[assignment]
-    handler._settings = _settings(telegram_allowed_actor_pairs=allowed_pairs)
+    handler._settings = _settings(
+        telegram_allowed_actor_pairs=allowed_pairs,
+        telegram_source_operator_chat_id=operator_chat_id,
+    )
     return handler, sent, finished
 
 
@@ -649,7 +1024,10 @@ def test_exact_actor_pairs_do_not_create_a_cross_product_allow_list() -> None:
         raise AssertionError("cross-pair must not be persisted")
 
     handler, sent, _ = _handler(ask=ask, claim=claim)
-    handler._settings = _settings(telegram_allowed_actor_pairs="42:42,43:43")
+    handler._settings = _settings(
+        telegram_allowed_actor_pairs="42:42,43:43",
+        telegram_source_operator_chat_id=42,
+    )
     with _client(handler) as client:
         response = client.post(
             "/integrations/telegram/webhook",
@@ -761,7 +1139,9 @@ def test_invalid_expired_or_other_actor_callback_is_acknowledged_without_feedbac
         },
         expired_tokens={"b" * 20},
     )
-    handler, sent, _ = _callback_handler(store, allowed_pairs="42:42,43:43")
+    handler, sent, _ = _callback_handler(
+        store, allowed_pairs="42:42,43:43", operator_chat_id=42
+    )
     with _client(handler) as client:
         response = client.post(
             "/integrations/telegram/webhook",

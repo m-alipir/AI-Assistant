@@ -1,9 +1,9 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.2 — Scheduled Telegram daily assistant (M21 RSSHub observation explicitly
-deferred)
-**Last updated:** 2026-09-24
+**Current milestone:** M22.2 production verification + M22.3 source management (M21 RSSHub
+observation explicitly deferred)
+**Last updated:** 2026-09-25
 **Completion estimate:** ~92% (22 of 24 tracked milestone entries complete; M9 and M21 remain open)
 
 ## Rules for Codex
@@ -542,22 +542,69 @@ content appears in Git, logs, callback responses, or notification history.
 ---
 
 ## M22.2 — Scheduled Telegram daily assistant
-**Status:** [~] IMPLEMENTED — production enablement remains operator configuration
+**Status:** [~] REPAIRED OFFLINE — controlled production delivery and error observation pending
 
 - [x] keep the existing daily scheduler, normal RSS/YouTube/Gmail runtime, coordinator, durable
   briefing outbox, and channel-scoped notification dispatcher
 - [x] deliver the newly persisted briefing through the existing `/ozet` renderer after a non-empty
   run; empty runs do not notify
 - [x] preserve briefing/ingestion state when Telegram delivery fails and reuse notification
-  idempotency for retries/restarts
+  idempotency when a failed delivery is explicitly submitted again; automatic replay of a prior
+  failed briefing is not implemented
 - [x] ask up to three metadata-derived interest questions during the first 14 successfully
   delivered local briefing days, using one-use existing Telegram feedback tokens
 - [x] apply calibration answers as bounded adaptive signals without an additional model call
 - [x] add migration, regression tests, configuration examples, and the production runbook steps
-- [ ] operator enables `SCHEDULER_DAILY_TIME=12:30`, Telegram notification destination, and performs
-  the first controlled production smoke
+- [ ] operator verifies the configured local delivery time, Telegram notification destination,
+  and performs
+  the first controlled production smoke after checking any persisted Control Center scheduler
+  preference (which overrides environment values)
+- [x] close a conditional production source-fetch proxy boundary found in the 2026-09-25
+  security pilot: direct egress confirmed, narrow RSS/article client fix and proxy-environment
+  negative test passed offline, and independent review found no blocking issue
+- [~] diagnose the 2026-09-25 safe-error alert and why the 14:00 daily delivery arrived around
+  14:08: scheduled time was the work start, not send time; safe counts confirm four RSS and two
+  YouTube failures, but the historical categories and actual start timestamp are unavailable.
+  Future runs persist bounded category counts without source/provider/Telegram content or secrets
+- [x] send a concise Turkish editorial briefing with clear sections, meaningful developments,
+  reasons to care, and source links instead of repeated raw title/summary/change blocks; focused
+  offline tests and independent review passed, production delivery still pending
+- [x] make first-14-day feedback ask about concrete subjects such as Google Photos features or
+  Waymo developments, not publishers, feeds, event names, or duplicate labels; focused negative
+  fixtures and independent review passed, production output still pending
+- [x] separate pre-delivery processing from the configured local delivery target, starting
+  preparation 15 minutes before it; preserve durable idempotency and a deterministic time-bound
+  regression. If fresh content is not ready at the configured delivery time, deliver it when ready
+  with an explicit delay; do not present an old briefing as new. Offline tests and independent
+  review passed; production delivery remains unverified
 
 **Scope note:** M21 RSSHub work is not a prerequisite and was not continued.
+
+---
+
+## M22.3 — Source management UI and automatic categorization
+**Status:** [~] IMPLEMENTED OFFLINE — PostgreSQL accepted; Telegram runtime acceptance pending
+
+- [x] keep the Sources table usable with many entries and long endpoints at desktop and narrow
+  widths; 12-long-URL fixture and headless Chrome desktop/500px layout check passed for both source
+  screens. A separate non-source table on `/admin` still extends document width by 85px at 500px
+- [x] edit an existing source's name, endpoint, topic/category, and relevant source settings through
+  the same validated database-backed path as creation; preserve stable identity and ingestion history
+- [x] assign a meaningful source topic/category automatically on add, beyond the current
+  `tech/world/personal` presentation, while keeping the result visible and user-correctable;
+  if deterministic metadata is ambiguous, ask the allow-listed operator through Telegram and
+  persist the answer instead of calling a model; Admin-created questions go only to one
+  configured operator chat that is also on the exact user/chat allow-list
+- [x] retain World in Brief independence, source authorization/URL guards, canonical duplicate
+  checks, disabled-by-default creation, and no unrequested live provider calls in offline checks
+- [x] run the full suite against a disposable migrated pgvector/PostgreSQL container: 345 passed,
+  none skipped or failed; Alembic head `20260923_0028`, Ruff, compileall, and offline SQL passed.
+  The temporary container was removed. Live Telegram and VDS checks remain pending
+
+**Acceptance:** a fixture with many long-URL sources remains operable; edit and automatic category
+selection pass focused Admin/repository tests without losing existing source state. An ambiguous
+source creates one bounded, authorized Telegram category question and its answer updates only that
+source; no model call or duplicate question is made.
 
 ---
 
@@ -638,11 +685,35 @@ database and domain model remain canonical.
   (separate future scope; not part of AI Assistant M18)
 
 ## Blockers
-No active M17 or M22.1 blocker. Remaining open work is the M21 observation and separate deferred M9
-scheduler acceptance. Remote PostgreSQL TLS and an internet-facing TLS proxy become acceptance work
-only if those architectures are adopted.
+No active M17 or M22.1 blocker. Remaining open work is M22.2 production enablement, M21 observation,
+and separate deferred M9 scheduler acceptance. Remote PostgreSQL TLS and an internet-facing TLS
+proxy become acceptance work only if those architectures are adopted.
 
 ## Tests
+- 2026-09-25: Headless Chrome rendered `/admin` and `/admin/sources/ui` with 12 long RSS URLs and a
+  YouTube row from TestClient fakes. Desktop source cells wrapped; at 500 CSS px each source table
+  scrolled locally and edit/save/status controls remained reachable. Chrome CLI could not produce a
+  390 CSS px viewport. `/admin` has an adjacent unrelated table causing 85px page overflow at 500px.
+  Temporary screenshots were removed; no live data or provider call was used.
+- 2026-09-25: Docker-enabled release gate: fresh disposable pgvector/PostgreSQL migrated to
+  `20260923_0028`; 345 tests passed, none skipped or failed. Three stale migration assertions and
+  one source-delete fixture expectation were updated to match current schema/disabled-by-default
+  behavior. Ruff, compileall, offline Alembic SQL, and diff check passed; container removed.
+- 2026-09-25: Integrated offline release gate after M22.2/M22.3: 339 passed, 6 skipped
+  (disposable PostgreSQL integration tests), zero failed; Ruff, compileall, Alembic single head
+  `20260923_0028`, offline migration SQL, and `git diff --check` passed. Independent focused
+  review accepted pending-source replay and import coverage (68 passed). No real browser layout,
+  PostgreSQL acceptance, VDS, provider, or Telegram delivery test was performed.
+- 2026-09-25: M22.2 presentation/calibration tests passed with independent review. Timing and
+  safe-error regressions cover arbitrary configured delivery time, 15-minute lead, late delivery,
+  midnight and DST transitions, sequential notice order, safe counters and RSS health-record
+  failures. Focused scheduler/RSS follow-up: 29 passed; earlier scheduler/Telegram/RSS/YouTube/Admin
+  set: 97 passed. Independent reviewer accepted the final DST and RSS fixes. No VDS, live provider,
+  or real Telegram delivery acceptance was performed.
+- 2026-09-25: Proxy-environment regression failed before the narrow source-fetch fix and passed
+  afterward. Security implementer: 4 focused SSRF/article tests, Ruff, and `git diff --check`
+  passed. Independent reviewer: 9 proxy/outbound/article tests and 13 RSS runtime tests passed;
+  no blocking findings. No live source, provider, or VDS test was performed.
 - 2026-09-24: Deterministic scheduler boundary regression reproduced an early wake crossing the
   Istanbul 14:00 deadline and verified retries plus consecutive local-day claims. Scheduler/Admin
   tests: 36 passed. Full offline suite: 310 passed, 6 PostgreSQL integration skips, and 2 upstream
@@ -1205,6 +1276,30 @@ only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+- 2026-09-25: M22.3 offline implementation added bounded source-table layout, validated per-row
+  editing, deterministic category suggestions, and one allow-listed Telegram category question
+  for ambiguous sources. Pending questions survive Telegram unavailability and include bulk
+  imports without model calls; independent review and full offline gate passed. Browser viewport,
+  disposable PostgreSQL, and live operator-chat checks remain separate acceptance work.
+- 2026-09-25: Repaired M22.2 offline: compact Turkish Telegram rendering, subject-based calibration,
+  preparation relative to the configured send time, explicit late fresh delivery, ordered safe
+  warnings, and bounded error categories. Independent reviews found and closed DST fold/gap and
+  RSS health-count edge cases. Historical 2026-09-25 error subcategories remain unavailable;
+  production smoke is required before claiming live acceptance. Began M22.3 Admin overflow/edit
+  and deterministic category/Telegram operator follow-up.
+- 2026-09-25: User supplied actual Telegram output: a safe-error alert, 14:08 delivery despite a
+  14:00 target, verbose item-by-item text, and first-14-day questions about publishers/events.
+  The safe scheduled summary reports `completed_with_errors`, 8 processed, 4 RSS failures,
+  2 YouTube failures, 42 LLM calls, and no Gmail failures; exact error categories and run start
+  remain unknown. Opened focused M22.2 diagnosis and repair.
+- 2026-09-25: Luna xhigh pilot confirmed M22.2 code paths but found no automatic replay
+  of a previously failed Telegram briefing and a saved scheduler preference that can override env
+  configuration. Optimizer found no measured gain justifying code changes. Security review found a
+  conditional proxy-environment SSRF boundary in production feed/article clients; the scoped offline
+  fix and independent review passed. Production smoke remains pending.
+- 2026-09-25: Added a concise delegated-delivery protocol and one replaceable active agent brief.
+  Started read-only reviewer, optimizer, and security pilots for M22.2. No application code,
+  production configuration, provider, or VDS action was changed.
 - 2026-09-24: Fixed the daily scheduler boundary race: a non-due wake retries the pinned scheduled
   target instead of recomputing tomorrow; the existing durable per-day claim remains the duplicate
   guard. Added deterministic early-wakeup and consecutive-day coverage. Also replaced a stale fixed

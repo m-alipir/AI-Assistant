@@ -48,6 +48,7 @@ class YouTubeRun:
     event_persistence_errors: int = 0
     briefing_item_errors: int = 0
     processing_errors: int = 0
+    source_health_persistence_errors: int = 0
     provider_busy: int = 0
     budget_exhausted: int = 0
     llm_calls: int = 0
@@ -77,6 +78,7 @@ class YouTubeRun:
                 "event_persistence_error": self.event_persistence_errors,
                 "briefing_item_error": self.briefing_item_errors,
                 "processing_error": self.processing_errors,
+                "source_health_persistence_error": self.source_health_persistence_errors,
                 "provider_busy": self.provider_busy,
                 "budget_exhausted": self.budget_exhausted,
             },
@@ -288,6 +290,7 @@ class YouTubeRuntimeJob:
                             error_category="youtube_feed_access_error",
                         )
                     except Exception:
+                        run.source_health_persistence_errors += 1
                         run.errors.append(f"{source.name}: source_health_persistence_error")
             else:
                 if self._source_repository is not None and source.managed_source_id:
@@ -296,6 +299,7 @@ class YouTubeRuntimeJob:
                             source.managed_source_id, strategy="youtube_atom"
                         )
                     except Exception:
+                        run.source_health_persistence_errors += 1
                         run.errors.append(f"{source.name}: source_health_persistence_error")
         return run
 

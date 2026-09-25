@@ -18,6 +18,8 @@ long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbo
 - `/kaynaklar` lists the persisted RSS and YouTube catalog. `/kaynak_ekle <feed-url veya
   YouTube kanal-url> [ad]` adds one source (explicit `rss|youtube` is also accepted), and
   `/kaynak_sil <kimlik>` safely disables it rather than destroying its history.
+- `/kaynak_kategori <kimlik> <kategori>` records the explicit answer to a pending source-category
+  question (up to 128 characters); it changes only that source's category.
 - `/ilgiler`, `/ilgi_ekle <konu>`, and `/ilgi_sil <konu>` use the existing stable interest profile.
 - `/yardim` and `/start` show this compact command guide only after authorization; they never
   enroll a user.
@@ -25,7 +27,7 @@ long-poll worker and requires no domain, reverse proxy, TLS certificate, or inbo
 - `/kaynaklar` lists at most 30 database-managed sources with enabled and health state.
 - `/kaynak <id>` shows one source's endpoint, enabled state, health, and safe last-error category.
 - `/kaynak_ekle [rss|youtube] <endpoint> [name]` validates through the managed-source repository,
-  canonicalizes the endpoint, and adds the source enabled.
+  canonicalizes the endpoint, and adds the source disabled until an operator enables it.
 - `/kaynak_ac <id>` and `/kaynak_kapat <id>` enable or disable one source.
 - `/kaynak_sil <id>` deletes only an already-disabled source.
 - `/start` provides a safe help message only after authorization; it never enrolls a user.
@@ -45,6 +47,16 @@ can request an arbitrary fetch, alter private-network protections, or bypass nor
 deduplication, caption, retry, and budget boundaries. Gmail stays read-only and is connected once
 through the protected browser OAuth flow; scheduled runs then use its existing durable checkpoint.
 
+Clear known RSS publisher domains receive a deterministic category during source creation; this
+does not change the source's `tech`/`world` stream. An unknown category is left empty and queues one
+plain-text question containing only the source ID, never its endpoint or feed content. Questions go
+to `TELEGRAM_SOURCE_OPERATOR_CHAT_ID`, which must be an exact allow-listed chat. A bounded database
+scan retries uncategorized sources after restart or Telegram configuration changes, in webhook and
+polling deployments. `/kaynak_kategori <id> <category>` is accepted only in a chat with a persisted
+delivered question receipt, and an existing category is never overwritten. The question uses the
+existing channel-scoped notification receipt, so repeat processing cannot send another successfully
+recorded question to that chat.
+
 ## Production configuration
 
 Keep these non-secret values only in the protected production environment file:
@@ -54,6 +66,8 @@ TELEGRAM_ENABLED=true
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://intelligence.example.com/integrations/telegram/webhook
 TELEGRAM_ALLOWED_ACTOR_PAIRS=<numeric-user-id>:<numeric-chat-id>
+# Required if allowed actor pairs use more than one unique chat.
+TELEGRAM_SOURCE_OPERATOR_CHAT_ID=<numeric-chat-id>
 # Proactive daily briefings; every listed chat must already occur in TELEGRAM_ALLOWED_ACTOR_PAIRS.
 TELEGRAM_NOTIFICATION_CHAT_IDS=<numeric-chat-id>
 TELEGRAM_MAX_REQUEST_BYTES=8192
@@ -78,8 +92,9 @@ The setup command reads the mounted files and prints only a success/failure cate
 only `message` and `callback_query` updates with two Telegram-to-app connections. It is never run
 automatically at startup. Do not use polling in this deployment.
 
-When `SCHEDULER_ENABLED=true` and `SCHEDULER_DAILY_TIME=12:30`, each successful run delivers the
-new persisted briefing to every `TELEGRAM_NOTIFICATION_CHAT_IDS` destination. Empty runs do not
+When scheduling is enabled, preparation starts 15 minutes before the effective configured local
+delivery time (including any saved Control Center preference). A newly persisted briefing is held
+until that time, or sent when ready with a delay note if processing finishes late. Empty runs do not
 send a message. The first 14 successfully delivered briefing days may include up to three
 metadata-derived interest questions; their one-use buttons update the existing adaptive profile
 in small increments and then stop automatically.

@@ -657,7 +657,7 @@ def test_control_center_scheduler_handles_unavailable_configuration() -> None:
     assert "Schedule settings are temporarily unavailable." in response.text
 
 
-async def _unused_run() -> dict[str, object]:
+async def _unused_run(_: datetime) -> dict[str, object]:
     raise AssertionError("onboarding must not run ingestion")
 
 
@@ -727,6 +727,57 @@ def test_sources_page_uses_admin_api_entry_points_and_escapes_source_content() -
     assert "textContent" in response.text
 
 
+def test_source_tables_wrap_long_urls_and_expose_database_backed_edit_fields() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    endpoint = "https://example.test/" + ("long-source-endpoint-" * 75)
+    rows = [
+        _source_row(
+            id=f"rss-{index}",
+            name=f"Source {index}",
+            canonical_endpoint=f"{endpoint}/{index}",
+            category="Technology > Photos",
+            priority=index,
+            freshness_hours=48,
+        )
+        for index in range(12)
+    ]
+    rows.append(
+        _source_row(
+            id="youtube-1",
+            kind="youtube",
+            name="Robotics channel",
+            canonical_endpoint="UCVBX2n_5egE9XuJL8NUS0Xg",
+            category="Technology > Robotics",
+            language="tr",
+            stream="world",
+        )
+    )
+    app.state.source_repository = FakeSourceRepository(rows)
+
+    with TestClient(app) as client:
+        pages = [client.get("/admin"), client.get("/admin/sources/ui")]
+
+    for page in pages:
+        assert page.status_code == 200
+        assert "source-table-wrap" in page.text
+        assert "overflow-wrap:anywhere" in page.text
+        assert "source-table" in page.text
+        assert "Technology &gt; Photos" in page.text
+        assert "Technology &gt; Robotics" in page.text
+        assert 'data-command="save-source"' in page.text
+        assert 'data-source-field="name"' in page.text
+        assert 'data-source-field="endpoint"' in page.text
+        assert 'data-source-field="category"' in page.text
+        assert 'data-source-field="stream"' in page.text
+        assert 'data-source-field="priority"' in page.text
+        assert 'data-source-field="freshness_hours"' in page.text
+        assert 'data-source-field="language"' in page.text
+        assert "method:'PATCH'" in page.text
+        assert "rss-11" in page.text
+        assert "youtube-1" in page.text
+        assert endpoint in page.text
+
+
 def test_admin_source_crud_uses_repository_and_never_mutates_yaml(tmp_path: Path) -> None:
     sources, models, interests = (
         tmp_path / "sources.yaml",
@@ -770,11 +821,23 @@ def test_admin_source_crud_uses_repository_and_never_mutates_yaml(tmp_path: Path
         assert client.get(f"/admin/sources/{source_id}").json()["name"] == "Test Feed"
         updated = client.patch(
             f"/admin/sources/{source_id}",
-            json={"name": "Updated Feed", "priority": 20, "freshness_hours": 24},
+            json={
+                "name": "Updated Feed",
+                "endpoint": "HTTPS://Example.Test:443/updated.xml#ignored",
+                "stream": "world",
+                "category": "Technology > Photos",
+                "priority": 20,
+                "freshness_hours": 24,
+            },
         )
+        assert updated.json()["id"] == source_id
         assert updated.json()["name"] == "Updated Feed"
+        assert updated.json()["endpoint"] == "https://example.test/updated.xml"
+        assert updated.json()["stream"] == "world"
+        assert updated.json()["category"] == "Technology > Photos"
         assert updated.json()["priority"] == 20
         assert updated.json()["freshness_hours"] == 24
+        assert updated.json()["enabled"] is False
         assert client.post(f"/admin/sources/{source_id}/true").json()["enabled"] is True
         assert client.delete(f"/admin/sources/{source_id}").status_code == 409
         assert client.post(f"/admin/sources/{source_id}/false").json()["enabled"] is False
@@ -820,6 +883,19 @@ def test_admin_source_failures_map_to_deterministic_http_errors() -> None:
         )
         assert invalid_update.status_code == 422
         assert "absolute HTTP(S) URL" in invalid_update.json()["detail"]
+        second = client.post(
+            "/admin/sources",
+            json={
+                "kind": "rss",
+                "name": "Second",
+                "endpoint": "https://example.test/second.xml",
+            },
+        )
+        duplicate_update = client.patch(
+            f"/admin/sources/{second.json()['id']}",
+            json={"endpoint": first.json()["endpoint"]},
+        )
+        assert duplicate_update.status_code == 409
         assert client.patch(
             f"/admin/sources/{first_id}", json={"language": "en"}
         ).status_code == 422
@@ -831,6 +907,37 @@ def test_admin_source_failures_map_to_deterministic_http_errors() -> None:
         ).status_code == 404
         assert client.post(f"/admin/sources/{missing}/true").status_code == 404
         assert client.delete(f"/admin/sources/{missing}").status_code == 404
+
+
+def test_admin_queues_one_category_question_only_for_ambiguous_new_sources() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+    repository = FakeSourceRepository()
+    app.state.source_repository = repository
+    queued: list[str] = []
+
+    async def queue_question(source_id: str) -> str:
+        queued.append(source_id)
+        return "delivered"
+
+    app.state.queue_source_category_question = queue_question
+    with TestClient(app) as client:
+        unknown = client.post(
+            "/admin/ui/sources",
+            json={"kind": "rss", "name": "Unknown", "endpoint": "https://unknown.example.test/feed"},
+        )
+        known = client.post(
+            "/admin/ui/sources",
+            json={"kind": "rss", "name": "OpenAI", "endpoint": "https://openai.com/news/rss.xml"},
+        )
+
+    assert unknown.status_code == known.status_code == 200
+    assert unknown.json()["enabled"] is False
+    assert known.json()["enabled"] is False
+    assert queued == [unknown.json()["source_id"]]
+    assert (
+        repository.rows[known.json()["source_id"]]["category"]
+        == "Technology > Artificial Intelligence"
+    )
 
 
 def test_legacy_admin_source_actions_use_repository_without_yaml_writes(tmp_path: Path) -> None:

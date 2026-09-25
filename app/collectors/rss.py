@@ -99,7 +99,9 @@ class HttpFeedFetcher:
     ) -> ConditionalFeedResult:
         """Fetch with explicit redirect validation so a feed cannot pivot into private networks."""
         current_url = url
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, trust_env=False
+        ) as client:
             for redirect_count in range(self._max_redirects + 1):
                 _validate_remote_url(
                     current_url,

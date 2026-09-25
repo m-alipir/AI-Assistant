@@ -168,6 +168,12 @@ class Settings(BaseSettings):
     telegram_notification_chat_ids: str = Field(
         default="", validation_alias="TELEGRAM_NOTIFICATION_CHAT_IDS"
     )
+    telegram_source_operator_chat_id: int | None = Field(
+        default=None,
+        validation_alias="TELEGRAM_SOURCE_OPERATOR_CHAT_ID",
+        gt=-(2**52),
+        lt=2**52,
+    )
     telegram_max_request_bytes: int = Field(
         default=8_192, validation_alias="TELEGRAM_MAX_REQUEST_BYTES", ge=512, le=32_768
     )
@@ -286,6 +292,16 @@ class Settings(BaseSettings):
             allowed_chats = {chat_id for _, chat_id in self.telegram_allowed_actor_pair_list}
             if not notification_chats.issubset(allowed_chats):
                 raise ValueError("TELEGRAM_NOTIFICATION_CHAT_IDS must be allow-listed chats")
+            operator_chat_id = self.telegram_source_operator_chat_id
+            if operator_chat_id is None and len(allowed_chats) == 1:
+                self.telegram_source_operator_chat_id = next(iter(allowed_chats))
+                operator_chat_id = self.telegram_source_operator_chat_id
+            if operator_chat_id is None and allowed_chats:
+                raise ValueError(
+                    "TELEGRAM_SOURCE_OPERATOR_CHAT_ID must select one allow-listed chat"
+                )
+            if operator_chat_id is not None and operator_chat_id not in allowed_chats:
+                raise ValueError("TELEGRAM_SOURCE_OPERATOR_CHAT_ID must be allow-listed")
         if self.ntfy_enabled:
             parsed_ntfy = urlsplit(self.ntfy_base_url)
             valid_ntfy_origin = (

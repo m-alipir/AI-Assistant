@@ -90,7 +90,7 @@ async def test_valid_opml_preview_extracts_normalized_feeds_without_writes() -> 
         "name": "TechCrunch",
         "type": "rss",
         "url": "https://techcrunch.com/feed/",
-        "category": None,
+        "category": "Technology > Startups",
         "priority": 0,
         "stream": "tech",
         "enabled": False,
@@ -219,7 +219,15 @@ async def test_opml_repository_unavailable_is_reported_without_database_details(
 
 def test_admin_opml_preview_import_and_safe_error_mapping() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
-    app.state.source_repository = OpmlRepository()
+    repository = OpmlRepository()
+    app.state.source_repository = repository
+    queued: list[str] = []
+
+    async def queue_question(source_id: str) -> str:
+        queued.append(source_id)
+        return "delivered"
+
+    app.state.queue_source_category_question = queue_question
     with TestClient(app) as client:
         preview = client.post("/admin/opml/preview", json={"opml": VALID_OPML})
         imported = client.post("/admin/opml/import", json={"opml": VALID_OPML})
@@ -233,6 +241,9 @@ def test_admin_opml_preview_import_and_safe_error_mapping() -> None:
     assert preview.status_code == 200
     assert imported.json()["counts"]["created"] == 2
     assert repeated.json()["counts"]["created"] == 0
+    assert queued == ["created-2"]
+    assert repository.rows["created-1"]["category"] == "Technology > Startups"
+    assert repository.rows["created-2"]["category"] is None
     assert malformed.status_code == 400
     assert malformed.json()["detail"]["code"] == "malformed_xml"
     assert invalid.status_code == 422

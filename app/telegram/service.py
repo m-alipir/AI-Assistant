@@ -3,20 +3,28 @@
 import asyncio
 import hashlib
 import logging
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from fastapi import HTTPException, Request, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.briefing.presentation import safe_links
+from app.briefing.presentation import (
+    BRIEFING_SECTIONS,
+    compact_sentences,
+    format_istanbul,
+    safe_links,
+)
 from app.config.settings import Settings
 from app.config.source_repository import (
     EnabledSourceDeleteBlocked,
     ManagedSourceCreate,
+    ManagedSourceUpdate,
     SourceAlreadyExists,
     SourceNotFound,
     SourceRepository,
@@ -33,6 +41,19 @@ from app.telegram.core import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BRIEFING_SECTION_ALIASES = {
+    "For You": "Senin İçin / For You",
+    "World in Brief": "Dünyada Neler Oldu? / World in Brief",
+}
+_BRIEFING_SECTION_LABELS = {
+    "Action Required": "Takip Etmen Gerekenler",
+    "Senin İçin / For You": "Senin İçin",
+    "Tech & Industry": "Teknoloji ve Endüstri",
+    "Connections / Why It Matters": "Bağlantılar",
+    "Dünyada Neler Oldu? / World in Brief": "Dünyada Neler Oldu?",
+    "Worth Watching": "İzlemeye Değer",
+}
 
 
 class TelegramUser(BaseModel):
@@ -78,7 +99,9 @@ SearchCallback = Callable[[SearchFilters], Awaitable[dict[str, object]]]
 StatusCallback = Callable[[], Awaitable[dict[str, object]]]
 HistoryCallback = Callable[[int], Awaitable[list[dict[str, object]]]]
 SourcesCallback = Callable[[], Awaitable[str]]
-AddSourceCallback = Callable[[str, str, str], Awaitable[str]]
+AddSourceCallback = Callable[[str, str, str, int], Awaitable[str]]
+QueueSourceCategoryQuestionCallback = Callable[[str], Awaitable[str]]
+SourceCategoryQuestionDeliveredCallback = Callable[[str, int], Awaitable[bool]]
 DisableSourceCallback = Callable[[str], Awaitable[str]]
 InterestsCallback = Callable[[], Awaitable[str]]
 SetInterestCallback = Callable[[str, bool], Awaitable[str]]
@@ -122,6 +145,8 @@ class TelegramWebhookHandler:
         interests: InterestsCallback | None = None,
         set_interest: SetInterestCallback | None = None,
         source_repository: SourceRepository | None = None,
+        queue_source_category_question: QueueSourceCategoryQuestionCallback | None = None,
+        source_category_question_delivered: SourceCategoryQuestionDeliveredCallback | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
@@ -137,6 +162,8 @@ class TelegramWebhookHandler:
         self._interests = interests
         self._set_interest = set_interest
         self._source_repository = source_repository
+        self._queue_source_category_question = queue_source_category_question
+        self._source_category_question_delivered = source_category_question_delivered
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
         self._global = ProcessRateLimiter(settings.telegram_global_rate_limit_per_minute)
         self._semaphore = asyncio.Semaphore(settings.telegram_max_concurrent_commands)
@@ -261,6 +288,9 @@ class TelegramWebhookHandler:
             else:
                 await self._add_source_from_repository(actor, argument)
             return
+        if command == "kaynak_kategori":
+            await self._set_source_category(actor, argument)
+            return
         if command == "kaynak_sil":
             if self._disable_source is not None:
                 await self._disable_source_command(actor, argument)
@@ -298,6 +328,7 @@ class TelegramWebhookHandler:
         chat_id: int,
         briefing: dict[str, object],
         calibration_candidates: list[dict[str, str]] | None = None,
+        delivery_note: str | None = None,
     ) -> None:
         """Deliver a persisted briefing through the same renderer as ``/ozet``."""
         actor = next(
@@ -310,13 +341,14 @@ class TelegramWebhookHandler:
         )
         if actor is None:
             raise TelegramDeliveryError("telegram_destination_not_allowed")
-        await self._send_briefing(actor, briefing, calibration_candidates)
+        await self._send_briefing(actor, briefing, calibration_candidates, delivery_note)
 
     async def _send_briefing(
         self,
         actor: Actor,
         briefing: dict[str, object] | None = None,
         calibration_candidates: list[dict[str, str]] | None = None,
+        delivery_note: str | None = None,
     ) -> None:
         if briefing is None:
             try:
@@ -333,7 +365,12 @@ class TelegramWebhookHandler:
             )
             return
         briefing_id = str(briefing.get("id", ""))[:36]
-        usable_items = [item for item in items if isinstance(item, dict)][:5]
+        usable_items = [item for item in items if isinstance(item, dict)]
+        section_order = {section: index for index, section in enumerate(BRIEFING_SECTIONS)}
+        usable_items.sort(
+            key=lambda item: section_order.get(_briefing_section(item), len(section_order))
+        )
+        usable_items = usable_items[:5]
         feedback_event_ids = [
             str(item.get("event_id", ""))[:36]
             for item in usable_items
@@ -344,10 +381,12 @@ class TelegramWebhookHandler:
             briefing_id,
             feedback_event_ids,
         )
-        header = "Son özet"
-        created_at = briefing.get("created_at")
-        if created_at:
-            header = f"{header}\n{str(created_at)[:25]}"
+        header = "Günlük Özet"
+        display_time = _briefing_local_time(briefing.get("created_at"))
+        if display_time:
+            header = f"{header} · {display_time}"
+        if delivery_note:
+            header = f"{header} · {delivery_note}"
         await self._bot.send_message(actor.chat_id, TelegramMessage(header))
         for item in usable_items:
             event_id = str(item.get("event_id", ""))[:36]
@@ -374,7 +413,7 @@ class TelegramWebhookHandler:
             await self._bot.send_message(
                 actor.chat_id,
                 TelegramMessage(
-                    "İlk 14 günlük ayar: Bu konularla ilgileniyor musunuz? "
+                    "İlk 14 günlük ayar: Bu konulardaki haberler ilginizi çekiyor mu? "
                     "Evet/Hayır seçin."
                 ),
             )
@@ -386,7 +425,8 @@ class TelegramWebhookHandler:
                 await self._bot.send_message(
                     actor.chat_id,
                     TelegramMessage(
-                        f"{candidate['subject']} ile ilgileniyor musunuz?",
+                        f"{candidate['subject']} hakkındaki haberler ve gelişmeler "
+                        "ilginizi çekiyor mu?",
                         feedback_keyboard(
                             token,
                             positive_text="Evet",
@@ -468,8 +508,53 @@ class TelegramWebhookHandler:
                 TelegramMessage("Kullanım: /kaynak_ekle <feed-url veya YouTube kanal-url> [ad]"),
             )
             return
-        response = await self._add_source(kind, endpoint, name.strip())
+        response = await self._add_source(kind, endpoint, name.strip(), actor.chat_id)
         await self._bot.send_message(actor.chat_id, TelegramMessage(response))
+
+    async def _set_source_category(self, actor: Actor, argument: str) -> None:
+        source_id, separator, category = argument.partition(" ")
+        repository = self._source_repository
+        if (
+            not separator
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", source_id)
+            or not category.strip()
+            or len(category.strip()) > 128
+            or any(ord(char) < 32 for char in category)
+        ):
+            await self._send_source_reply(
+                actor,
+                "Kullanım: /kaynak_kategori <kaynak-kimliği> <kategori> (en fazla 128 karakter).",
+            )
+            return
+        if repository is None or self._source_category_question_delivered is None:
+            await self._send_source_reply(actor, "Kaynak kategorisi şu anda güncellenemiyor.")
+            return
+        try:
+            update = ManagedSourceUpdate(category=category)
+            if update.category is None:
+                raise ValueError("category is required")
+            delivered = await self._source_category_question_delivered(source_id, actor.chat_id)
+            if not delivered:
+                await self._send_source_reply(
+                    actor, "Bu kaynak için bu sohbette bekleyen bir kategori sorusu yok."
+                )
+                return
+            result = await repository.set_category_if_missing(source_id, update.category)
+        except (ValidationError, ValueError):
+            await self._send_source_reply(
+                actor,
+                "Kullanım: /kaynak_kategori <kaynak-kimliği> <kategori> (en fazla 128 karakter).",
+            )
+            return
+        except Exception:
+            await self._send_source_reply(actor, "Kaynak kategorisi şu anda güncellenemiyor.")
+            return
+        response = {
+            "updated": "Kategori kaydedildi; kaynağın etkinlik durumu değişmedi.",
+            "already_set": "Kategori zaten belirlenmiş; değiştirilmedi.",
+            "not_found": "Kaynak bulunamadı; kategori yanıtı artık gerekli değil.",
+        }.get(result, "Kaynak kategorisi şu anda güncellenemiyor.")
+        await self._send_source_reply(actor, response)
 
     async def _disable_source_command(self, actor: Actor, argument: str) -> None:
         if self._disable_source is None:
@@ -576,9 +661,17 @@ class TelegramWebhookHandler:
         except Exception as error:
             await self._send_source_reply(actor, _source_error_text(error))
             return
+        if row.get("category") is None and self._queue_source_category_question is not None:
+            try:
+                await self._queue_source_category_question(str(row["id"]))
+            except Exception:
+                logger.warning(
+                    "telegram_source_category_question_failed",
+                    extra={"diagnostic_category": "category_question_queue_unavailable"},
+                )
         await self._send_source_reply(
             actor,
-            f"{row['name']} eklendi ve aktif edildi. Kimlik: {row['id']}",
+            f"{row['name']} eklendi ve pasif bırakıldı. Kimlik: {row['id']}",
         )
 
     async def _set_source_enabled(
@@ -770,6 +863,7 @@ def _command(value: str | None, maximum: int) -> tuple[str, str] | None:
         "kaynaklar",
         "kaynak",
         "kaynak_ekle",
+        "kaynak_kategori",
         "kaynak_ac",
         "kaynak_kapat",
         "kaynak_sil",
@@ -797,14 +891,39 @@ def _callback_answer_text(response: str) -> str:
     return "Geri bildirim kaydedildi."
 
 
+def _briefing_section(item: dict[str, object]) -> str:
+    section = str(item.get("section") or "")
+    return _BRIEFING_SECTION_ALIASES.get(section, section)
+
+
+def _briefing_local_time(value: object) -> str | None:
+    try:
+        created_at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return format_istanbul(created_at)
+
+
 def _briefing_item_text(item: dict[str, object]) -> str:
-    parts = [str(item.get("section") or "Özet"), str(item.get("title") or "Kaydedilmiş olay")]
-    summary = str(item.get("summary") or "")[:600]
-    if summary:
-        parts.append(summary)
-    what_changed = item.get("what_changed")
-    if what_changed:
-        parts.append(f"Değişiklik: {str(what_changed)[:400]}")
+    section = _briefing_section(item)
+    parts = [
+        _BRIEFING_SECTION_LABELS.get(section, section or "Günlük Özet"),
+        str(item.get("title") or "Kaydedilmiş olay").strip()[:320],
+    ]
+    summary = str(item.get("summary") or "").strip()
+    what_changed = str(item.get("what_changed") or "").strip()
+    body = summary or what_changed
+    if body:
+        parts.append(compact_sentences(body, limit=2, max_chars=360))
+    why_important = str(item.get("why_important") or "").strip()
+    if why_important:
+        parts.append(
+            "Neden önemli: "
+            + compact_sentences(why_important, limit=1, max_chars=200)
+        )
+    published_at = _briefing_local_time(item.get("published_at"))
+    if published_at:
+        parts.append(f"Yayın: {published_at}")
     links = item.get("source_links")
     if isinstance(links, list):
         parts.extend(safe_links([str(link) for link in links])[:3])
@@ -863,7 +982,7 @@ def _source_create(value: str) -> ManagedSourceCreate | None:
             kind=first.casefold(),
             endpoint=endpoint,
             name=name.strip() if endpoint_separator else endpoint[:256],
-            enabled=True,
+            enabled=False,
         )
     endpoint, name_separator, name = argument.partition(" ")
     source_name = name.strip() if name_separator else endpoint[:256]
@@ -873,7 +992,7 @@ def _source_create(value: str) -> ManagedSourceCreate | None:
                 kind=kind,
                 endpoint=endpoint,
                 name=source_name,
-                enabled=True,
+                enabled=False,
             )
         except ValidationError:
             continue
@@ -910,6 +1029,7 @@ def _help_text() -> str:
         "/sor <soru> — kaynaklı soru sor\n/durum — sistem durumu\n"
         "/kaynaklar — kaynakları göster\n/kaynak <kimlik> — kaynak durumu\n"
         "/kaynak_ekle rss|youtube <adres> [ad]\n"
+        "/kaynak_kategori <kimlik> <kategori> — bekleyen kategori sorusunu yanıtla\n"
         "/kaynak_ac <kimlik>\n/kaynak_kapat <kimlik>\n/kaynak_sil <kimlik>\n"
         "/gecmis [sayÄ±], /ilgiler, /ilgi_ekle <konu>, /ilgi_sil <konu>"
     )
