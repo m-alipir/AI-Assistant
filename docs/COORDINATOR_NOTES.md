@@ -10,4 +10,5 @@ Kısa operasyon belleği; görev durumu PROGRESS.md, mevcut kapsam AGENT_BRIEF.m
 - Reviewer eski hazırlık/CI talimatına döndü ve son inceleme kararını vermedi. Yeni mesajda aktif görev önceliğini ve gerekli final kararını açıkça belirt; başarısız bir komutu kanıt sayma.
 - Yalnız final REPORT veya engelleyici NEEDS_DECISION al; otomatik rapor gelmezse final çıktıyı bir kez kontrol et.
 - Hassas terminal çıktısı için tam komut ve okuma izni al. Sunucu ayarlarını yedekle; yalnız ilgili takip edilen değişiklikleri stash et, fast-forward güncelle, stash pop çatışırsa dur. .env ve secrets değerlerini okuma veya Git'e ekleme.
+- Kullanıcı commit/push, sunucuda stash/pull/pop çıktıları ile yalnız pass/fail ve sağlık sonucu veren kontrollerin okunmasına izin verdi. Bu izin env/secrets veya ham uygulama loglarına yayılmaz. PowerShell'den SSH betik aktarımında CRLF taşımamak için UTF-8/base64 kullan; Compose servis adını tahmin etme.
 - Yerel test geçişi canlı Telegram, Actions veya VDS kabulü değildir. Gerekli kabul kanıtı tamamlanmadan dağıtma; dağıtım sonrası güvenli sağlık kontrolü ve kullanıcı denemesi ayrı kanıttır.

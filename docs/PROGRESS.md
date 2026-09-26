@@ -1323,6 +1323,8 @@ proxy become acceptance work only if those architectures are adopted.
 
 ## Last work log
 
+- Deployed reviewed repair commit `21df390`: local commit/push succeeded; server tracked overrides backed up, stashed, fast-forwarded and popped successfully. Production app/polling Compose rebuilt. Strict backup umask caused eight checked-out Python source files to be unreadable to the container; source permissions restored and rebuild passed. App/DB healthy and localhost `/health` HTTP 200. No migration, provider call or manual ingestion triggered; live Telegram/Actions acceptance remains pending.
+
 - Reviewer accepted final tie-order delta: all shared selector callers supply event ID; SQL tie-break and actual RSS same-date regression verified. Reviewer reran one focused regression: passed. Current repair is locally accepted; GitHub Actions, live DB/Telegram and deployment acceptance remain unverified. Server transfer authorized by user with settings preservation; sensitive command/output approval still required.
 
 - Fixer reports equal-date ordering fixed with shared ascending event-ID tie-break, including SQL detail ordering. Real RSS same-date/reversed-ID regression included; four focused checks, Ruff and diff check passed; Graphify updated. Final independent delta review pending. No remote or deployment actions performed.
