@@ -1242,22 +1242,78 @@ async def gmail_connect(request: Request) -> RedirectResponse:
 @router.get("/gmail/callback", response_class=HTMLResponse)
 async def gmail_callback(
     request: Request,
-    code: str = Query(min_length=1, max_length=4096),
+    code: str | None = Query(default=None, max_length=4096),
     state: str = Query(min_length=1, max_length=512),
+    error: str | None = Query(default=None, max_length=64),
 ) -> HTMLResponse:
     oauth = getattr(request.app.state, "gmail_oauth", None)
     store = getattr(request.app.state, "store_gmail_token", None)
     if oauth is None or store is None:
         raise HTTPException(503, "Gmail OAuth is not configured")
+    claim_telegram = getattr(request.app.state, "claim_telegram_gmail_oauth", None)
+    finish_telegram = getattr(request.app.state, "finish_telegram_gmail_oauth", None)
+    claimed = await _claim_telegram_gmail(claim_telegram, state)
+    if claimed is not None and claimed != "active":
+        return _telegram_gmail_result_response(claimed)
+    is_telegram_link = claimed == "active"
+    if error or not code:
+        if is_telegram_link:
+            result = await _finish_telegram_gmail(finish_telegram, state, None)
+            return _telegram_gmail_result_response(result or "failed")
+        return _oauth_failure_response("oauth_state_invalid_or_expired")
     try:
         token = await oauth.exchange(code, state)
-    except OAuthFlowError as error:
-        return _oauth_failure_response(error.category)
+    except OAuthFlowError as failure:
+        if is_telegram_link:
+            result = await _finish_telegram_gmail(finish_telegram, state, None)
+            return _telegram_gmail_result_response(result or "failed")
+        return _oauth_failure_response(failure.category)
+    if is_telegram_link:
+        result = await _finish_telegram_gmail(
+            finish_telegram, state, token["refresh_token"]
+        )
+        return _telegram_gmail_result_response(result or "failed")
     try:
         await store(token["refresh_token"])
     except Exception:
         return _oauth_failure_response("token_storage_error")
     return HTMLResponse("<p>Gmail account connected. Return to <a href='/admin'>Admin</a>.</p>")
+
+
+async def _finish_telegram_gmail(
+    finish: object, state: str, refresh_token: str | None
+) -> str | None:
+    if not callable(finish):
+        return None
+    try:
+        result = await finish(state, refresh_token)
+    except Exception:
+        logger.warning("gmail_telegram_link_failed", extra={"diagnostic_category": "link_finish"})
+        return "failed"
+    return result if isinstance(result, str) else None
+
+
+async def _claim_telegram_gmail(claim: object, state: str) -> str | None:
+    if not callable(claim):
+        return None
+    try:
+        result = await claim(state)
+    except Exception:
+        logger.warning("gmail_telegram_link_failed", extra={"diagnostic_category": "claim"})
+        return "failed"
+    return result if isinstance(result, str) else None
+
+
+def _telegram_gmail_result_response(result: str) -> HTMLResponse:
+    if result == "connected":
+        return HTMLResponse(
+            "<h1>Gmail bağlantısı tamamlandı</h1><p>Telegram'a dönebilirsiniz.</p>"
+        )
+    return HTMLResponse(
+        "<h1>Gmail bağlantısı tamamlanamadı</h1>"
+        "<p>Telegram'dan /gmail komutuyla yeni bir bağlantı başlatın.</p>",
+        status_code=400,
+    )
 
 
 @router.get("/briefings/{briefing_id}", response_class=HTMLResponse)

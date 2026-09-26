@@ -1,5 +1,21 @@
 # Active brief — compact Telegram summary repair
 
+## Active assignment — personal Gmail connection from Telegram
+
+**Latest acceptance evidence:** Worker completed and delivered REPORT: 65 focused tests, Ruff/diff check, disposable PostgreSQL actual 0029→0030 upgrade and cross-process durable-intent checks passed. Implementation complete locally; no commit/push/deployment or live Google flow. Existing PKCE state remains process-local; same web worker must serve start/callback. Next decision is production transfer and named OAuth/callback setup, not another implementation assignment.
+
+**Execution state:** Implementation authorized and in progress. This is not a preparation-only task; do not wait for another assignment. Existing OAuth changes and migration 0030 must be preserved and completed with focused checks. Older `ready / wait for coordinator` instructions are superseded. Completion requires both a four-heading final report and sending that report to coordinator thread `01a0d53c-870c-7303-b6f4-80a0c166a1ff`; if delivery fails, state that failure in the final answer.
+
+Prior summary/daily task final received (37 Telegram tests passed). Implement the authorized next-task Google connection flow below using existing Admin OAuth primitives; concise-summary code remains uncommitted and must be preserved. Coordinator owns shared docs. No live OAuth/account/Cloud/VDS/secret mutation or automatic reviewer. Return offline security-boundary evidence and named missing setup inputs; do not claim live login acceptance.
+
+## Active now — concise Turkish output and responsive `/daily`
+
+### Authorized next task — assign only after current final report
+
+Personal Gmail connection initiated from Telegram: `/gmail` offers a `Google ile bağla` button opening Google's normal account/readonly-consent flow in the browser. Reuse protected OAuth, PKCE/state and encrypted refresh-token storage; bind short-lived single-use connection intent to the authorized Telegram actor. Only Gmail read permission, no write/delete/send. Report missing one-time OAuth client/HTTPS callback configuration by name only; never request credentials in chat or inspect secrets without permission. Personal-use External/In Production configuration may retain Google's unverified-app warning; do not promise warning-free or permanent authorization. User authorized implementation, but assign this separately only after current summary/daily work is complete. No live account/Cloud/VDS configuration changes implied.
+
+CI repair completed and pushed as e43e157. The previously queued screenshot follow-up is now assigned to the same Fixer: exact short Turkish format, blank-line separation, and acknowledged/responsive manual daily execution. Gmail connection findings may be reported, but full personal Google-login implementation remains a separate deferred task. No live provider or VDS actions authorized for this assignment.
+
 ## Active follow-up — GitHub pytest failure
 
 ### Queued after CI final report — do not assign early

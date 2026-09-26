@@ -7,7 +7,6 @@ import re
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
 
 from fastapi import HTTPException, Request, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -16,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.briefing.presentation import (
     DAILY_BRIEFING_ITEM_LIMIT,
-    format_istanbul,
     order_briefing_items,
     safe_links,
 )
@@ -97,6 +95,7 @@ InterestsCallback = Callable[[], Awaitable[str]]
 SetInterestCallback = Callable[[str, bool], Awaitable[str]]
 DailyCallback = Callable[[], Awaitable[tuple[str, dict[str, object] | None]]]
 GmailPollingCallback = Callable[[int | None], Awaitable[str]]
+GmailConnectCallback = Callable[["Actor"], Awaitable[tuple[str, str | None]]]
 
 
 @dataclass(frozen=True)
@@ -141,6 +140,7 @@ class TelegramWebhookHandler:
         source_category_question_delivered: SourceCategoryQuestionDeliveredCallback | None = None,
         daily: DailyCallback | None = None,
         gmail_interval: GmailPollingCallback | None = None,
+        gmail_connect: GmailConnectCallback | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
@@ -160,9 +160,11 @@ class TelegramWebhookHandler:
         self._source_category_question_delivered = source_category_question_delivered
         self._daily = daily
         self._gmail_interval = gmail_interval
+        self._gmail_connect = gmail_connect
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
         self._global = ProcessRateLimiter(settings.telegram_global_rate_limit_per_minute)
         self._semaphore = asyncio.Semaphore(settings.telegram_max_concurrent_commands)
+        self._daily_task: asyncio.Task[None] | None = None
 
     async def handle(self, request: Request) -> Response:
         """Always avoid reflecting provider input; accepted updates are terminally recorded."""
@@ -262,28 +264,24 @@ class TelegramWebhookHandler:
                     actor.chat_id, TelegramMessage("Günlük özet şu anda çalıştırılamıyor.")
                 )
                 return
-            status, briefing = await self._daily()
-            if status == "busy":
+            if self._daily_task is not None and not self._daily_task.done():
                 await self._bot.send_message(
                     actor.chat_id,
                     TelegramMessage("Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."),
                 )
-            elif briefing is None:
-                await self._bot.send_message(
-                    actor.chat_id,
-                    TelegramMessage("Yeni özet oluşturulamadı. Daha sonra tekrar deneyin."),
-                )
-            else:
-                await self._send_briefing(actor, briefing)
+                return
+            await self._bot.send_message(
+                actor.chat_id, TelegramMessage("Günlük özet hazırlanıyor.")
+            )
+            self._daily_task = asyncio.create_task(self._run_daily(actor))
             return
         if command == "gmail":
-            if self._gmail_interval is None:
-                await self._bot.send_message(
-                    actor.chat_id, TelegramMessage("Gmail ayarı şu anda alınamıyor.")
-                )
-                return
-            interval: int | None = None
             if argument:
+                if self._gmail_interval is None:
+                    await self._bot.send_message(
+                        actor.chat_id, TelegramMessage("Gmail ayarı şu anda alınamıyor.")
+                    )
+                    return
                 if not argument.isascii() or not argument.isdecimal():
                     await self._bot.send_message(
                         actor.chat_id, TelegramMessage("Kullanım: /gmail [15–1440 dakika]")
@@ -295,8 +293,40 @@ class TelegramWebhookHandler:
                         actor.chat_id, TelegramMessage("Aralık 15 ile 1440 dakika arasında olmalı.")
                     )
                     return
-            response = await self._gmail_interval(interval)
-            await self._bot.send_message(actor.chat_id, TelegramMessage(response))
+                response = await self._gmail_interval(interval)
+                await self._bot.send_message(actor.chat_id, TelegramMessage(response))
+                return
+            if self._gmail_connect is None:
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage(
+                        "Google bağlantısı ayarlı değil. Sunucu yöneticisi şu ayar adlarını "
+                        "kontrol etsin: GMAIL_ENABLED, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET veya "
+                        "GMAIL_CLIENT_SECRET_FILE, GMAIL_OAUTH_REDIRECT_URI, APP_ENCRYPTION_KEY "
+                        "veya APP_ENCRYPTION_KEY_FILE, ADMIN_PUBLIC_ORIGIN. Değerleri Telegram'da "
+                        "paylaşmayın."
+                    ),
+                )
+                return
+            try:
+                message, connect_url = await self._gmail_connect(actor)
+            except Exception:
+                logger.warning(
+                    "telegram_command_failed",
+                    extra={"diagnostic_category": "gmail_connect_unavailable"},
+                )
+                message, connect_url = (
+                    "Google bağlantısı şu anda başlatılamıyor. Daha sonra tekrar deneyin.",
+                    None,
+                )
+            reply_markup = (
+                {"inline_keyboard": [[{"text": "Google ile bağla", "url": connect_url}]]}
+                if connect_url
+                else None
+            )
+            await self._bot.send_message(
+                actor.chat_id, TelegramMessage(message, reply_markup)
+            )
             return
         if command == "ara":
             await self._send_search(actor, argument, self._search, "Arama", "ara")
@@ -360,6 +390,39 @@ class TelegramWebhookHandler:
             actor.chat_id,
             TelegramMessage("Komut bulunamadı. Kullanılabilir komutlar için /yardim yazın."),
         )
+
+    async def _run_daily(self, actor: Actor) -> None:
+        try:
+            if self._daily is None:
+                return
+            status, briefing = await self._daily()
+            if status == "ok" and briefing is not None:
+                await self._send_briefing(actor, briefing)
+            elif status == "busy":
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage("Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."),
+                )
+            else:
+                await self._daily_unavailable(actor)
+        except Exception:
+            logger.warning(
+                "telegram_command_failed",
+                extra={"diagnostic_category": "telegram_command_unavailable"},
+            )
+            await self._daily_unavailable(actor)
+
+    async def _daily_unavailable(self, actor: Actor) -> None:
+        try:
+            await self._bot.send_message(
+                actor.chat_id,
+                TelegramMessage("Günlük özet tamamlanamadı. Daha sonra tekrar deneyin."),
+            )
+        except TelegramDeliveryError:
+            logger.warning(
+                "telegram_command_failed",
+                extra={"diagnostic_category": "telegram_delivery_unavailable"},
+            )
 
     async def send_briefing(
         self,
@@ -939,53 +1002,33 @@ def _briefing_section(item: dict[str, object]) -> str:
     return _BRIEFING_SECTION_ALIASES.get(section, section)
 
 
-def _briefing_local_time(value: object) -> str | None:
-    try:
-        created_at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    return format_istanbul(created_at)
-
-
 def _render_daily_briefing(
     created_at: object, items: list[dict[str, object]], delivery_note: str | None
 ) -> tuple[str, list[dict[str, object]]]:
-    header = "Günlük Özet"
-    display_time = _briefing_local_time(created_at)
-    if display_time:
-        header = f"{header} · {display_time}"
-    if delivery_note:
-        header = f"{header} · {delivery_note[:180]}"
-
-    labels = {
-        "Action Required": "Takip",
-        "Senin İçin / For You": "Senin için",
-        "Tech & Industry": "Teknoloji",
-        "Connections / Why It Matters": "Bağlantılar",
-        "Dünyada Neler Oldu? / World in Brief": "Dünyada",
-        "Worth Watching": "İzlemeye değer",
-    }
-    lines = [header]
     visible: list[dict[str, object]] = []
-    current_section = ""
-    for item in items[:DAILY_BRIEFING_ITEM_LIMIT]:
-        section = _briefing_section(item)
-        label = labels.get(section, "Öne çıkanlar")
+    lines = ["Bugün şunlar oldu:"]
+    for item in items:
+        if len(visible) >= DAILY_BRIEFING_ITEM_LIMIT:
+            break
+        if item.get("original_text") and not item.get("what_changed"):
+            continue
         body = _briefing_summary(item)
+        if not body:
+            continue
         number = len(visible) + 1
-        heading = [label] if label != current_section else []
-        current_length = len("\n".join(lines + heading))
-        budget = 3500 - current_length - len(f"\n{number}. ")
+        current_length = len("\n\n".join(lines))
+        budget = 3500 - current_length - len(f"\n\n{number}. ")
         if budget < 36:
             break
         body = _fit_briefing_sentence(body, min(420, budget))
-        block = heading + [f"{number}. {body}"]
-        if len("\n".join(lines + block)) > 3500:
+        line = f"{number}. {body}"
+        if len("\n\n".join([*lines, line])) > 3500:
             break
-        lines.extend(block)
-        current_section = label
+        lines.append(line)
         visible.append(item)
-    return "\n".join(lines), visible
+    if not visible:
+        return "Bugün öne çıkan yeni bir gelişme yok.", visible
+    return "\n\n".join(lines), visible
 
 
 def _briefing_summary(item: dict[str, object]) -> str:
@@ -996,7 +1039,7 @@ def _briefing_summary(item: dict[str, object]) -> str:
     )
     body = re.sub(r"(?i)\s*\(\s*source:\s*title\s*,\s*snippet\s*\)", "", body)
     body = re.sub(r"(?i)\b(?:title|snippet)\s*:\s*", "", body)
-    return " ".join(body.split()) or "Kaynakta kısa bir açıklama yok; ayrıntı için bağlantıyı açın."
+    return " ".join(body.split())
 
 
 def _fit_briefing_sentence(value: str, limit: int) -> str:
@@ -1113,6 +1156,7 @@ def _help_text() -> str:
     return (
         "Kişisel bilgi asistanı\n"
         "/daily — yeni günlük özet oluştur\n/ozet — son özet\n"
+        "/gmail — Google hesabını salt okunur bağla\n"
         "/gmail [15–1440 dakika] — Gmail kontrol aralığı\n"
         "/ara <konu> — hafızada ara\n"
         "/sor <soru> — kaynaklı soru sor\n/durum — sistem durumu\n"

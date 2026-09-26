@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
@@ -29,6 +29,7 @@ from app.api.agent import (
 )
 from app.api.agent import router as agent_router
 from app.api.health import router as health_router
+from app.api.integrations import router as integrations_router
 from app.briefing.core import BriefingItem
 from app.briefing.presentation import (
     compact_sentences,
@@ -48,6 +49,7 @@ from app.db.session import check_database_ready, create_engine, create_session_f
 from app.email.core import TokenCipher
 from app.email.gmail_api import GmailApiClient
 from app.email.oauth import GmailOAuth
+from app.email.telegram_link import TelegramGmailLinkIntents
 from app.ingestion.schemas import SourceItem, SourceKind, TimestampConfidence
 from app.ingestion.source_health import database_source_health
 from app.jobs.gmail_runtime import GmailAccountRecord, GmailRun, GmailRuntimeJob
@@ -91,8 +93,8 @@ from app.notifications.ntfy import NtfyNotifier
 from app.observability.logging import bind_request_id, configure_logging, reset_request_id
 from app.security import ProcessRateLimiter, opaque_client_key
 from app.telegram.api import router as telegram_router
-from app.telegram.core import TelegramBotClient
-from app.telegram.service import TelegramWebhookHandler
+from app.telegram.core import TelegramBotClient, TelegramDeliveryError, TelegramMessage
+from app.telegram.service import Actor, TelegramWebhookHandler
 from app.telegram.source_categories import (
     run_source_category_question_worker,
     send_source_category_question,
@@ -229,7 +231,13 @@ def create_app(
             return response
 
         try:
-            if is_admin and active_settings.admin_auth_enabled:
+            # Google cannot replay Admin Basic credentials; the callback accepts only an OAuth
+            # state already bound to PKCE, or to a consumed Telegram connection intent.
+            if (
+                is_admin
+                and active_settings.admin_auth_enabled
+                and request.url.path != "/admin/gmail/callback"
+            ):
                 if not _admin_credentials_valid(request, active_settings):
                     client_key = opaque_client_key(request.client.host if request.client else None)
                     if not await app.state.admin_auth_rate_limiter.allow(client_key):
@@ -352,6 +360,9 @@ def create_app(
                 encryption_configuration_error = True
         app.state.gmail_encryption_ready = cipher is not None
         app.state.gmail_encryption_configuration_error = encryption_configuration_error
+        telegram_gmail_intents = (
+            TelegramGmailLinkIntents(sessions, cipher) if cipher is not None else None
+        )
 
         async def store_gmail_token(refresh_token: str) -> None:
             if cipher is None:
@@ -406,6 +417,126 @@ def create_app(
                 timeout_seconds=active_settings.telegram_request_timeout_seconds,
                 retries=active_settings.telegram_max_retries,
             )
+        app.state.telegram_bot = telegram_bot
+
+        async def telegram_gmail_connect(actor: Actor) -> tuple[str, str | None]:
+            configured = (
+                telegram_gmail_intents is not None
+                and telegram_bot is not None
+                and active_settings.gmail_enabled
+                and app.state.gmail_oauth.configured
+                and app.state.gmail_encryption_ready
+                and bool(active_settings.admin_public_origin)
+                and (actor.user_id, actor.chat_id)
+                in set(active_settings.telegram_allowed_actor_pair_list)
+            )
+            if not configured:
+                return (
+                    "Google bağlantısı için sunucu yöneticisi şu ayar adlarını kontrol etmeli: "
+                    "GMAIL_ENABLED, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET veya "
+                    "GMAIL_CLIENT_SECRET_FILE, GMAIL_OAUTH_REDIRECT_URI, APP_ENCRYPTION_KEY "
+                    "veya APP_ENCRYPTION_KEY_FILE, ADMIN_PUBLIC_ORIGIN. Değerleri Telegram'da "
+                    "paylaşmayın.",
+                    None,
+                )
+            try:
+                token = await telegram_gmail_intents.issue(actor.user_id, actor.chat_id)
+            except Exception:
+                logger.warning(
+                    "telegram_gmail_link_failed",
+                    extra={"diagnostic_category": "intent_storage"},
+                )
+                return "Google bağlantısı başlatılamadı. Daha sonra tekrar deneyin.", None
+            connect_url = (
+                f"{active_settings.admin_public_origin.rstrip('/')}/integrations/telegram/gmail/connect"
+                f"?intent={quote(token, safe='')}"
+            )
+            return (
+                "Google hesabınızı bağlamak için düğmeye dokunun; "
+                "izin yalnızca Gmail'i okumayı kapsar.",
+                connect_url,
+            )
+
+        async def start_telegram_gmail_oauth(intent: str) -> str | None:
+            if (
+                telegram_gmail_intents is None
+                or not active_settings.gmail_enabled
+                or not app.state.gmail_oauth.configured
+                or not app.state.gmail_encryption_ready
+            ):
+                return None
+            try:
+                actor_ciphertext = await telegram_gmail_intents.claim(intent)
+                if actor_ciphertext is None:
+                    return None
+                authorization_url = app.state.gmail_oauth.authorization_url()
+                state_values = parse_qs(urlsplit(authorization_url).query).get("state", [])
+                if len(state_values) != 1 or not await telegram_gmail_intents.bind(
+                    intent, state_values[0]
+                ):
+                    return None
+            except Exception:
+                logger.warning(
+                    "telegram_gmail_link_failed",
+                    extra={"diagnostic_category": "oauth_start"},
+                )
+                return None
+            return authorization_url
+
+        async def claim_telegram_gmail_oauth(oauth_state: str) -> str | None:
+            if telegram_gmail_intents is None:
+                return None
+            try:
+                status = await telegram_gmail_intents.claim_oauth_state(oauth_state)
+            except Exception:
+                logger.warning(
+                    "telegram_gmail_link_failed",
+                    extra={"diagnostic_category": "callback_claim"},
+                )
+                return "failed"
+            return None if status == "missing" else status
+
+        async def finish_telegram_gmail_oauth(
+            oauth_state: str, refresh_token: str | None
+        ) -> str | None:
+            if telegram_gmail_intents is None:
+                return None
+
+            async def notify(actor_pair: tuple[int, int], message: str) -> None:
+                if telegram_bot is None:
+                    return
+                try:
+                    await telegram_bot.send_message(actor_pair[1], TelegramMessage(message))
+                except TelegramDeliveryError:
+                    logger.warning(
+                        "telegram_gmail_link_failed",
+                        extra={"diagnostic_category": "completion_delivery"},
+                    )
+
+            try:
+                result = await telegram_gmail_intents.complete(
+                    oauth_state,
+                    refresh_token,
+                    set(active_settings.telegram_allowed_actor_pair_list),
+                    store_gmail_token,
+                    notify,
+                )
+            except Exception:
+                logger.warning(
+                    "telegram_gmail_link_failed",
+                    extra={"diagnostic_category": "link_state"},
+                )
+                return "failed"
+            if result == "storage_error":
+                logger.warning(
+                    "telegram_gmail_link_failed",
+                    extra={"diagnostic_category": "token_storage"},
+                )
+            return result
+
+        app.state.start_telegram_gmail_oauth = start_telegram_gmail_oauth
+        app.state.claim_telegram_gmail_oauth = claim_telegram_gmail_oauth
+        app.state.finish_telegram_gmail_oauth = finish_telegram_gmail_oauth
 
         async def queue_source_category_question(source_id: str) -> str:
             result = await send_source_category_question(
@@ -1391,6 +1522,7 @@ def create_app(
                 source_category_question_delivered=source_category_question_delivered,
                 daily=telegram_daily,
                 gmail_interval=telegram_gmail_interval,
+                gmail_connect=telegram_gmail_connect,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler
@@ -1609,6 +1741,7 @@ def create_app(
             )
     app.include_router(health_router)
     app.include_router(admin_router)
+    app.include_router(integrations_router)
     app.include_router(agent_router)
     app.include_router(telegram_router)
 

@@ -4,6 +4,8 @@ Kısa operasyon belleği; görev durumu PROGRESS.md, mevcut kapsam AGENT_BRIEF.m
 
 - Küçük ve bağlantılı işleri tek görevde tut; yalnız bağımsız büyük işleri paralelleştir. En fazla üç mevcut ajanı yeniden kullan.
 - Çalışan ajana sonraki bağımsız görevi erken gönderme; önce mevcut final raporunu al. Ek istekleri koordinatörde beklet, önceki iş bittikten sonra ayrı ata. Kişisel Gmail giriş sadeleştirmesi şu an beklemede.
+- OAuth turunda kod dosyaları değiştiği hâlde bağlam özetlemesi sonrası final eski `hazırım/görev bekliyorum` talimatına döndü, REPORT gönderilmedi. Kesin sonuç: teslim ve görev devamlılığı başarısız; özetleme kaynaklı görev kayması olası neden. Aktif brief'in başında tek güncel görev/durum olsun; eski hazırlık mesajını açıkça geçersiz kıl. Final gelmezse bir kez durum+dosya adlarını kontrol et; kod yok/tamamlandı varsayma. Yeniden başlatırken mevcut değişiklikleri korut ve test/final mesaj teslimini kabul koşulu yap.
+- Düzeltme işe yaradı: tek güncel uygulama talimatı ve finalin hem koordinatöre gönderilmesi hem sohbette verilmesi açıkça istendiğinde worker OAuth kodunu/testlerini tamamlayıp REPORT gönderdi. Yeni görev vermeden önce bu teslimi doğrula.
 - Atamada sonuç, sahip olunan alan, yasaklar ve kabul kanıtını belirt. Reviewer için yalnız değişen delta; önce kabul edilmiş alanları yeniden taratma.
 - Rutin işte kod ajanının odaklı testleri ve final kanıtı yeterli; otomatik kod → reviewer döngüsü kurma. Reviewer özel kullanıcı isteği, somut çözülemeyen risk veya önemli bağımsız inceleme ihtiyacında kullanılır.
 - Sentetik örnek gerçek üretim yolunu kaçırdı: RSS sıralama regresyonu doğrudan yeni işlenen girişleri kullanmalı. Tarihsiz kaynak ve beşten fazla aday önemli sınırlar.

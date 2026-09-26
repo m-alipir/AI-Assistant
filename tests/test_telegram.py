@@ -528,7 +528,7 @@ async def test_late_proactive_briefing_header_explains_delivery_delay() -> None:
 
     first_message = next(call for call in sent if call["method"] == "sendMessage")
     assert first_message["text"] == (
-        "Günlük Özet · 25.09.2026 14:08 · Hedef 14:00 idi; 8 dk 34 sn gecikme."
+        "Bugün öne çıkan yeni bir gelişme yok."
     )
 
 
@@ -616,15 +616,17 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
     messages = [call for call in sent if call["method"] == "sendMessage"]
     assert len(messages) == 3  # one digest plus the separate first-14-day question
     digest = str(messages[0]["text"])
-    assert digest.startswith("Günlük Özet · 25.09.2026 14:00")
-    assert "Takip\n1. İşe alım uzmanı cuma gününe kadar yanıt istedi." in digest
-    assert "Senin için\n2. NVIDIA geliştiriciler için yeni araçlar sundu." in digest
+    assert digest.startswith(
+        "Bugün şunlar oldu:\n\n1. İşe alım uzmanı cuma gününe kadar yanıt istedi."
+    )
+    assert "\n\n2. NVIDIA geliştiriciler için yeni araçlar sundu." in digest
     assert (
-        "Teknoloji\n3. Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta kullanıma açtı."
+        "\n\n3. Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta kullanıma açtı."
         in digest
     )
-    assert "Dünyada\n4. Waymo robotaksi hizmetini yeni şehirlere genişletiyor." in digest
-    assert "İzlemeye değer\n5. Görüşme robotik alanındaki son çalışmaları açıklıyor." in digest
+    assert "\n\n4. Waymo robotaksi hizmetini yeni şehirlere genişletiyor." in digest
+    assert "\n\n5. Görüşme robotik alanındaki son çalışmaları açıklıyor." in digest
+    assert "Günlük Özet" not in digest and "\nTeknoloji\n" not in digest
     assert "TITLE" not in digest and "SNIPPET" not in digest
     assert "Google Photos adds AI collages" not in digest
     assert "Neden önemli:" not in digest and "Yayın:" not in digest
@@ -663,13 +665,28 @@ def test_daily_briefing_hides_source_links_but_keeps_provenance_under_3500_chara
     assert "https://example.test/" not in text
 
 
+def test_daily_briefing_does_not_present_legacy_english_as_turkish() -> None:
+    text, visible = _render_daily_briefing(
+        None,
+        [{"summary": "A new factory is opening next year.", "original_text": True}],
+        None,
+    )
+
+    assert text == "Bugün öne çıkan yeni bir gelişme yok."
+    assert visible == []
+
+
 @pytest.mark.asyncio
 async def test_daily_command_sends_only_a_new_briefing_and_dedupes_duplicate_update() -> None:
     calls = 0
+    release = asyncio.Event()
+    started = asyncio.Event()
 
     async def daily() -> tuple[str, dict[str, object] | None]:
         nonlocal calls
         calls += 1
+        started.set()
+        await release.wait()
         return (
             "ok",
             {
@@ -689,17 +706,25 @@ async def test_daily_command_sends_only_a_new_briefing_and_dedupes_duplicate_upd
         if update_id in claimed:
             return False
         claimed.add(update_id)
-        return update_id == 200
+        return True
 
     handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
     update = TelegramUpdate.model_validate(_payload(200, text="/daily"))
     await handler.process_update(update)
     await handler.process_update(update)
+    assert sent[0]["text"] == "Günlük özet hazırlanıyor."
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(201, text="/daily")))
+    assert sent[1]["text"] == "Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."
+    assert calls == 1
+    release.set()
+    assert handler._daily_task is not None
+    await handler._daily_task
 
     messages = [call for call in sent if call["method"] == "sendMessage"]
     assert calls == 1
-    assert len(messages) == 1
-    assert "Yeni gelişme Türkçe özetlendi." in str(messages[0]["text"])
+    assert len(messages) == 3
+    assert "Yeni gelişme Türkçe özetlendi." in str(messages[-1]["text"])
 
 
 @pytest.mark.asyncio
@@ -712,15 +737,19 @@ async def test_daily_command_reports_busy_without_queueing_a_second_run() -> Non
 
     handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
     await handler.process_update(TelegramUpdate.model_validate(_payload(201, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
 
     assert [call["text"] for call in sent if call["method"] == "sendMessage"] == [
-        "Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."
+        "Günlük özet hazırlanıyor.",
+        "Başka bir işlem sürüyor. Biraz sonra tekrar deneyin.",
     ]
 
 
 @pytest.mark.asyncio
 async def test_gmail_command_reads_and_sets_bounded_interval_without_claiming_push() -> None:
     values: list[int | None] = []
+    actors: list[Actor] = []
 
     async def gmail(interval_minutes: int | None) -> str:
         values.append(interval_minutes)
@@ -730,19 +759,48 @@ async def test_gmail_command_reads_and_sets_bounded_interval_without_claiming_pu
             "anlık bildirim yok."
         )
 
+    async def connect(actor: Actor) -> tuple[str, str | None]:
+        actors.append(actor)
+        return "Google hesabınızı bağlamak için:", "https://example.test/connect?intent=abc"
+
     async def claim(*_: object) -> bool:
         return True
 
-    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, gmail_interval=gmail)
+    handler, sent, _ = _handler(
+        ask=_unexpected_ask, claim=claim, gmail_interval=gmail, gmail_connect=connect
+    )
     await handler.process_update(TelegramUpdate.model_validate(_payload(202, text="/gmail")))
     await handler.process_update(TelegramUpdate.model_validate(_payload(203, text="/gmail 90")))
     await handler.process_update(TelegramUpdate.model_validate(_payload(204, text="/gmail 14")))
 
     messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
-    assert values == [None, 90]
-    assert messages[0].endswith("anlık bildirim yok.")
+    assert values == [90]
+    assert actors == [Actor(user_id=42, chat_id=42)]
+    assert "Google hesabınızı bağlamak için:" in messages[0]
+    button = sent[0]["reply_markup"]["inline_keyboard"][0][0]
+    assert button == {
+        "text": "Google ile bağla",
+        "url": "https://example.test/connect?intent=abc",
+    }
     assert "90" in messages[1]
     assert "15 ile 1440" in messages[2]
+
+
+@pytest.mark.asyncio
+async def test_gmail_command_reports_configuration_names_without_requesting_values() -> None:
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(205, text="/gmail")))
+
+    message = str(next(call for call in sent if call["method"] == "sendMessage")["text"])
+    assert "GMAIL_CLIENT_ID" in message
+    assert "GMAIL_CLIENT_SECRET_FILE" in message
+    assert "APP_ENCRYPTION_KEY_FILE" in message
+    assert "ADMIN_PUBLIC_ORIGIN" in message
+    assert "GMAIL_CLIENT_SECRET=" not in message
+    assert "değerleri telegram'da paylaşmayın" in message.casefold()
 
 
 def test_daily_briefing_shortens_a_long_single_sentence_at_a_word_boundary() -> None:
@@ -984,6 +1042,7 @@ def _handler(
     claim: Callable[..., Awaitable[bool]],
     daily: Callable[[], Awaitable[tuple[str, dict[str, object] | None]]] | None = None,
     gmail_interval: Callable[[int | None], Awaitable[str]] | None = None,
+    gmail_connect: Callable[[Actor], Awaitable[tuple[str, str | None]]] | None = None,
 ) -> tuple[TelegramWebhookHandler, list[dict[str, object]], list[tuple[int, str]]]:
     sent: list[dict[str, object]] = []
     finished: list[tuple[int, str]] = []
@@ -1011,6 +1070,7 @@ def _handler(
         status=status,
         daily=daily,
         gmail_interval=gmail_interval,
+        gmail_connect=gmail_connect,
     )
     handler._claim_update = claim  # type: ignore[method-assign]
 
