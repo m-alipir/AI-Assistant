@@ -7,6 +7,7 @@ import pytest
 import app.jobs.scheduler as scheduler_module
 from app.jobs.scheduler import (
     DailyScheduler,
+    GmailPollingScheduler,
     RuntimeRunCoordinator,
     _safe_summary,
     format_failure_summary,
@@ -15,13 +16,13 @@ from app.jobs.scheduler import (
 
 @pytest.mark.asyncio
 async def test_opt_in_scheduler_claims_day_once_without_external_calls() -> None:
-    claims: set[date] = set()
+    claims: set[datetime] = set()
     calls: list[str] = []
 
-    async def claim(day: date) -> bool:
-        if day in claims:
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
             return False
-        claims.add(day)
+        claims.add(slot_at)
         return True
 
     async def run(_: datetime) -> dict[str, object]:
@@ -38,8 +39,8 @@ async def test_opt_in_scheduler_claims_day_once_without_external_calls() -> None
 
 @pytest.mark.asyncio
 async def test_disabled_scheduler_never_claims_or_runs() -> None:
-    async def unexpected_claim(day: date) -> bool:
-        raise AssertionError("disabled scheduler must not claim a day")
+    async def unexpected_claim(slot_at: datetime) -> bool:
+        raise AssertionError("disabled scheduler must not claim a slot")
 
     async def unexpected_run(_: datetime) -> dict[str, object]:
         raise AssertionError("disabled scheduler must not run")
@@ -62,21 +63,21 @@ async def test_scheduler_can_apply_an_operator_preference_when_idle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_restart_cannot_claim_a_second_istanbul_local_day_and_records_safe_summary() -> None:
-    claims: set[date] = set()
-    records: list[tuple[date, str, str | None]] = []
+async def test_restart_cannot_claim_the_same_slot_and_records_safe_summary() -> None:
+    claims: set[datetime] = set()
+    records: list[tuple[datetime, str, str | None]] = []
 
-    async def claim(day: date) -> bool:
-        if day in claims:
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
             return False
-        claims.add(day)
+        claims.add(slot_at)
         return True
 
     async def run(_: datetime) -> dict[str, object]:
         return {"status": "completed", "counts": {"processed": 0, "llm_calls": 0}}
 
-    async def record(day: date, status: str, summary: str | None) -> None:
-        records.append((day, status, summary))
+    async def record(slot_at: datetime, status: str, summary: str | None) -> None:
+        records.append((slot_at, status, summary))
 
     due = datetime(2026, 9, 7, 4, 45, tzinfo=UTC)
     first = DailyScheduler(True, "08:00", "Europe/Istanbul", run, claim, record)
@@ -85,8 +86,111 @@ async def test_restart_cannot_claim_a_second_istanbul_local_day_and_records_safe
 
     assert await first.run_due(due, target)
     assert not await restarted.run_due(due, target)
-    assert restarted.state.last_skip_reason == "already_claimed_for_local_day"
-    assert records == [(date(2026, 9, 7), "completed", "processed=0; llm_calls=0")]
+    assert restarted.state.last_skip_reason == "already_claimed_for_delivery_slot"
+    assert records == [(target.astimezone(UTC), "completed", "processed=0; llm_calls=0")]
+
+
+@pytest.mark.asyncio
+async def test_changed_time_can_claim_a_second_delivery_slot_on_the_same_local_day() -> None:
+    claims: set[datetime] = set()
+    targets: list[datetime] = []
+
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
+            return False
+        claims.add(slot_at)
+        return True
+
+    async def run(target: datetime) -> dict[str, object]:
+        targets.append(target)
+        return {"status": "completed"}
+
+    first = DailyScheduler(True, "14:00", "Europe/Istanbul", run, claim)
+    second = DailyScheduler(True, "22:00", "Europe/Istanbul", run, claim)
+    first_target = datetime(2026, 9, 26, 14, 0, tzinfo=first._timezone)
+    second_target = datetime(2026, 9, 26, 22, 0, tzinfo=second._timezone)
+
+    assert await first.run_due(first_target - timedelta(minutes=15), first_target)
+    assert await second.run_due(second_target - timedelta(minutes=15), second_target)
+    assert targets == [first_target, second_target]
+    assert len(claims) == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_instances_claim_the_same_delivery_slot_once() -> None:
+    claims: set[datetime] = set()
+    calls: list[datetime] = []
+
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
+            return False
+        claims.add(slot_at)
+        await asyncio.sleep(0)
+        return True
+
+    async def run(target: datetime) -> dict[str, object]:
+        calls.append(target)
+        return {"status": "completed"}
+
+    scheduler_a = DailyScheduler(True, "22:00", "Europe/Istanbul", run, claim)
+    scheduler_b = DailyScheduler(True, "22:00", "Europe/Istanbul", run, claim)
+    target = datetime(2026, 9, 26, 22, 0, tzinfo=scheduler_a._timezone)
+
+    results = await asyncio.gather(
+        scheduler_a.run_due(target - timedelta(minutes=15), target),
+        scheduler_b.run_due(target - timedelta(minutes=15), target),
+    )
+
+    assert results.count(True) == 1
+    assert results.count(False) == 1
+    assert calls == [target]
+
+
+@pytest.mark.asyncio
+async def test_gmail_poll_scheduler_waits_interval_and_applies_updates_after_current_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_wait_for = asyncio.wait_for
+    timeouts: list[float] = []
+    calls = 0
+    scheduler: GmailPollingScheduler
+
+    class StopLoop(Exception):
+        pass
+
+    async def fake_wait_for(awaitable: object, *, timeout: float) -> None:
+        timeouts.append(timeout)
+        if hasattr(awaitable, "close"):
+            awaitable.close()  # type: ignore[attr-defined]
+        if len(timeouts) == 1:
+            raise TimeoutError
+        raise StopLoop
+
+    async def run() -> None:
+        nonlocal calls
+        calls += 1
+        await scheduler.configure(120)
+
+    monkeypatch.setattr(scheduler_module.asyncio, "wait_for", fake_wait_for)
+    scheduler = GmailPollingScheduler(True, 60, run)
+    scheduler.start()
+
+    with pytest.raises(StopLoop):
+        await real_wait_for(scheduler._task, timeout=0.5)
+
+    assert calls == 1
+    assert timeouts == [3600, 7200]
+
+
+@pytest.mark.asyncio
+async def test_disabled_gmail_poll_scheduler_never_calls_gmail() -> None:
+    async def unexpected_run() -> None:
+        raise AssertionError("disabled Gmail polling must not call Gmail")
+
+    scheduler = GmailPollingScheduler(False, 60, unexpected_run)
+    scheduler.start()
+
+    assert scheduler._task is None
 
 
 @pytest.mark.asyncio
@@ -106,15 +210,15 @@ async def test_loop_retries_early_wakeup_without_skipping_consecutive_local_days
             cls.current += timedelta(microseconds=1)
             return current.astimezone(tz) if tz else current.replace(tzinfo=None)
 
-    claims: set[date] = set()
+    claims: set[datetime] = set()
     runs: list[date] = []
     sleeps = 0
     daily_sleeps = 0
 
-    async def claim(day: date) -> bool:
-        if day in claims:
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
             return False
-        claims.add(day)
+        claims.add(slot_at)
         return True
 
     async def run(target: datetime) -> dict[str, object]:
@@ -140,13 +244,13 @@ async def test_loop_retries_early_wakeup_without_skipping_consecutive_local_days
     monkeypatch.setattr(scheduler_module, "datetime", ClockDateTime)
     monkeypatch.setattr(scheduler_module.asyncio, "sleep", fake_sleep)
     scheduler = DailyScheduler(True, "14:00", "Europe/Istanbul", run, claim)
-    scheduler.state.last_skip_reason = "already_claimed_for_local_day"
+    scheduler.state.last_skip_reason = "already_claimed_for_delivery_slot"
 
     with pytest.raises(StopLoop):
         await scheduler._loop()
 
     assert runs == [first_due.date(), second_due.date()]
-    assert claims == set(runs)
+    assert [slot.date() for slot in sorted(claims)] == runs
 
 
 def test_next_run_uses_istanbul_local_clock() -> None:
@@ -273,13 +377,13 @@ def test_budget_exhaustion_alone_does_not_create_a_failure_warning() -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_claim_uses_target_date_when_preparation_crosses_midnight() -> None:
-    claims: list[date] = []
+    claims: list[datetime] = []
     targets: list[datetime] = []
 
-    async def claim(day: date) -> bool:
-        if day in claims:
+    async def claim(slot_at: datetime) -> bool:
+        if slot_at in claims:
             return False
-        claims.append(day)
+        claims.append(slot_at)
         return True
 
     async def run(target: datetime) -> dict[str, object]:
@@ -294,7 +398,7 @@ async def test_scheduler_claim_uses_target_date_when_preparation_crosses_midnigh
     assert not await scheduler.run_due(before_prep)
     assert await scheduler.run_due(prep, target)
     assert not await scheduler.run_due(prep, target)
-    assert claims == [date(2026, 9, 25)]
+    assert claims == [target.astimezone(UTC)]
     assert targets == [target]
 
 
@@ -350,5 +454,5 @@ async def _unused_scheduled_run(_: datetime) -> dict[str, object]:
     raise AssertionError("unexpected scheduled runtime call")
 
 
-async def _unused_claim(_: date) -> bool:
+async def _unused_claim(_: datetime) -> bool:
     raise AssertionError("unexpected day claim")

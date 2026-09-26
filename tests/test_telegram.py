@@ -628,7 +628,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
     assert "TITLE" not in digest and "SNIPPET" not in digest
     assert "Google Photos adds AI collages" not in digest
     assert "Neden önemli:" not in digest and "Yayın:" not in digest
-    assert "https://example.test/photos" in digest
+    assert "https://example.test/photos" not in digest
     assert "http://example.test/unsafe" not in digest
     assert "https://127.0.0.1/private" not in digest
     assert len(digest) <= 3500
@@ -645,7 +645,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
     )
 
 
-def test_daily_briefing_keeps_long_safe_sources_under_3500_characters() -> None:
+def test_daily_briefing_hides_source_links_but_keeps_provenance_under_3500_characters() -> None:
     items = [
         {
             "section": "Tech & Industry",
@@ -658,8 +658,91 @@ def test_daily_briefing_keeps_long_safe_sources_under_3500_characters() -> None:
     text, visible = _render_daily_briefing(None, items, None)
 
     assert len(text) <= 3500
-    assert 1 <= len(visible) < len(items)
-    assert all(item["source_links"][0] in text for item in visible)
+    assert len(visible) == len(items)
+    assert all(item["source_links"] for item in visible)
+    assert "https://example.test/" not in text
+
+
+@pytest.mark.asyncio
+async def test_daily_command_sends_only_a_new_briefing_and_dedupes_duplicate_update() -> None:
+    calls = 0
+
+    async def daily() -> tuple[str, dict[str, object] | None]:
+        nonlocal calls
+        calls += 1
+        return (
+            "ok",
+            {
+                "id": "",
+                "items": [
+                    {
+                        "section": "Tech & Industry",
+                        "summary": "Yeni gelişme Türkçe özetlendi.",
+                    }
+                ],
+            },
+        )
+
+    claimed: set[int] = set()
+
+    async def claim(update_id: int, *_: object) -> bool:
+        if update_id in claimed:
+            return False
+        claimed.add(update_id)
+        return update_id == 200
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    update = TelegramUpdate.model_validate(_payload(200, text="/daily"))
+    await handler.process_update(update)
+    await handler.process_update(update)
+
+    messages = [call for call in sent if call["method"] == "sendMessage"]
+    assert calls == 1
+    assert len(messages) == 1
+    assert "Yeni gelişme Türkçe özetlendi." in str(messages[0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_daily_command_reports_busy_without_queueing_a_second_run() -> None:
+    async def daily() -> tuple[str, dict[str, object] | None]:
+        return "busy", None
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(201, text="/daily")))
+
+    assert [call["text"] for call in sent if call["method"] == "sendMessage"] == [
+        "Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gmail_command_reads_and_sets_bounded_interval_without_claiming_push() -> None:
+    values: list[int | None] = []
+
+    async def gmail(interval_minutes: int | None) -> str:
+        values.append(interval_minutes)
+        interval = interval_minutes or 60
+        return (
+            f"Gmail salt okunur olarak {interval} dakikada bir kontrol ediliyor; "
+            "anlık bildirim yok."
+        )
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, gmail_interval=gmail)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(202, text="/gmail")))
+    await handler.process_update(TelegramUpdate.model_validate(_payload(203, text="/gmail 90")))
+    await handler.process_update(TelegramUpdate.model_validate(_payload(204, text="/gmail 14")))
+
+    messages = [str(call["text"]) for call in sent if call["method"] == "sendMessage"]
+    assert values == [None, 90]
+    assert messages[0].endswith("anlık bildirim yok.")
+    assert "90" in messages[1]
+    assert "15 ile 1440" in messages[2]
 
 
 def test_daily_briefing_shortens_a_long_single_sentence_at_a_word_boundary() -> None:
@@ -899,6 +982,8 @@ def _handler(
     *,
     ask: Callable[..., Awaitable[dict[str, object]]],
     claim: Callable[..., Awaitable[bool]],
+    daily: Callable[[], Awaitable[tuple[str, dict[str, object] | None]]] | None = None,
+    gmail_interval: Callable[[int | None], Awaitable[str]] | None = None,
 ) -> tuple[TelegramWebhookHandler, list[dict[str, object]], list[tuple[int, str]]]:
     sent: list[dict[str, object]] = []
     finished: list[tuple[int, str]] = []
@@ -924,6 +1009,8 @@ def _handler(
         search=search,  # type: ignore[arg-type]
         ask=ask,  # type: ignore[arg-type]
         status=status,
+        daily=daily,
+        gmail_interval=gmail_interval,
     )
     handler._claim_update = claim  # type: ignore[method-assign]
 
@@ -932,6 +1019,10 @@ def _handler(
 
     handler._finish_update = finish  # type: ignore[method-assign]
     return handler, sent, finished
+
+
+async def _unexpected_ask(_: object) -> dict[str, object]:
+    raise AssertionError("daily and Gmail control commands must not call Ask")
 
 
 def _client(handler: TelegramWebhookHandler) -> TestClient:

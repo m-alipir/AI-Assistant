@@ -1,5 +1,21 @@
 # Active brief — compact Telegram summary repair
 
+## Current assignment — delivery diagnosis and Telegram controls
+
+- Acceptance complete: disposable PostgreSQL upgrade/backfill/history, concurrency/slot identity and Gmail interval constraints passed. Previous 92 focused tests passed. No remaining local blocker; code not committed/pushed/deployed. Next production action must migrate to 0029 before new app startup, preserving server overrides and .env. Do not start deferred Google-login task automatically.
+
+- Implementation report received: 92 focused tests pass, additive migration 0029 added. Remaining acceptance: disposable local PostgreSQL migration/history/slot-idempotency verification by the same Fixer, no automatic reviewer. Production deployment remains pending; personal Google login still deferred.
+
+- Sequencing correction: finish this assignment before assigning personal Google-login simplification. The latter is deferred; do not investigate or implement it during this task.
+
+- User-approved scheduling decision: replace coarse once-per-local-day claim with idempotency per actual scheduled delivery instant. Different future time on the same day is eligible; same slot after restart/concurrent attempts remains single. Preserve existing records and automatic duplicate protection; any schema adjustment must be additive and reported for deployment. Manual `/daily` remains distinct and bounded.
+
+- Diagnose absent 22:00 delivery at 22:07: configured effective schedule (DB override versus env), timezone, durable daily claim, preparation state and notification delivery. Do not assume source count is the cause. Production evidence only safe status/counters and approved configuration values; no mail bodies, tokens or raw logs.
+- Add `/daily` to request a fresh daily briefing using existing shared orchestration, bounded budget, deduplication and busy/claim safeguards; distinguish it from reading the latest stored `/ozet`.
+- Default Gmail read-only polling to hourly; `/gmail` shows/sets a validated polling interval using existing persisted preferences and scheduler facilities. Polling means detection at the next interval, not instant push.
+- Do not display source links in the daily Telegram summary; retain internal provenance. User originally deferred this to the next fix, which this assignment now prepares.
+- One reused Fixer owns these related scheduler/Telegram changes. Coordinator owns docs. Focused offline fakes only; production diagnosis does not authorize ingestion/provider spending, mailbox reads, schedule changes, commit/push or deployment. Return evidence, checks, decisions and exact safe diagnostics if further authorization is needed. No automatic reviewer pass.
+
 Date: 2026-09-26. `PROGRESS.md` owns status. Fixer reported the narrow repair ready; independent
 review is running in the existing Luna high reviewer task. No production acceptance is claimed.
 

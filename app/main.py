@@ -40,7 +40,7 @@ from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
 from app.config.models import load_model_settings
-from app.config.onboarding import OnboardingRepository
+from app.config.onboarding import GmailPollingPreference, OnboardingRepository
 from app.config.settings import Settings, get_settings
 from app.config.source_repository import ManagedSourceCreate, SourceRepository
 from app.config.sources import SourceCatalog, YouTubeSourceConfig, load_source_catalog
@@ -50,11 +50,12 @@ from app.email.gmail_api import GmailApiClient
 from app.email.oauth import GmailOAuth
 from app.ingestion.schemas import SourceItem, SourceKind, TimestampConfidence
 from app.ingestion.source_health import database_source_health
-from app.jobs.gmail_runtime import GmailAccountRecord, GmailRuntimeJob
+from app.jobs.gmail_runtime import GmailAccountRecord, GmailRun, GmailRuntimeJob
 from app.jobs.retention import RetentionJob, RetentionScheduler
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
 from app.jobs.scheduler import (
     DailyScheduler,
+    GmailPollingScheduler,
     RuntimeRunCoordinator,
     format_failure_summary,
     wait_until,
@@ -145,13 +146,19 @@ def create_app(
                 await repository.bootstrap_yaml(seed)
         scheduler = getattr(lifespan_app.state, "scheduler", None)
         preferences = getattr(lifespan_app.state, "onboarding_repository", None)
+        gmail_scheduler = getattr(lifespan_app.state, "gmail_polling_scheduler", None)
         if scheduler and preferences:
             preference = await preferences.scheduler_preference()
             if preference is not None:
                 await scheduler.configure(preference.enabled, preference.daily_time)
+        if gmail_scheduler and preferences:
+            preference = await preferences.gmail_polling_preference()
+            await gmail_scheduler.configure(preference.interval_minutes)
         retention_scheduler = getattr(lifespan_app.state, "retention_scheduler", None)
         if scheduler:
             scheduler.start()
+        if gmail_scheduler:
+            gmail_scheduler.start()
         if retention_scheduler:
             retention_scheduler.start()
         if active_settings.telegram_enabled and active_settings.telegram_mode == "webhook":
@@ -174,6 +181,8 @@ def create_app(
             await retention_scheduler.stop()
         if scheduler:
             await scheduler.stop()
+        if gmail_scheduler:
+            await gmail_scheduler.stop()
         if lifespan_app.state.engine is not None:
             await lifespan_app.state.engine.dispose()
 
@@ -597,6 +606,16 @@ def create_app(
         async def fetch_gmail_account(account: GmailAccountRecord, refresh_token: str) -> object:
             return await gmail_client.sync(refresh_token, account.history_id)
 
+        def create_gmail_job() -> GmailRuntimeJob:
+            return GmailRuntimeJob(
+                gmail_accounts,
+                cipher.reveal if cipher else _missing_gmail_cipher,
+                fetch_gmail_account,
+                known_gmail_message,
+                persist_gmail_classification,
+                update_gmail_checkpoint,
+            )
+
         async def latest_briefing_id() -> str | None:
             async with sessions() as session:
                 value = await session.scalar(
@@ -756,8 +775,10 @@ def create_app(
 
         async def run_rss_now(
             delivery_target_at: datetime | None = None,
+            *,
+            deliver_notifications: bool = True,
         ) -> dict[str, object]:
-            """Run independently bounded Gmail, YouTube, and RSS paths in one briefing cycle."""
+            """Build a briefing from persisted Gmail items, YouTube, and RSS."""
             previous_briefing_id = await latest_briefing_id()
             model_settings = load_model_settings(active_settings.admin_models_path)
             router = Router(
@@ -804,15 +825,8 @@ def create_app(
                 max_concurrent_fetches=active_settings.rss_max_concurrent_fetches,
                 source_repository=source_repository,
             )
-            gmail_job = GmailRuntimeJob(
-                gmail_accounts,
-                cipher.reveal if cipher else _missing_gmail_cipher,
-                fetch_gmail_account,
-                known_gmail_message,
-                persist_gmail_classification,
-                update_gmail_checkpoint,
-            )
-            gmail_run = await gmail_job.run()
+            # Gmail has its own configured poll interval; briefing runs only consume its outbox.
+            gmail_run = GmailRun()
             youtube_call_start = len(router.calls)
             youtube_run = await YouTubeRuntimeJob(
                 catalog,
@@ -885,9 +899,13 @@ def create_app(
             created_briefing_id = await latest_briefing_id()
             if created_briefing_id == previous_briefing_id:
                 created_briefing_id = None
-            result["notifications"] = await deliver_run_notifications(
-                result, gmail_run.action_items, created_briefing_id, delivery_target_at
-            )
+            result["briefing_id"] = created_briefing_id
+            if deliver_notifications:
+                result["notifications"] = await deliver_run_notifications(
+                    result, gmail_run.action_items, created_briefing_id, delivery_target_at
+                )
+            else:
+                result["notifications"] = []
             return result
 
         run_coordinator = RuntimeRunCoordinator()
@@ -902,6 +920,15 @@ def create_app(
 
         app.state.run_coordinator = run_coordinator
         app.state.run_callback = run_manual_now
+
+        async def run_gmail_poll() -> None:
+            async def poll() -> dict[str, object]:
+                result = await create_gmail_job().run()
+                return result.response(active_settings.gmail_enabled)
+
+            await run_coordinator.run("gmail", poll)
+
+        app.state.run_gmail_poll_callback = run_gmail_poll
 
         async def ask_knowledge(filters: SearchFilters) -> dict[str, object]:
             """Search compact persisted memory and optionally synthesize only its top candidates."""
@@ -1307,6 +1334,44 @@ def create_app(
             )
 
         if telegram_bot is not None:
+            async def telegram_daily() -> tuple[str, dict[str, object] | None]:
+                result = await run_coordinator.run(
+                    "telegram_daily",
+                    lambda: run_rss_now(deliver_notifications=False),
+                )
+                if result.get("skip_reason") == "another_run_active":
+                    return "busy", None
+                briefing_id = result.get("briefing_id")
+                if not isinstance(briefing_id, str) or not briefing_id:
+                    return "unavailable", None
+                try:
+                    return "ok", await agent_briefing_detail(briefing_id)
+                except LookupError:
+                    return "unavailable", None
+
+            async def telegram_gmail_interval(interval: int | None) -> str:
+                repository = app.state.onboarding_repository
+                scheduler = app.state.gmail_polling_scheduler
+                if interval is None:
+                    preference = await repository.gmail_polling_preference()
+                    if not active_settings.gmail_enabled:
+                        return (
+                            "Gmail eşitlemesi kapalı. Kayıtlı aralık: "
+                            f"{preference.interval_minutes} dakika."
+                        )
+                    return (
+                        f"Gmail, {preference.interval_minutes} dakikada bir kontrol ediliyor. "
+                        "Anlık bildirim gönderilmez."
+                    )
+                preference = GmailPollingPreference(interval_minutes=interval)
+                await repository.save_gmail_polling_preference(preference)
+                await scheduler.configure(preference.interval_minutes)
+                return (
+                    f"Gmail kontrol aralığı {preference.interval_minutes} dakika "
+                    "olarak kaydedildi. "
+                    "Yeni aralık sonraki kontrolden itibaren uygulanır; anlık eşitleme yapılmaz."
+                )
+
             app.state.telegram_command_handler = TelegramWebhookHandler(
                 active_settings,
                 sessions,
@@ -1324,6 +1389,8 @@ def create_app(
                 source_repository=source_repository,
                 queue_source_category_question=queue_source_category_question,
                 source_category_question_delivered=source_category_question_delivered,
+                daily=telegram_daily,
+                gmail_interval=telegram_gmail_interval,
             )
             if active_settings.telegram_mode == "webhook":
                 app.state.telegram_webhook_handler = app.state.telegram_command_handler
@@ -1492,26 +1559,29 @@ def create_app(
 
         app.state.retry_blocked_rss_callback = retry_blocked_rss
 
-        async def claim_scheduled_day(run_date: date) -> bool:
+        async def claim_scheduled_slot(delivery_at: datetime) -> bool:
+            run_date = delivery_at.astimezone(ZoneInfo(active_settings.app_timezone)).date()
             async with sessions.begin() as session:
                 result = await session.execute(
                     text(
-                        "INSERT INTO scheduled_runs (run_date, status) "
-                        "VALUES (:run_date, 'started') "
-                        "ON CONFLICT DO NOTHING RETURNING run_date"
+                        "INSERT INTO scheduled_run_slots (delivery_at, run_date, status) "
+                        "VALUES (:delivery_at, :run_date, 'started') "
+                        "ON CONFLICT DO NOTHING RETURNING delivery_at"
                     ),
-                    {"run_date": run_date},
+                    {"delivery_at": delivery_at, "run_date": run_date},
                 )
             return result.scalar_one_or_none() is not None
 
-        async def record_scheduled_result(run_date: date, status: str, summary: str | None) -> None:
+        async def record_scheduled_result(
+            delivery_at: datetime, status: str, summary: str | None
+        ) -> None:
             async with sessions.begin() as session:
                 await session.execute(
                     text(
-                        "UPDATE scheduled_runs SET status = :status, message = :message, "
-                        "completed_at = now() WHERE run_date = :run_date"
+                        "UPDATE scheduled_run_slots SET status = :status, message = :message, "
+                        "completed_at = now() WHERE delivery_at = :delivery_at"
                     ),
-                    {"run_date": run_date, "status": status, "message": summary},
+                    {"delivery_at": delivery_at, "status": status, "message": summary},
                 )
 
         app.state.scheduler = DailyScheduler(
@@ -1519,9 +1589,15 @@ def create_app(
             active_settings.scheduler_daily_time,
             active_settings.app_timezone,
             run_scheduled_now,
-            claim_scheduled_day,
+            claim_scheduled_slot,
             record_scheduled_result,
         )
+        gmail_polling_scheduler = GmailPollingScheduler(
+            active_settings.gmail_enabled,
+            60,
+            run_gmail_poll,
+        )
+        app.state.gmail_polling_scheduler = gmail_polling_scheduler
         if active_settings.retention_enabled:
             app.state.retention_scheduler = RetentionScheduler(
                 RetentionJob(

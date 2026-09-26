@@ -3,6 +3,7 @@
 Kısa operasyon belleği; görev durumu PROGRESS.md, mevcut kapsam AGENT_BRIEF.md içinde tutulur.
 
 - Küçük ve bağlantılı işleri tek görevde tut; yalnız bağımsız büyük işleri paralelleştir. En fazla üç mevcut ajanı yeniden kullan.
+- Çalışan ajana sonraki bağımsız görevi erken gönderme; önce mevcut final raporunu al. Ek istekleri koordinatörde beklet, önceki iş bittikten sonra ayrı ata. Kişisel Gmail giriş sadeleştirmesi şu an beklemede.
 - Atamada sonuç, sahip olunan alan, yasaklar ve kabul kanıtını belirt. Reviewer için yalnız değişen delta; önce kabul edilmiş alanları yeniden taratma.
 - Rutin işte kod ajanının odaklı testleri ve final kanıtı yeterli; otomatik kod → reviewer döngüsü kurma. Reviewer özel kullanıcı isteği, somut çözülemeyen risk veya önemli bağımsız inceleme ihtiyacında kullanılır.
 - Sentetik örnek gerçek üretim yolunu kaçırdı: RSS sıralama regresyonu doğrudan yeni işlenen girişleri kullanmalı. Tarihsiz kaynak ve beşten fazla aday önemli sınırlar.

@@ -380,7 +380,14 @@ async def _database_details(request: Request) -> dict[str, Any]:
                     await connection.execute(
                         text(
                             "SELECT run_date, started_at, completed_at, status, message "
-                            "FROM scheduled_runs ORDER BY run_date DESC LIMIT 10"
+                            "FROM (SELECT run_date, started_at, completed_at, status, message "
+                            "FROM scheduled_run_slots UNION ALL "
+                            "SELECT old.run_date, old.started_at, old.completed_at, "
+                            "old.status, old.message FROM scheduled_runs old "
+                            "WHERE NOT EXISTS (SELECT 1 FROM scheduled_run_slots current "
+                            "WHERE current.run_date = old.run_date "
+                            "AND current.started_at = old.started_at)) history "
+                            "ORDER BY started_at DESC LIMIT 10"
                         )
                     )
                 )

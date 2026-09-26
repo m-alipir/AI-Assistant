@@ -95,6 +95,8 @@ SourceCategoryQuestionDeliveredCallback = Callable[[str, int], Awaitable[bool]]
 DisableSourceCallback = Callable[[str], Awaitable[str]]
 InterestsCallback = Callable[[], Awaitable[str]]
 SetInterestCallback = Callable[[str, bool], Awaitable[str]]
+DailyCallback = Callable[[], Awaitable[tuple[str, dict[str, object] | None]]]
+GmailPollingCallback = Callable[[int | None], Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,8 @@ class TelegramWebhookHandler:
         source_repository: SourceRepository | None = None,
         queue_source_category_question: QueueSourceCategoryQuestionCallback | None = None,
         source_category_question_delivered: SourceCategoryQuestionDeliveredCallback | None = None,
+        daily: DailyCallback | None = None,
+        gmail_interval: GmailPollingCallback | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
@@ -154,6 +158,8 @@ class TelegramWebhookHandler:
         self._source_repository = source_repository
         self._queue_source_category_question = queue_source_category_question
         self._source_category_question_delivered = source_category_question_delivered
+        self._daily = daily
+        self._gmail_interval = gmail_interval
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
         self._global = ProcessRateLimiter(settings.telegram_global_rate_limit_per_minute)
         self._semaphore = asyncio.Semaphore(settings.telegram_max_concurrent_commands)
@@ -249,6 +255,48 @@ class TelegramWebhookHandler:
             return
         if command == "ozet":
             await self._send_briefing(actor)
+            return
+        if command == "daily":
+            if self._daily is None:
+                await self._bot.send_message(
+                    actor.chat_id, TelegramMessage("Günlük özet şu anda çalıştırılamıyor.")
+                )
+                return
+            status, briefing = await self._daily()
+            if status == "busy":
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage("Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."),
+                )
+            elif briefing is None:
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage("Yeni özet oluşturulamadı. Daha sonra tekrar deneyin."),
+                )
+            else:
+                await self._send_briefing(actor, briefing)
+            return
+        if command == "gmail":
+            if self._gmail_interval is None:
+                await self._bot.send_message(
+                    actor.chat_id, TelegramMessage("Gmail ayarı şu anda alınamıyor.")
+                )
+                return
+            interval: int | None = None
+            if argument:
+                if not argument.isascii() or not argument.isdecimal():
+                    await self._bot.send_message(
+                        actor.chat_id, TelegramMessage("Kullanım: /gmail [15–1440 dakika]")
+                    )
+                    return
+                interval = int(argument)
+                if not 15 <= interval <= 1440:
+                    await self._bot.send_message(
+                        actor.chat_id, TelegramMessage("Aralık 15 ile 1440 dakika arasında olmalı.")
+                    )
+                    return
+            response = await self._gmail_interval(interval)
+            await self._bot.send_message(actor.chat_id, TelegramMessage(response))
             return
         if command == "ara":
             await self._send_search(actor, argument, self._search, "Arama", "ara")
@@ -849,6 +897,8 @@ def _command(value: str | None, maximum: int) -> tuple[str, str] | None:
         "start",
         "yardim",
         "ozet",
+        "daily",
+        "gmail",
         "gecmis",
         "ara",
         "sor",
@@ -922,19 +972,14 @@ def _render_daily_briefing(
         section = _briefing_section(item)
         label = labels.get(section, "Öne çıkanlar")
         body = _briefing_summary(item)
-        links = safe_links(item.get("source_links"))
-        link = links[0] if links else ""
         number = len(visible) + 1
         heading = [label] if label != current_section else []
-        source_line = f"  {link}" if link else ""
         current_length = len("\n".join(lines + heading))
-        budget = 3500 - current_length - len(f"\n{number}. \n{source_line}")
+        budget = 3500 - current_length - len(f"\n{number}. ")
         if budget < 36:
             break
         body = _fit_briefing_sentence(body, min(420, budget))
         block = heading + [f"{number}. {body}"]
-        if source_line:
-            block.append(source_line)
         if len("\n".join(lines + block)) > 3500:
             break
         lines.extend(block)
@@ -1067,7 +1112,9 @@ def _source_error_text(error: Exception) -> str:
 def _help_text() -> str:
     return (
         "Kişisel bilgi asistanı\n"
-        "/ozet — son özet\n/ara <konu> — hafızada ara\n"
+        "/daily — yeni günlük özet oluştur\n/ozet — son özet\n"
+        "/gmail [15–1440 dakika] — Gmail kontrol aralığı\n"
+        "/ara <konu> — hafızada ara\n"
         "/sor <soru> — kaynaklı soru sor\n/durum — sistem durumu\n"
         "/kaynaklar — kaynakları göster\n/kaynak <kimlik> — kaynak durumu\n"
         "/kaynak_ekle rss|youtube <adres> [ad]\n"

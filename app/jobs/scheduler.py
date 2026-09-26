@@ -1,16 +1,18 @@
-"""Opt-in daily scheduler with durable per-day claims."""
+"""Opt-in daily scheduler with durable delivery-slot claims."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 RunCallback = Callable[[], Awaitable[dict[str, object]]]
 ScheduledRunCallback = Callable[[datetime], Awaitable[dict[str, object]]]
-ClaimDay = Callable[[date], Awaitable[bool]]
-RecordResult = Callable[[date, str, str | None], Awaitable[None]]
+ClaimSlot = Callable[[datetime], Awaitable[bool]]
+RecordResult = Callable[[datetime, str, str | None], Awaitable[None]]
 PREPARATION_LEAD = timedelta(minutes=15)
+logger = logging.getLogger(__name__)
 
 SAFE_FAILURE_CATEGORIES = {
     "rss": (
@@ -90,7 +92,7 @@ class DailyScheduler:
         daily_time: str,
         timezone: str,
         run: ScheduledRunCallback,
-        claim: ClaimDay,
+        claim: ClaimSlot,
         record_result: RecordResult | None = None,
     ) -> None:
         self._timezone = ZoneInfo(timezone)
@@ -182,9 +184,9 @@ class DailyScheduler:
             < delivery_target_at.astimezone(UTC) - PREPARATION_LEAD
         ):
             return False
-        run_date = delivery_target_at.date()
-        if not await self._claim(run_date):
-            self.state.last_skip_reason = "already_claimed_for_local_day"
+        slot_at = delivery_target_at.astimezone(UTC)
+        if not await self._claim(slot_at):
+            self.state.last_skip_reason = "already_claimed_for_delivery_slot"
             return False
         self.state.running = True
         self.state.last_run_at = local_now.isoformat()
@@ -203,13 +205,13 @@ class DailyScheduler:
                 else None
             )
             if self._record_result:
-                await self._record_result(run_date, status, summary)
+                await self._record_result(slot_at, status, summary)
         except Exception:
             self.state.last_run = "failed"
             self.state.last_error = "scheduled_run_failed"
             self.state.last_summary = "Scheduled run failed safely."
             if self._record_result:
-                await self._record_result(run_date, "failed", self.state.last_summary)
+                await self._record_result(slot_at, "failed", self.state.last_summary)
         finally:
             self.state.running = False
             self.state.next_run = (delivery_target_at + timedelta(days=1)).isoformat()
@@ -229,9 +231,9 @@ class DailyScheduler:
                     break
                 if (
                     not self.state.enabled
-                    or self.state.last_skip_reason == "already_claimed_for_local_day"
+                    or self.state.last_skip_reason == "already_claimed_for_delivery_slot"
                 ):
-                    if self.state.last_skip_reason == "already_claimed_for_local_day":
+                    if self.state.last_skip_reason == "already_claimed_for_delivery_slot":
                         target_at += timedelta(days=1)
                     break
                 await asyncio.sleep(
@@ -239,6 +241,59 @@ class DailyScheduler:
                 )
             if not self.state.enabled:
                 return
+
+
+class GmailPollingScheduler:
+    """Read-only Gmail sync on a persisted, bounded interval; never pushes immediately."""
+
+    def __init__(
+        self,
+        enabled: bool,
+        interval_minutes: int,
+        run: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._enabled = enabled
+        self.interval_minutes = interval_minutes
+        self._run = run
+        self._wake = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        if self._enabled and self._task is None:
+            self._task = asyncio.create_task(self._loop())
+
+    async def configure(self, interval_minutes: int) -> None:
+        if not 15 <= interval_minutes <= 1440:
+            raise ValueError("Gmail polling interval must be between 15 and 1440 minutes")
+        self.interval_minutes = interval_minutes
+        self._wake.set()
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _loop(self) -> None:
+        while self._enabled:
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(
+                    self._wake.wait(), timeout=self.interval_minutes * 60
+                )
+                continue
+            except TimeoutError:
+                pass
+            try:
+                await self._run()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("gmail_poll_scheduler_failed", extra={"category": "safe_failure"})
 
 
 async def wait_until(

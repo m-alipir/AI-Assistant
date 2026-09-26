@@ -25,6 +25,10 @@ class SchedulerPreference(BaseModel):
         return f"{parsed.hour:02d}:{parsed.minute:02d}"
 
 
+class GmailPollingPreference(BaseModel):
+    interval_minutes: int = Field(default=60, ge=15, le=1440)
+
+
 class OnboardingRepository:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
@@ -51,6 +55,30 @@ class OnboardingRepository:
                 text(
                     "UPDATE control_center_settings SET scheduler_enabled = :enabled, "
                     "scheduler_daily_time = :daily_time WHERE id"
+                ),
+                preference.model_dump(),
+            )
+
+    async def gmail_polling_preference(self) -> GmailPollingPreference:
+        async with self._sessions() as session:
+            value = await session.scalar(
+                text(
+                    "SELECT gmail_poll_interval_minutes FROM control_center_settings "
+                    "WHERE id = true"
+                )
+            )
+        return GmailPollingPreference(
+            interval_minutes=60 if value is None else int(value)
+        )
+
+    async def save_gmail_polling_preference(
+        self, preference: GmailPollingPreference
+    ) -> None:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                text(
+                    "UPDATE control_center_settings "
+                    "SET gmail_poll_interval_minutes = :interval_minutes WHERE id = true"
                 ),
                 preference.model_dump(),
             )
