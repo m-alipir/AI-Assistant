@@ -1,7 +1,17 @@
 # Personal Intelligence System
 
-Self-hosted, code-first daily intelligence briefing service. The project is being delivered
-milestone by milestone; see [progress](docs/PROGRESS.md) for the current implementation state.
+Self-hosted personal intelligence assistant. It follows selected RSS feeds and YouTube channels,
+checks read-only Gmail, and turns fresh, relevant developments into a short sourced daily briefing.
+It keeps event memory so a new development can be connected to earlier evidence; source claims and
+model inferences remain separate. Personal interests shape relevance, while major world news stays
+in its own section. Telegram is the everyday interface; the Admin panel handles setup and review.
+
+The VDS deployment is running, but the new Telegram briefing and source-management flows still
+need operator acceptance. See [progress](docs/PROGRESS.md) for verified behavior and pending work.
+The proposed category-first source onboarding is recorded there as planned, not implemented.
+
+For navigation, start with [Start Here](START_HERE.md). `CODEX_MASTER_PROMPT.md` and dated handoff
+documents are historical; they do not override the current progress record.
 
 ## Local development
 

@@ -1,17 +1,31 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
-from app.briefing.core import BriefingItem
+from app.briefing.core import BriefingItem, build_sections, visible_briefing_items
 from app.collectors.article import ArticleContent
 from app.collectors.rss import ConditionalFeedResult, RssCollector
 from app.config.sources import RssSourceConfig, SourceCatalog
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.jobs.rss_runtime import BriefingRenderError, RssRuntimeJob, database_persistence
-from app.llm.core import ExtractedClaim, ExtractorResult, GatekeeperResult
+from app.llm.core import (
+    BudgetExceeded,
+    BudgetPolicy,
+    BudgetTracker,
+    ExtractedClaim,
+    ExtractorResult,
+    GatekeeperResult,
+    InMemoryResultCache,
+    ModelSettings,
+    OpenRouterClient,
+    RoleConfig,
+    Router,
+)
 
 
 class FixtureFetcher:
@@ -111,6 +125,49 @@ async def test_rss_metadata_fetches_are_bounded_and_processing_stays_safe() -> N
     assert result["counts"]["fetched"] == 0
 
 
+@pytest.mark.parametrize("stage", ["gate", "extract"])
+@pytest.mark.asyncio
+async def test_rss_budget_exhaustion_is_a_skip_not_a_processing_failure(stage: str) -> None:
+    class BudgetFlow(FakeFlow):
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            if stage == "gate":
+                raise BudgetExceeded
+            return await super().gate(title, snippet, digest)
+
+        async def extract(self, content: str, digest: str) -> ExtractorResult:
+            raise BudgetExceeded
+
+    source = RssSourceConfig(
+        name="Fixture RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+    )
+
+    async def persist_event(*_: object) -> str:
+        raise AssertionError("budget-exhausted items must not be persisted")
+
+    async def persist_briefing(*_: object) -> None:
+        raise AssertionError("empty budget-exhausted run must not render a briefing")
+
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        BudgetFlow(),
+        persist_event,
+        persist_briefing,
+        collector=RssCollector(
+            FixtureFetcher((Path(__file__).parent / "fixtures" / "rss.xml").read_bytes())
+        ),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+    ).run()
+
+    counts = result["counts"]
+    assert result["status"] == "completed"
+    assert counts["failed"] == 0
+    assert counts["budget_exhausted"] == 1
+    assert "budget_exhausted" not in result["message"]
+
+
 @pytest.mark.asyncio
 async def test_rss_not_modified_skips_parse_and_downstream_work() -> None:
     class NotModifiedCollector:
@@ -187,6 +244,7 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
         "relevant": 1,
         "processed": 1,
         "failed": 0,
+        "budget_exhausted": 0,
         "failure_categories": {
             "briefing_render_error": 0,
             "briefing_persistence_error": 0,
@@ -199,7 +257,6 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
             "source_cooldown": 0,
             "source_health_persistence_error": 0,
             "provider_busy": 0,
-            "budget_exhausted": 0,
         },
         "post_llm_blocked": 0,
         "llm_calls": 2,
@@ -212,6 +269,197 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
     assert second["counts"]["processed"] == 0
     assert second["counts"]["llm_calls"] == 0
     assert second["counts"]["duplicates"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rss_editor_changes_only_the_ordered_visible_five() -> None:
+    prompts: list[str] = []
+
+    def editor_transport(request: httpx.Request) -> httpx.Response:
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        prompts.append(prompt)
+        encoded = prompt.split("<untrusted_items_json>\n", 1)[1].split(
+            "\n</untrusted_items_json>", 1
+        )[0]
+        supplied = json.loads(encoded)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "items": [
+                                        {
+                                            "event_id": item["event_id"],
+                                            "title": f"Türkçe {item['event_id']}",
+                                            "summary": f"Türkçe özet {item['event_id']}.",
+                                            "what_changed": None,
+                                        }
+                                        for item in supplied
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    router = Router(
+        OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(editor_transport)),
+        ModelSettings(
+            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=4_000)},
+            budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
+        ),
+        InMemoryResultCache(),
+        BudgetTracker(),
+    )
+    flow = FakeFlow()
+    flow._router = router
+    feed_items = "".join(
+        f"<item><title>news-{index}</title><link>https://example.test/news-{index}</link>"
+        f"<guid>news-{index}</guid>"
+        f"{f'<pubDate>Sun, 06 Sep 2026 {6 + index:02d}:00:00 GMT</pubDate>' if index < 5 else ''}"
+        "<description>Fresh RSS description.</description></item>"
+        for index in range(6)
+    )
+    feed = f"<rss><channel><title>fixture</title>{feed_items}</channel></rss>".encode()
+    source = RssSourceConfig(
+        name="Fresh fixture RSS",
+        url="https://example.test/feed.xml",
+        stream=SourceStream.TECH,
+        enabled=True,
+    )
+    unsectioned = BriefingItem(
+        event_id="unsectioned",
+        title="Unsectioned English item",
+        source_urls=[],
+        importance=4,
+        interest=6,
+        global_importance=0,
+        summary_tr="Unsectioned English summary.",
+    )
+    persisted: list[list[BriefingItem]] = []
+
+    async def persist_event(item, gate, extracted) -> str:
+        return item.title
+
+    async def persist_briefing(values: list[BriefingItem]) -> None:
+        persisted.append(values)
+
+    result = await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        flow,
+        persist_event,
+        persist_briefing,
+        collector=RssCollector(FixtureFetcher(feed)),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+    ).run([unsectioned])
+
+    assert result["counts"]["processed"] == 6
+    assert len(prompts) == 1
+    selected = json.loads(
+        prompts[0].split("<untrusted_items_json>\n", 1)[1].split(
+            "\n</untrusted_items_json>", 1
+        )[0]
+    )
+    expected_ids = [f"news-{index}" for index in range(5, 0, -1)]
+    assert [item["event_id"] for item in selected] == expected_ids
+    assert len(persisted) == 1
+    assert {
+        item.event_id: item.published_at
+        for item in persisted[0]
+        if item.event_id.startswith("news-")
+    } == {
+        **{
+            f"news-{index}": datetime(2026, 9, 6, 6 + index, tzinfo=UTC)
+            for index in range(5)
+        },
+        "news-5": datetime(2026, 9, 6, 12, tzinfo=UTC),
+    }
+    translated = {
+        item.event_id for item in persisted[0] if (item.summary_tr or "").startswith("Türkçe")
+    }
+    assert translated == set(expected_ids)
+
+    tied_feed_items = "".join(
+        f"<item><title>news-{index}</title><link>https://example.test/news-{index}</link>"
+        f"<guid>news-{index}</guid><pubDate>Sun, 06 Sep 2026 10:00:00 GMT</pubDate>"
+        "<description>Fresh RSS description.</description></item>"
+        for index in reversed(range(6))
+    )
+    tied_persisted: list[list[BriefingItem]] = []
+
+    async def persist_tied_briefing(values: list[BriefingItem]) -> None:
+        tied_persisted.append(values)
+
+    await RssRuntimeJob(
+        SourceCatalog(rss=[source]),
+        flow,
+        persist_event,
+        persist_tied_briefing,
+        collector=RssCollector(
+            FixtureFetcher(f"<rss><channel><title>fixture</title>{tied_feed_items}</channel></rss>".encode())
+        ),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+    ).run()
+
+    tied_editor_items = json.loads(
+        prompts[1].split("<untrusted_items_json>\n", 1)[1].split(
+            "\n</untrusted_items_json>", 1
+        )[0]
+    )
+    tied_ids = [item["event_id"] for item in tied_editor_items]
+    detail_ids = [
+        item.event_id for item in visible_briefing_items(build_sections(tied_persisted[0]))
+    ]
+    assert tied_ids == detail_ids == [f"news-{index}" for index in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_briefing_editor_budget_skip_is_reported_in_run_counts(monkeypatch) -> None:
+    async def skip_editor(sections, router):
+        raise BudgetExceeded("safe fixture")
+
+    monkeypatch.setattr("app.jobs.rss_runtime.edit_compact", skip_editor)
+    router = Router(
+        OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(lambda _: None)),
+        ModelSettings(
+            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=4_000)},
+            budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
+        ),
+        InMemoryResultCache(),
+        BudgetTracker(),
+    )
+    flow = FakeFlow()
+    flow._router = router
+    item = BriefingItem(
+        event_id="budget-item",
+        title="English title",
+        source_urls=[],
+        importance=6,
+        interest=7,
+        global_importance=0,
+        summary_tr="English summary.",
+    )
+    persisted: list[list[BriefingItem]] = []
+
+    async def persist_event(item, gate, extracted) -> str:
+        raise AssertionError("additional items should skip RSS event extraction")
+
+    async def persist_briefing(values: list[BriefingItem]) -> None:
+        persisted.append(values)
+
+    result = await RssRuntimeJob(
+        SourceCatalog(), flow, persist_event, persist_briefing
+    ).run([item])
+
+    assert result["counts"]["budget_exhausted"] == 1
+    assert result["counts"]["failed"] == 0
+    assert len(persisted) == 1
+    assert persisted[0][0].summary_tr == "English summary."
 
 
 @pytest.mark.asyncio

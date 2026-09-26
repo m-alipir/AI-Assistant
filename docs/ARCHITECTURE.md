@@ -49,7 +49,7 @@ Codex is the builder, not the runtime. The finished application runs independent
 Recommended components:
 - Python 3.12+
 - FastAPI for admin/API/health/manual triggers
-- PostgreSQL (Supabase production target)
+- PostgreSQL/pgvector (currently a local service on the VDS; managed PostgreSQL is optional)
 - pgvector extension for embeddings
 - SQLAlchemy + Alembic
 - httpx for external HTTP
@@ -102,8 +102,9 @@ migrations/
 Docker Compose with application + PostgreSQL/pgvector is preferred so tests/development do not depend on a production Supabase instance.
 
 ### Production
-- Application container on low-cost VPS.
-- Supabase/Postgres may be remote, or a local Postgres/pgvector can be used if chosen later.
+- Application, PostgreSQL/pgvector, and the outbound Telegram poller currently run as separate
+  Compose services on the VDS. The database port is not published publicly.
+- A remote managed PostgreSQL service remains an optional future deployment choice.
 - No local frontier model inference required; LLM/embeddings are API calls.
 - Container restart policy and healthcheck required.
 

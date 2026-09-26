@@ -19,6 +19,12 @@ present. The source name comes from `title`, then `text`, then the feed URL. Fol
 unrelated link outlines are ignored. Imported feeds default to the `tech` stream and remain
 disabled until explicitly enabled.
 
+Current import does not ask for a category during preview/import; uncategorized sources can enter
+the existing Telegram operator question queue. Planned M22.4 import will use a category supplied
+for each feed in the OPML file or collect a choice during import. Built-in and user-created
+categories should be available, with free-form entry for a new category. Keep the `tech`/`world`
+editorial stream separate from the source category. This planned interaction is not yet implemented.
+
 Malformed XML returns HTTP 400, invalid OPML structure returns 422, bounds violations return 413,
 and an unavailable repository returns 503. Individual malformed feed outlines remain in the
 normal 200 response as `invalid_source` rows.

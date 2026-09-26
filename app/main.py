@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import math
 import re
 import secrets
 import uuid
@@ -31,7 +30,12 @@ from app.api.agent import (
 from app.api.agent import router as agent_router
 from app.api.health import router as health_router
 from app.briefing.core import BriefingItem
-from app.briefing.presentation import compact_sentences, legacy_sections, safe_links
+from app.briefing.presentation import (
+    compact_sentences,
+    legacy_sections,
+    order_briefing_items,
+    safe_links,
+)
 from app.collectors.article import ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.collectors.youtube import YouTubeDiscovery
@@ -102,9 +106,9 @@ logger = logging.getLogger(__name__)
 def _delivery_delay_note(target_at: datetime, delivered_at: datetime) -> str | None:
     """Return a short local-time note only when delivery missed its configured target."""
     seconds_late = (delivered_at.astimezone(UTC) - target_at.astimezone(UTC)).total_seconds()
-    if seconds_late <= 0:
+    total_seconds = int(seconds_late)
+    if total_seconds <= 0:
         return None
-    total_seconds = math.ceil(seconds_late)
     minutes, seconds = divmod(total_seconds, 60)
     delay = f"{minutes} dk {seconds} sn" if minutes else f"{seconds} sn"
     return f"Hedef {target_at.strftime('%H:%M')} idi; {delay} gecikme."
@@ -829,10 +833,15 @@ def create_app(
             youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
             rss_call_start = len(router.calls)
             result = await job.run([*gmail_run.action_items, *youtube_run.briefing_items])
-            rss_llm = usage_breakdown(router.calls[rss_call_start:])
+            rss_usages = router.calls[rss_call_start:]
+            briefing_editor_llm = usage_breakdown(
+                [usage for usage in rss_usages if usage.role == "editor"]
+            )
+            rss_llm = usage_breakdown(
+                [usage for usage in rss_usages if usage.role != "editor"]
+            )
             gmail_counts = gmail_run.response(active_settings.gmail_enabled)["gmail"]
             gmail_llm = usage_breakdown([])
-            briefing_editor_llm = usage_breakdown([])
             rss_counts = result["counts"]
             rss_counts["llm_calls"] = rss_llm["provider_calls"]
             rss_counts["llm_cache_hits"] = rss_llm["cache_hits"]
@@ -977,7 +986,7 @@ def create_app(
                                 "LEFT JOIN email_classifications ec "
                                 "ON ec.source_item_id = bi.event_id "
                                 "WHERE bi.briefing_id = :briefing_id "
-                                "ORDER BY bi.section, e.occurred_at DESC NULLS LAST"
+                                "ORDER BY bi.section, e.occurred_at DESC NULLS LAST, bi.event_id"
                             ),
                             {"briefing_id": briefing_id},
                         )
@@ -986,7 +995,7 @@ def create_app(
                     .all()
                 )
             if not rows:
-                return [
+                legacy_items = [
                     AgentBriefingItem(
                         section=item.section,
                         event_id=item.event_id,
@@ -998,6 +1007,12 @@ def create_app(
                     for items in legacy_sections(rendered).values()
                     for item in items
                 ]
+                return order_briefing_items(
+                    legacy_items,
+                    section=lambda item: item.section,
+                    published_at=lambda item: item.published_at,
+                    event_id=lambda item: str(item.event_id or ""),
+                )
             result: list[AgentBriefingItem] = []
             for row in rows:
                 facts = [str(value)[:400] for value in (row["facts"] or []) if value][:5]
@@ -1050,7 +1065,12 @@ def create_app(
                         original_text=row["summary_tr"] is None,
                     )
                 )
-            return result
+            return order_briefing_items(
+                result,
+                section=lambda item: item.section,
+                published_at=lambda item: item.published_at,
+                event_id=lambda item: str(item.event_id or ""),
+            )
 
         async def agent_briefing_detail(briefing_id: str) -> dict[str, object]:
             async with sessions() as session:

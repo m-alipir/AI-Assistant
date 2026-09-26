@@ -31,14 +31,27 @@ Default order:
 5. **Dünyada Neler Oldu? / World in Brief** — 3–7 globally important items independent of interest profile.
 6. **Worth Watching** — selected YouTube/video items where watching the original adds value.
 
-Each important item should include:
-- headline/title;
-- compact summary;
-- what changed/new information;
-- why it matters (when justified);
-- confidence/evidence quality signal;
-- source links and publication time;
-- optional historical connection(s), clearly marked as inference when applicable.
+Each item should say the actual development in a few natural Turkish sentences, include a safe
+source link, and explain why it matters only when useful. Do not repeat a headline under separate
+`summary` and `change` labels or turn the briefing into a raw feed list. Show evidence quality,
+publication time, and historical connections when they help interpretation; label model inference
+clearly. Keep the section order above and make action items easy to spot.
+
+The daily delivery time is a target for sending the fresh briefing, not the start of processing.
+Prepare shortly beforehand; if processing finishes late, send the new briefing with a clear delay
+note. Never present an older briefing as today's. During the first 14 delivered briefing days,
+interest questions should ask about concrete subjects or developments, not publishers or event
+names.
+
+## 3a. Source onboarding goal
+
+For a single RSS feed or YouTube channel added through Telegram, ask for its category before
+starting to follow it. Offer built-in categories and categories the user previously created, with
+an option to type a new one. The user should recognize the source by name, not a UUID. Bulk OPML
+import should take per-feed categories from the file or collect missing choices during import.
+Keep category (topic) separate from the editorial stream such as tech or world; source validation
+and authorization still apply. This interaction is **planned**, not current behavior; see
+`docs/PROGRESS.md` M22.4. Current import and Telegram behavior are documented separately.
 
 ## 4. Freshness requirements
 Freshness must be checked before expensive extraction/LLM work.

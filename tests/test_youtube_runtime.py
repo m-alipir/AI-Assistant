@@ -6,9 +6,9 @@ import pytest
 
 from app.collectors.youtube import SubtitleTrack, YouTubeDiscovery
 from app.config.sources import SourceCatalog, YouTubeSourceConfig
-from app.ingestion.schemas import SourceStream
+from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.jobs.youtube_runtime import YouTubeRuntimeJob
-from app.llm.core import ExtractedClaim, ExtractorResult, GatekeeperResult
+from app.llm.core import BudgetExceeded, ExtractedClaim, ExtractorResult, GatekeeperResult
 
 
 class FixtureFetcher:
@@ -176,6 +176,7 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
         "skipped_no_preferred_language_caption": 0,
         "metadata_fallbacks": 0,
         "failed": 0,
+        "budget_exhausted": 0,
         "post_llm_blocked": 0,
         "failure_categories": {
             "youtube_feed_access_error": 0,
@@ -187,7 +188,6 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
             "processing_error": 0,
             "source_health_persistence_error": 0,
             "provider_busy": 0,
-            "budget_exhausted": 0,
         },
         "llm_calls": 2,
     }
@@ -203,6 +203,92 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
     assert repeated.duplicates == 1
     assert repeated.processed == 0
     assert repeated.llm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_youtube_briefing_uses_discovery_time_when_publication_date_is_missing() -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    source = catalog().youtube[0]
+    item = SourceItem(
+        source_name=source.name,
+        source_kind=SourceKind.YOUTUBE,
+        stream=source.stream,
+        canonical_url="https://www.youtube.com/watch?v=fixture",
+        title="Fresh fixture video",
+        snippet="A fixture description.",
+        discovered_at=now,
+        fetched_at=now,
+        timestamp_confidence=TimestampConfidence.DISCOVERED_FALLBACK,
+        content_hash="fixture-no-publication-date",
+    )
+
+    class Discovery:
+        async def collect(self, source, *, fetched_at):
+            return [item]
+
+    async def persist(*_: object) -> str:
+        return "fixture-event"
+
+    async def known_item(_: str) -> bool:
+        return False
+
+    run = await YouTubeRuntimeJob(
+        catalog(),
+        FakeFlow(),
+        persist,
+        known_item,
+        discovery=Discovery(),
+        subtitles=FakeSubtitles(
+            [
+                SubtitleTrack(
+                    "en",
+                    False,
+                    (Path(__file__).parent / "fixtures" / "sample.vtt").read_text(),
+                )
+            ]
+        ),
+        clock=lambda: now,
+    ).run()
+
+    assert run.processed == 1
+    assert run.briefing_items[0].published_at == item.freshness_reference_at
+
+
+@pytest.mark.parametrize("stage", ["gate", "extract"])
+@pytest.mark.asyncio
+async def test_youtube_budget_exhaustion_is_a_skip_not_a_processing_failure(stage: str) -> None:
+    class BudgetFlow(FakeFlow):
+        async def gate(self, title: str, snippet: str, digest: str) -> GatekeeperResult:
+            if stage == "gate":
+                raise BudgetExceeded
+            return await super().gate(title, snippet, digest)
+
+        async def extract(self, content: str, digest: str) -> ExtractorResult:
+            raise BudgetExceeded
+
+    async def persist(*_: object) -> str:
+        raise AssertionError("budget-exhausted video must not be persisted")
+
+    async def known_item(_: str) -> bool:
+        return False
+
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    vtt = (Path(__file__).parent / "fixtures" / "sample.vtt").read_text()
+    subtitles = FakeSubtitles([SubtitleTrack("en", False, vtt)])
+    result = await YouTubeRuntimeJob(
+        catalog(),
+        BudgetFlow(),
+        persist,
+        known_item,
+        discovery=YouTubeDiscovery(FixtureFetcher()),
+        subtitles=subtitles,
+        clock=lambda: now,
+    ).run()
+
+    assert result.response()["status"] == "completed"
+    assert result.response()["budget_exhausted"] == 1
+    assert result.failed == 0
+    assert result.errors == []
 
 
 @pytest.mark.asyncio

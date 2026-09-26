@@ -25,7 +25,6 @@ SAFE_FAILURE_CATEGORIES = {
         "source_cooldown",
         "source_health_persistence_error",
         "provider_busy",
-        "budget_exhausted",
     ),
     "youtube": (
         "youtube_feed_access_error",
@@ -37,7 +36,6 @@ SAFE_FAILURE_CATEGORIES = {
         "processing_error",
         "source_health_persistence_error",
         "provider_busy",
-        "budget_exhausted",
     ),
     "gmail": ("account_access_error", "classification_error", "checkpoint_error"),
 }
@@ -272,6 +270,9 @@ def _safe_summary(result: dict[str, object]) -> str:
         and not isinstance(counts.get(field), bool)
         and counts[field] >= 0
     ]
+    budget_skips = counts.get("budget_exhausted")
+    if isinstance(budget_skips, int) and not isinstance(budget_skips, bool) and budget_skips >= 0:
+        parts.append(f"rss_budget_exhausted_skipped={budget_skips}")
     youtube = counts.get("youtube")
     if isinstance(youtube, dict):
         parts.extend(
@@ -281,6 +282,13 @@ def _safe_summary(result: dict[str, object]) -> str:
             and not isinstance(youtube.get(field), bool)
             and youtube[field] >= 0
         )
+        youtube_budget_skips = youtube.get("budget_exhausted")
+        if (
+            isinstance(youtube_budget_skips, int)
+            and not isinstance(youtube_budget_skips, bool)
+            and youtube_budget_skips >= 0
+        ):
+            parts.append(f"youtube_budget_exhausted_skipped={youtube_budget_skips}")
     gmail = counts.get("gmail")
     if isinstance(gmail, dict):
         parts.extend(
@@ -312,44 +320,17 @@ def _safe_summary(result: dict[str, object]) -> str:
 
 
 def format_failure_summary(result: dict[str, object]) -> str:
-    """Describe only whitelisted aggregate counts and fixed category counters."""
+    """Describe only aggregate counts of items that actually failed processing."""
     counts = result.get("counts")
     if not isinstance(counts, dict):
         return ""
-    flows = (
-        ("RSS", "rss", counts),
-        ("YouTube", "youtube", counts.get("youtube")),
-        ("Gmail", "gmail", counts.get("gmail")),
-    )
+    flows = (("RSS", counts), ("YouTube", counts.get("youtube")), ("Gmail", counts.get("gmail")))
     details: list[str] = []
-    for label, flow_name, flow_counts in flows:
+    for label, flow_counts in flows:
         if not isinstance(flow_counts, dict):
             continue
         failed = flow_counts.get("failed")
-        categories = flow_counts.get("failure_categories")
-        keys = SAFE_FAILURE_CATEGORIES[flow_name]
-        category_counts = [
-            f"{key}={categories[key]}"
-            for key in keys
-            if isinstance(categories, dict)
-            and isinstance(categories.get(key), int)
-            and not isinstance(categories.get(key), bool)
-            and categories[key] > 0
-        ]
-        if not category_counts and not (
-            isinstance(failed, int) and not isinstance(failed, bool) and failed > 0
-        ):
+        if not isinstance(failed, int) or isinstance(failed, bool) or failed <= 0:
             continue
-        failed_part = (
-            f"başarısız={failed}"
-            if isinstance(failed, int) and not isinstance(failed, bool) and failed >= 0
-            else None
-        )
-        count_part = ", ".join(category_counts[:6])
-        if len(category_counts) > 6:
-            count_part += f", diğer={len(category_counts) - 6}"
-        if not count_part:
-            count_part = "hata türü sayımı yok"
-        detail = ", ".join(part for part in (failed_part, count_part) if part)
-        details.append(f"{label}: {detail}")
-    return "; ".join(details)[:350]
+        details.append(f"{label}: {failed} öğe")
+    return "; ".join(details)[:120]

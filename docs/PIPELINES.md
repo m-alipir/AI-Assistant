@@ -121,6 +121,12 @@ Reasoner output must be structured:
    existing Telegram adapter renders the same bounded `/ozet` projection; duplicate delivery is
    suppressed by the channel-scoped notification key. Empty runs do not reach this step.
 
+Scheduled preparation starts 15 minutes before the effective configured local delivery time. A
+fresh persisted briefing waits until that time; if it is late, delivery includes a delay note.
+Telegram renders short development-focused Turkish items with source links instead of repeating
+title, summary, and change fields. First-14-day interest questions concern subjects, not source
+publishers.
+
 ## G. Failure behavior
 - One bad feed must not abort the entire daily run.
 - One failed LLM provider/model should use configured fallback, within budget.

@@ -206,10 +206,12 @@ def test_scheduled_failure_summaries_keep_only_fixed_safe_counters() -> None:
         "counts": {
             "processed": 8,
             "failed": 4,
+            "budget_exhausted": 250,
             "llm_calls": 42,
             "llm_cache_hits": 0,
             "failure_categories": {
                 "source_fetch_error": 1,
+                "budget_exhausted": 250,
                 "provider_payload": "private provider text",
             },
             "youtube": {
@@ -225,17 +227,18 @@ def test_scheduled_failure_summaries_keep_only_fixed_safe_counters() -> None:
     warning = format_failure_summary(result)
 
     assert "processed=8" in persisted and "llm_calls=42" in persisted
+    assert "rss_budget_exhausted_skipped=250" in persisted
     assert "rss_source_fetch_error=1" in persisted
     assert "provider_payload" not in persisted
     assert "private provider text" not in persisted
     assert "do not include source URL" not in persisted
-    assert "RSS: başarısız=4, source_fetch_error=1" in warning
-    assert "YouTube: başarısız=2, youtube_feed_access_error=2" in warning
+    assert warning == "RSS: 4 öğe; YouTube: 2 öğe"
+    assert "budget_exhausted" not in warning
     assert "private provider text" not in warning
     assert len(warning) <= 350
 
 
-def test_missing_historical_categories_are_reported_as_unknown() -> None:
+def test_failure_summary_uses_only_actual_failed_item_counts() -> None:
     warning = format_failure_summary(
         {
             "counts": {
@@ -245,8 +248,27 @@ def test_missing_historical_categories_are_reported_as_unknown() -> None:
         }
     )
 
-    assert "RSS: başarısız=4, hata türü sayımı yok" in warning
-    assert "YouTube: başarısız=2, hata türü sayımı yok" in warning
+    assert warning == "RSS: 4 öğe; YouTube: 2 öğe"
+
+
+def test_budget_exhaustion_alone_does_not_create_a_failure_warning() -> None:
+    warning = format_failure_summary(
+        {
+            "status": "completed",
+            "counts": {
+                "failed": 0,
+                "budget_exhausted": 250,
+                "failure_categories": {"budget_exhausted": 250},
+                "youtube": {
+                    "failed": 0,
+                    "budget_exhausted": 100,
+                    "failure_categories": {"budget_exhausted": 100},
+                },
+            },
+        }
+    )
+
+    assert warning == ""
 
 
 @pytest.mark.asyncio

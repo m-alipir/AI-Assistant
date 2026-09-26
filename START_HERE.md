@@ -1,15 +1,11 @@
 # Start Here
 
-1. Put this pack at the root of a new repository.
-2. Open the repository in Codex.
-3. Give Codex the contents of `CODEX_MASTER_PROMPT.md` as the initial task.
-4. Codex should read `AGENTS.md` and the docs automatically as instructed.
-5. Let it work milestone-by-milestone and require `docs/PROGRESS.md` to be updated on every task.
+This is an existing, running project. For its purpose and current state, read:
 
-Do not add real API keys before M0/M1 unit tests work with fakes.
+1. [README](README.md) and [product specification](docs/PRODUCT_SPEC.md).
+2. [progress](docs/PROGRESS.md) for implemented, tested, and pending work.
+3. [Telegram](docs/TELEGRAM.md), [OPML](docs/OPML.md), or other subsystem docs for the task at hand.
+4. [AGENTS.md](AGENTS.md) before making changes.
 
-When you want Codex to reuse existing projects, provide their local paths/repository names and say:
-
-> Inspect these projects before implementing the related integration. Reuse only proven yt-dlp/OpenRouter client, parsing, retry, or error-handling logic that fits this architecture. Refactor it behind the interfaces in this repository and record reused components in `docs/PROGRESS.md`.
-
-Recommended first Codex instruction is exactly `CODEX_MASTER_PROMPT.md`; do not ask it to invent a second architecture before starting.
+`CODEX_MASTER_PROMPT.md` records the original M0 bootstrap request. Do not restart its initial
+milestone sequence. Current acceptance and next work are defined in `docs/PROGRESS.md`.

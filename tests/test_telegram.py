@@ -26,7 +26,13 @@ from app.telegram.core import (
     split_plain_text,
 )
 from app.telegram.poller import TelegramPoller
-from app.telegram.service import Actor, TelegramUpdate, TelegramWebhookHandler, _search_text
+from app.telegram.service import (
+    Actor,
+    TelegramUpdate,
+    TelegramWebhookHandler,
+    _render_daily_briefing,
+    _search_text,
+)
 from app.telegram.source_categories import (
     dispatch_pending_source_category_questions,
     send_source_category_question,
@@ -475,7 +481,7 @@ async def test_proactive_briefing_reuses_the_ozet_renderer_and_calibration_butto
                     "event_id": "event-1",
                     "section": "For You",
                     "title": "GPU announcement",
-                    "summary": "A compact summary.",
+                    "summary": "Grafik işlemciler için kısa bir açıklama.",
                     "source_links": ["https://example.test/story"],
                 }
             ],
@@ -484,7 +490,10 @@ async def test_proactive_briefing_reuses_the_ozet_renderer_and_calibration_butto
     )
 
     messages = [call for call in sent if call["method"] == "sendMessage"]
-    assert any("GPU announcement" in str(call["text"]) for call in messages)
+    assert len(messages) == 3
+    assert "GPU announcement" not in str(messages[0]["text"])
+    assert "Grafik işlemciler için kısa bir açıklama." in str(messages[0]["text"])
+    assert len(str(messages[0]["text"])) <= 3500
     assert any(
         "GPU hakkındaki haberler ve gelişmeler ilginizi çekiyor mu?" in str(call["text"])
         for call in messages
@@ -552,8 +561,8 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                     "event_id": "world-event",
                     "section": "World in Brief",
                     "title": "Waymo expands its robotaxi fleet",
-                    "summary": "Waymo is expanding its driverless taxi service to new cities.",
-                    "what_changed": "Waymo expanded its driverless taxi service to new cities.",
+                    "summary": "Waymo robotaksi hizmetini yeni şehirlere genişletiyor.",
+                    "what_changed": "Waymo robotaksi hizmetini yeni şehirlere genişletti.",
                     "why_important": "It gives more riders access to autonomous transport.",
                     "source_links": ["https://example.test/waymo"],
                 },
@@ -561,8 +570,13 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                     "event_id": "tech-event",
                     "section": "Tech & Industry",
                     "title": "Google Photos adds AI collages",
-                    "summary": "Google Photos is making AI collages available on Android and iOS.",
-                    "what_changed": "AI collages are now available on Android and iOS.",
+                    "summary": (
+                        "Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta "
+                        "kullanıma açtı. (source: TITLE, SNIPPET)"
+                    ),
+                    "what_changed": (
+                        "Yapay zekâ kolajları artık Android ve iOS'ta kullanılabiliyor."
+                    ),
                     "why_important": "The feature is no longer limited to a small test group.",
                     "published_at": "2026-09-24T11:30:00+00:00",
                     "source_links": [
@@ -575,21 +589,23 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                     "event_id": "you-event",
                     "section": "For You",
                     "title": "NVIDIA expands its developer tools",
-                    "summary": "NVIDIA added new tools for developers.",
+                    "summary": "NVIDIA expands its developer tools",
+                    "what_changed": "NVIDIA geliştiriciler için yeni araçlar sundu.",
+                    "original_text": True,
                     "source_links": ["https://example.test/nvidia"],
                 },
                 {
                     "event_id": "watch-event",
                     "section": "Worth Watching",
                     "title": "A useful robotics interview",
-                    "summary": "The interview explains recent robotics work.",
+                    "summary": "Görüşme robotik alanındaki son çalışmaları açıklıyor.",
                     "source_links": ["https://example.test/video"],
                 },
                 {
                     "event_id": "action-event",
                     "section": "Action Required",
                     "title": "Reply to the recruiter",
-                    "summary": "The recruiter requested a response by Friday.",
+                    "summary": "İşe alım uzmanı cuma gününe kadar yanıt istedi.",
                     "email_action": {"classification": "recruiter"},
                 },
             ],
@@ -598,29 +614,71 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
     )
 
     messages = [call for call in sent if call["method"] == "sendMessage"]
-    assert messages[0]["text"] == "Günlük Özet · 25.09.2026 14:00"
-    item_messages = messages[1:6]
-    assert [str(call["text"]).splitlines()[0] for call in item_messages] == [
-        "Takip Etmen Gerekenler",
-        "Senin İçin",
-        "Teknoloji ve Endüstri",
-        "Dünyada Neler Oldu?",
-        "İzlemeye Değer",
+    assert len(messages) == 3  # one digest plus the separate first-14-day question
+    digest = str(messages[0]["text"])
+    assert digest.startswith("Günlük Özet · 25.09.2026 14:00")
+    assert "Takip\n1. İşe alım uzmanı cuma gününe kadar yanıt istedi." in digest
+    assert "Senin için\n2. NVIDIA geliştiriciler için yeni araçlar sundu." in digest
+    assert (
+        "Teknoloji\n3. Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta kullanıma açtı."
+        in digest
+    )
+    assert "Dünyada\n4. Waymo robotaksi hizmetini yeni şehirlere genişletiyor." in digest
+    assert "İzlemeye değer\n5. Görüşme robotik alanındaki son çalışmaları açıklıyor." in digest
+    assert "TITLE" not in digest and "SNIPPET" not in digest
+    assert "Google Photos adds AI collages" not in digest
+    assert "Neden önemli:" not in digest and "Yayın:" not in digest
+    assert "https://example.test/photos" in digest
+    assert "http://example.test/unsafe" not in digest
+    assert "https://127.0.0.1/private" not in digest
+    assert len(digest) <= 3500
+    buttons = messages[0]["reply_markup"]["inline_keyboard"]
+    assert [row[0]["text"] for row in buttons] == [
+        "2. Daha fazla",
+        "3. Daha fazla",
+        "4. Daha fazla",
+        "5. Daha fazla",
     ]
-    tech_text = str(item_messages[2]["text"])
-    assert "Google Photos adds AI collages" in tech_text
-    assert "Google Photos is making AI collages available on Android and iOS." in tech_text
-    assert "Neden önemli: The feature is no longer limited to a small test group." in tech_text
-    assert "AI collages are now available on Android and iOS." not in tech_text
-    assert "Yayın: 24.09.2026 14:30" in tech_text
-    assert "https://example.test/photos" in tech_text
-    assert "http://example.test/unsafe" not in tech_text
-    assert "https://127.0.0.1/private" not in tech_text
-    assert item_messages[0].get("reply_markup") is None
-    assert all(call.get("reply_markup") for call in item_messages[1:])
+    assert len(buttons) == 4
     assert "Google Photos hakkındaki haberler ve gelişmeler ilginizi çekiyor mu?" in str(
         messages[-1]["text"]
     )
+
+
+def test_daily_briefing_keeps_long_safe_sources_under_3500_characters() -> None:
+    items = [
+        {
+            "section": "Tech & Industry",
+            "summary": "Önemli gelişme kısa ve anlaşılır biçimde duyuruldu. " * 8,
+            "source_links": [f"https://example.test/{index}?x={'a' * 1800}"],
+        }
+        for index in range(5)
+    ]
+
+    text, visible = _render_daily_briefing(None, items, None)
+
+    assert len(text) <= 3500
+    assert 1 <= len(visible) < len(items)
+    assert all(item["source_links"][0] in text for item in visible)
+
+
+def test_daily_briefing_shortens_a_long_single_sentence_at_a_word_boundary() -> None:
+    text, visible = _render_daily_briefing(
+        None,
+        [
+            {
+                "section": "Tech & Industry",
+                "summary": "Company expansion adds capacity, and production grows; " * 20
+                + "delivery begins next year.",
+            }
+        ],
+        None,
+    )
+
+    assert len(visible) == 1
+    assert "Company expansion adds capacity" in text
+    assert "…" in text
+    assert "Kaynakta kısa bir açıklama yok" not in text
 
 
 def test_source_category_question_is_stable_chat_scoped_and_endpoint_free() -> None:
@@ -951,6 +1009,9 @@ class _FeedbackStore:
     async def execute(self, statement: object, parameters: object = None) -> _MappingResult:
         query = str(statement)
         values = parameters if isinstance(parameters, dict) else {}
+        if "INSERT INTO telegram_feedback_tokens" in query:
+            self.tokens[str(values["token"])] = str(values["actor_hash"])
+            return _MappingResult(None)
         if "SELECT briefing_id, event_id" in query:
             token = str(values.get("token", ""))
             if token in self.expired_tokens or self.tokens.get(token) != values.get("actor_hash"):
@@ -1212,6 +1273,59 @@ def test_callback_answer_failure_is_safe_and_cannot_repeat_feedback() -> None:
     assert response.status_code == 200
     assert store.feedback_events == 1
     assert finished == [(50, "telegram_delivery_error")]
+
+
+@pytest.mark.asyncio
+async def test_issued_feedback_token_survives_handler_restart_and_poller() -> None:
+    store = _FeedbackStore({})
+    issuer, _, _ = _callback_handler(store)
+    tokens = await issuer._create_feedback_tokens(Actor(42, 42), "briefing-1", ["event-1"])
+    token = tokens["event-1"]
+
+    handler, sent, _ = _callback_handler(store)
+    advanced: list[int] = []
+    stop_event = asyncio.Event()
+
+    class Cursor:
+        async def load(self) -> int:
+            return 0
+
+        async def advance(self, offset: int) -> None:
+            advanced.append(offset)
+
+    async def transport(_: str, __: dict[str, object]) -> tuple[int, bool, int | None]:
+        return 200, True, None
+
+    polls = 0
+
+    async def poll_transport(
+        _: str, __: dict[str, object]
+    ) -> tuple[int, bool, int | None, list[dict[str, object]] | None]:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            return 200, True, None, [_callback_payload(70, f"f:{token}:more")]
+        stop_event.set()
+        return 200, True, None, []
+
+    bot = TelegramBotClient(
+        TOKEN,
+        timeout_seconds=1,
+        retries=0,
+        transport=transport,
+        polling_transport=poll_transport,
+    )
+    await TelegramPoller(
+        _settings(telegram_mode="polling"), bot, handler, Cursor()  # type: ignore[arg-type]
+    ).run(stop_event)
+
+    assert len(token) == 20
+    assert store.feedback_events == 1
+    assert token not in store.tokens
+    assert advanced == [71]
+    assert next(call for call in sent if call["method"] == "answerCallbackQuery")["text"] == (
+        "Geri bildirim kaydedildi."
+    )
 
 
 @pytest.mark.asyncio

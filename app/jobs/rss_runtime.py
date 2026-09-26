@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import uuid
 from collections.abc import Awaitable, Callable
@@ -11,7 +12,13 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.briefing.core import BriefingItem, build_sections, render_preview
+from app.briefing.core import (
+    BriefingItem,
+    build_sections,
+    edit_compact,
+    render_preview,
+    visible_briefing_items,
+)
 from app.collectors.article import ArticleContent, ArticleFetcher
 from app.collectors.rss import HttpFeedFetcher, RssCollector
 from app.config.source_repository import SourceRepository
@@ -30,6 +37,8 @@ from app.ingestion.source_health import (
 )
 from app.knowledge.clustering import ClusterCandidate, find_cluster
 from app.llm.core import BudgetExceeded, ExtractionFlow, ProviderBusy, Router
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,6 +79,7 @@ class RunCounts:
                 "relevant": self.relevant,
                 "processed": self.processed,
                 "failed": self.failed,
+                "budget_exhausted": self.budget_exhausted,
                 "failure_categories": {
                     "briefing_render_error": self.briefing_render_errors,
                     "briefing_persistence_error": self.briefing_persistence_errors,
@@ -82,7 +92,6 @@ class RunCounts:
                     "source_cooldown": self.source_cooldowns,
                     "source_health_persistence_error": self.source_health_persistence_errors,
                     "provider_busy": self.provider_busy,
-                    "budget_exhausted": self.budget_exhausted,
                 },
                 "post_llm_blocked": self.post_llm_blocked,
                 "llm_calls": self.llm_calls,
@@ -191,9 +200,7 @@ class RssRuntimeJob:
                     counts.errors.append(f"{item.source_name}: provider_busy")
                     return
                 except BudgetExceeded:
-                    counts.failed += 1
                     counts.budget_exhausted += 1
-                    counts.errors.append(f"{item.source_name}: budget_exhausted")
                     return
                 except Exception:
                     counts.failed += 1
@@ -220,9 +227,7 @@ class RssRuntimeJob:
                     counts.errors.append(f"{item.source_name}: provider_busy")
                     return
                 except BudgetExceeded:
-                    counts.failed += 1
                     counts.budget_exhausted += 1
-                    counts.errors.append(f"{item.source_name}: budget_exhausted")
                     return
                 except Exception:
                     counts.failed += 1
@@ -264,6 +269,7 @@ class RssRuntimeJob:
                         importance=gate.importance,
                         interest=gate.personal_relevance,
                         global_importance=gate.global_importance,
+                        published_at=item.freshness_reference_at,
                         summary_tr=extracted.compact_summary,
                         what_changed_tr=extracted.what_changed,
                     )
@@ -362,6 +368,45 @@ class RssRuntimeJob:
                 counts.duplicates += len(deterministic.duplicates)
 
         if briefing_items or await self._has_pending_briefing():
+            news_items = [item for item in briefing_items if item.source_type != "gmail"]
+            router = self._flow._router
+            if news_items and isinstance(router, Router):
+                editor_call_start = len(router.calls)
+                sections = build_sections(news_items)
+                selected = visible_briefing_items(sections)
+                try:
+                    if selected:
+                        edited = await edit_compact(sections, router)
+                        edited_by_id = {item.event_id: item for item in edited.items}
+                        expected_ids = {item.event_id for item in selected}
+                        if (
+                            len(edited_by_id) != len(edited.items)
+                            or set(edited_by_id) != expected_ids
+                        ):
+                            raise ValueError("editor item ids do not match the visible briefing")
+                        changes = [(item, edited_by_id[item.event_id]) for item in selected]
+                        for item, value in changes:
+                            item.title = value.title
+                            item.summary_tr = value.summary
+                            item.what_changed_tr = value.what_changed
+                except BudgetExceeded:
+                    counts.budget_exhausted += len(selected)
+                    logger.info(
+                        "briefing_editor_skipped",
+                        extra={"diagnostic_category": "budget_exhausted", "items": len(selected)},
+                    )
+                except ProviderBusy:
+                    logger.info(
+                        "briefing_editor_skipped",
+                        extra={"diagnostic_category": "provider_busy"},
+                    )
+                except Exception:
+                    logger.warning(
+                        "briefing_editor_unavailable",
+                        extra={"diagnostic_category": "briefing_editor"},
+                    )
+                finally:
+                    counts.llm_calls += len(router.calls) - editor_call_start
             try:
                 await self._persist_briefing(briefing_items)
             except BriefingRenderError:
@@ -787,6 +832,27 @@ def database_persistence(
     async def persist_briefing(items: list[BriefingItem]) -> None:
         """Atomically drain safe pending candidates so a retry cannot duplicate a briefing."""
         try:
+            translated_items = [
+                item
+                for item in items
+                if item.source_type != "gmail" and item.summary_tr is not None
+            ]
+            if translated_items:
+                async with sessions.begin() as session:
+                    for item in translated_items:
+                        await session.execute(
+                            text(
+                                "UPDATE briefing_outbox SET title = :title, "
+                                "summary_tr = :summary_tr, what_changed_tr = :what_changed_tr "
+                                "WHERE event_id = :event_id"
+                            ),
+                            {
+                                "event_id": item.event_id,
+                                "title": item.title,
+                                "summary_tr": item.summary_tr,
+                                "what_changed_tr": item.what_changed_tr,
+                            },
+                        )
             async with sessions.begin() as session:
                 rows = (
                     (

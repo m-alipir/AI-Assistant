@@ -1,10 +1,18 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.2 production verification + M22.3 source management (M21 RSSHub
-observation explicitly deferred)
-**Last updated:** 2026-09-25
-**Completion estimate:** ~92% (22 of 24 tracked milestone entries complete; M9 and M21 remain open)
+**Current milestone:** M22.2 remaining Telegram/budget/timing and CI repairs authorized; summary review active;
+M22.3 operator acceptance; M22.4 planned (M21 RSSHub observation deferred)
+**Last updated:** 2026-09-26
+**Completion estimate:** withheld until operator acceptance; implemented and planned work are listed
+below
+
+The system turns fresh RSS, YouTube, and read-only Gmail signals into a short sourced briefing,
+keeps event memory, and exposes controls through Admin and Telegram. The VDS app, database, and
+poller were rebuilt and passed basic health checks. The user reported M22.2 output and feedback
+defects on 2026-09-26; live acceptance is not complete. M22.4 category-first source onboarding is
+only a plan. See those milestones below
+for the exact boundary; dated test and work logs are historical evidence.
 
 ## Rules for Codex
 - Read this file before every task.
@@ -168,18 +176,17 @@ observation explicitly deferred)
 **Acceptance:** fresh install can be configured without editing Python source; local -> VPS deployment path documented and tested. RSS runtime acceptance passed with a real TechCrunch → OpenRouter → event → briefing run.
 
 ## M9 — Safe daily RSS operation
-**Status:** [!] BLOCKED / DEFERRED — Docker daemon available when
+**Status:** [~] DEFERRED — remaining live provider/scheduler checks need a controlled run
 
 - [x] durable source-item idempotency before LLM work
 - [x] provider-cost / configured-estimate / unavailable cost status
 - [x] opt-in daily scheduler with configured local time and timezone
 - [x] durable per-day scheduler claim to prevent restart double-runs
 - [x] offline scheduler and repeated-run tests
-- [!] rebuilt-container second manual-run verification — BLOCKED / DEFERRED: Docker CLI is
-  installed but its daemon is unavailable in the current workspace. Run when Docker is available;
-  do not enable a real provider or leave the scheduler enabled.
-- [!] scheduler opt-in smoke verification (manual, explicit only) — BLOCKED / DEFERRED: requires
-  the same local Docker runtime. Restore `SCHEDULER_ENABLED=false` immediately after the smoke.
+- [~] rebuilt-container second manual-run verification — deferred until a controlled live provider
+  run; Docker availability is no longer the blocker
+- [~] scheduler opt-in smoke verification — deferred until a controlled live run; restore
+  `SCHEDULER_ENABLED=false` immediately after the smoke if it was enabled only for the check
 
 **Acceptance:** a repeated manual RSS run makes no LLM calls for already persisted fresh items; the UI distinguishes unavailable cost from zero; scheduler defaults disabled and cannot create two scheduled briefings for one local day across restarts.
 
@@ -542,7 +549,7 @@ content appears in Git, logs, callback responses, or notification history.
 ---
 
 ## M22.2 — Scheduled Telegram daily assistant
-**Status:** [~] REPAIRED OFFLINE — controlled production delivery and error observation pending
+**Status:** [~] DEPLOYED — summary under review; remaining reported repairs assigned with evidence gates
 
 - [x] keep the existing daily scheduler, normal RSS/YouTube/Gmail runtime, coordinator, durable
   briefing outbox, and channel-scoped notification dispatcher
@@ -566,9 +573,13 @@ content appears in Git, logs, callback responses, or notification history.
   14:08: scheduled time was the work start, not send time; safe counts confirm four RSS and two
   YouTube failures, but the historical categories and actual start timestamp are unavailable.
   Future runs persist bounded category counts without source/provider/Telegram content or secrets
-- [x] send a concise Turkish editorial briefing with clear sections, meaningful developments,
+- [~] send a concise Turkish editorial briefing with clear sections, meaningful developments,
   reasons to care, and source links instead of repeated raw title/summary/change blocks; focused
-  offline tests and independent review passed, production delivery still pending
+  local tests passed, but the 2026-09-26 user report shows separate cards, English, and technical
+  field labels. Acceptance requires one short daily message, not a series of article summaries
+- [~] investigate invalid first-14-day Yes/No feedback: check shared state between the application
+  and poller, expiry, identity binding, consumption, and restart behavior. Tokens are DB-backed;
+  first-click cause remains unproven, with a conditional shared-chat actor mismatch found by review
 - [x] make first-14-day feedback ask about concrete subjects such as Google Photos features or
   Waymo developments, not publishers, feeds, event names, or duplicate labels; focused negative
   fixtures and independent review passed, production output still pending
@@ -583,7 +594,7 @@ content appears in Git, logs, callback responses, or notification history.
 ---
 
 ## M22.3 — Source management UI and automatic categorization
-**Status:** [~] IMPLEMENTED OFFLINE — PostgreSQL accepted; Telegram runtime acceptance pending
+**Status:** [~] DEPLOYED — PostgreSQL accepted; Telegram runtime acceptance pending
 
 - [x] keep the Sources table usable with many entries and long endpoints at desktop and narrow
   widths; 12-long-URL fixture and headless Chrome desktop/500px layout check passed for both source
@@ -605,6 +616,27 @@ content appears in Git, logs, callback responses, or notification history.
 selection pass focused Admin/repository tests without losing existing source state. An ambiguous
 source creates one bounded, authorized Telegram category question and its answer updates only that
 source; no model call or duplicate question is made.
+
+---
+
+## M22.4 — Category-first source onboarding
+**Status:** [ ] PLANNED — no implementation or acceptance claimed
+
+- [ ] For one RSS feed or YouTube channel added in Telegram, identify the source by name and ask
+  for its category before it begins following; offer built-in and previously created categories
+  plus free-form entry for a new category
+- [ ] For OPML import, take per-feed categories from the file or collect missing choices as part
+  of import; do not create a stream of UUID-only questions after import
+- [ ] Keep category separate from the `tech`/`world` editorial stream and preserve source URL,
+  authorization, duplicate, disabled-source, and bounded-import guards
+- [ ] Replace the current background UUID-only category question path only after the new single
+  and bulk flows cover existing pending sources without losing user choices
+- [ ] Verify the Telegram interaction, OPML round trip/preview, restart behavior, and authorized
+  negative paths with focused tests before controlled VDS acceptance
+
+Current behavior: known source domains receive deterministic categories; unknown sources are
+created disabled and later queried by UUID in bounded batches. The user's reported cadence is
+consistent with the bounded queue, not an asserted Telegram messages-per-minute limit.
 
 ---
 
@@ -690,6 +722,16 @@ and separate deferred M9 scheduler acceptance. Remote PostgreSQL TLS and an inte
 proxy become acceptance work only if those architectures are adopted.
 
 ## Tests
+- 2026-09-26: Separate reviewer task completed read-only investigation: 23 selected offline tests
+  and Ruff passed. Confirmed separate-card rendering and unused final-editor helper; DB-backed
+  feedback tokens disprove the process-local-storage hypothesis. No production or remote CI log
+  was read; GitHub Actions needs safe run/job/step evidence. No code files were changed.
+- 2026-09-26: Agent-role documentation was checked for required mission/work/boundary/report
+  sections, existing role-file references, and whitespace. Documentation only; no code tests,
+  provider calls, server inspection, or Telegram investigation were performed.
+- 2026-09-25: Documentation-only review reconciled project purpose, active versus historical
+  entrypoints, current Telegram/OPML behavior, deployed health evidence, and planned M22.4 scope.
+  No application code or live service was changed; Markdown links and whitespace were checked.
 - 2026-09-25: Headless Chrome rendered `/admin` and `/admin/sources/ui` with 12 long RSS URLs and a
   YouTube row from TestClient fakes. Desktop source cells wrapped; at 500 CSS px each source table
   scrolled locally and edit/save/status controls remained reachable. Chrome CLI could not produce a
@@ -1280,6 +1322,48 @@ proxy become acceptance work only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+
+- Reviewer accepted final tie-order delta: all shared selector callers supply event ID; SQL tie-break and actual RSS same-date regression verified. Reviewer reran one focused regression: passed. Current repair is locally accepted; GitHub Actions, live DB/Telegram and deployment acceptance remain unverified. Server transfer authorized by user with settings preservation; sensitive command/output approval still required.
+
+- Fixer reports equal-date ordering fixed with shared ascending event-ID tie-break, including SQL detail ordering. Real RSS same-date/reversed-ID regression included; four focused checks, Ruff and diff check passed; Graphify updated. Final independent delta review pending. No remote or deployment actions performed.
+
+- Final reviewer found an equal-date ordering blocker: section/date keys preserve differing caller order, producing different five-item sets. Fixer assigned shared event-ID tie-break and real RSS equal-date regression. User authorized server transfer after acceptance, preserving settings via backup/stash/pop; no transfer performed, sensitive command/output permissions still apply.
+
+- Final date-selection repair reported by Fixer: fresh RSS and YouTube briefing items use `freshness_reference_at`, matching persisted event timestamps. RSS/YouTube scoped tests: 32 passed; Ruff and diff check passed; Graphify updated. Reviewer assigned only this final delta. Local acceptance pending review; GitHub Actions evidence and VDS acceptance remain pending. No commit, push or deployment performed.
+- 2026-09-26: Reviewer closed map/atomicity blockers but found fresh RSS BriefingItem missing the
+  event date, so editor/detail selection can still diverge. Returned only that producer-path fix
+  and realistic regression to Fixer; callback and budget/failure separation remain accepted locally.
+- 2026-09-26: Fixer reported editor candidate ordering/cap aligned with visible digest and atomic
+  result-map application, with real-Router >5/unsectioned regression and budget-skip accounting.
+  78 focused tests, Ruff and diff check passed; sent only the blocker delta for independent review.
+- 2026-09-26: Reviewer accepted the callback/token-alphabet repair and renderer boundaries. Editor
+  review found a <=5-ID map indexed for all items and a mismatch between edited/visible candidates;
+  returned these blockers to Fixer. Stored legacy English briefings are not retro-translated.
+- 2026-09-26: Fixer proved a callback issuer/parser token-length mismatch (16 versus required 20)
+  through a failing synthetic regression and reported local repair plus 88 focused tests passed.
+  Added callback/token-alphabet checks to independent review; live behavior remains unverified.
+- 2026-09-26: Fixer reported expanded summary/editor, budget-skip, and delay-label changes with
+  87 focused tests passed; assigned independent scoped review. Invalid-feedback and GitHub Actions
+  remain unresolved. Requested callback-scope clarification and narrow CI metadata permission.
+- 2026-09-26: Reviewer returned `changes required` for the compact-summary repair: both stored
+  text branches can retain English, and the revised fixture misses that path. A long first sentence
+  can lose its description. Passed bounds/link/feedback mapping checks; returned the scoped blockers
+  to the existing fixer. No runtime acceptance or deployment is claimed.
+- 2026-09-26: Received Fixer's final report: Telegram service/tests changed, four focused tests,
+  Ruff and diff check passed. Assigned independent diff-only review with Luna high. The user
+  explicitly authorized two-way task reporting; workers now send final or decision messages to
+  the coordinator. No commit/push or deployment was performed for this repair.
+- 2026-09-26: Received only the separate reviewer's final/decision outputs. Rendering mismatch is
+  confirmed; feedback first-click cause and GitHub Actions failure remain pending evidence. A
+  PowerShell command attempted in Bash explains the metadata-collection error, not the CI failure.
+- 2026-09-26: Added four concise role profiles under `docs/agent_roles` for reviewer, fixer,
+  optimizer, and security review. `AGENTS.md` requires the selected role to be read before each
+  assignment and defines a common safe final report. The pending Telegram investigation remains
+  read-only and awaits approval; no new agent was created for this documentation task.
+- 2026-09-25: Refreshed the local Markdown entrypoints, product brief, Telegram/OPML guides,
+  architecture, pipeline, and active handoff. Removed contradictory Telegram command descriptions
+  and the stale M9 Docker blocker. M22.4 records the user's category-first flow as planned work,
+  separate from the currently deployed UUID-only questions.
 - 2026-09-25: M22.3 offline implementation added bounded source-table layout, validated per-row
   editing, deterministic category suggestions, and one allow-listed Telegram category question
   for ambiguous sources. Pending questions survive Telegram unavailability and include bulk

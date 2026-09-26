@@ -1,5 +1,8 @@
 # Codex Master Prompt
 
+Historical M0 bootstrap prompt. For current work, use `AGENTS.md` and `docs/PROGRESS.md`; the
+initial deliverable below has already been built.
+
 You are implementing the Personal Intelligence System described in this repository.
 
 Start by reading `AGENTS.md` and all documents it marks as mandatory. Treat those files as the product contract. Do not redesign the architecture casually.

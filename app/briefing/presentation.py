@@ -2,7 +2,8 @@
 
 import ipaddress
 import re
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,12 @@ BRIEFING_SECTIONS = (
     "Dünyada Neler Oldu? / World in Brief",
     "Worth Watching",
 )
+DAILY_BRIEFING_ITEM_LIMIT = 5
+_SECTION_ALIASES = {
+    "For You": "Senin İçin / For You",
+    "World in Brief": "Dünyada Neler Oldu? / World in Brief",
+}
+_SECTION_ORDER = {section: index for index, section in enumerate(BRIEFING_SECTIONS)}
 
 _LEGACY_SECTION_MAP = {
     "Action Required": "Action Required",
@@ -55,6 +62,36 @@ def compact_sentences(value: str | None, *, limit: int = 3, max_chars: int = 520
         return "Kaynakta doğrulanmış kısa bir kayıt mevcut; ayrıntı için kaynağı açın."
     sentences = re.split(r"(?<=[.!?])\s+", normalized)
     return " ".join(sentences[:limit])
+
+
+def order_briefing_items[T](
+    items: list[T],
+    *,
+    section: Callable[[T], str],
+    published_at: Callable[[T], datetime | str | None],
+    event_id: Callable[[T], str],
+    limit: int | None = None,
+) -> list[T]:
+    """Use the same section/date order for editing and displaying the daily five."""
+    def key(item: T) -> tuple[int, int, timedelta, str]:
+        value = published_at(item)
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                value = None
+        if value is not None:
+            value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        section_name = _SECTION_ALIASES.get(section(item), section(item))
+        return (
+            _SECTION_ORDER.get(section_name, len(_SECTION_ORDER)),
+            int(value is None),
+            datetime.max.replace(tzinfo=UTC) - value if value is not None else timedelta.max,
+            event_id(item),
+        )
+
+    ordered = sorted(items, key=key)
+    return ordered if limit is None else ordered[:limit]
 
 
 def format_istanbul(value: datetime | None) -> str | None:

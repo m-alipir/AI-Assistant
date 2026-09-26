@@ -15,9 +15,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.briefing.presentation import (
-    BRIEFING_SECTIONS,
-    compact_sentences,
+    DAILY_BRIEFING_ITEM_LIMIT,
     format_istanbul,
+    order_briefing_items,
     safe_links,
 )
 from app.config.settings import Settings
@@ -46,16 +46,6 @@ _BRIEFING_SECTION_ALIASES = {
     "For You": "Senin İçin / For You",
     "World in Brief": "Dünyada Neler Oldu? / World in Brief",
 }
-_BRIEFING_SECTION_LABELS = {
-    "Action Required": "Takip Etmen Gerekenler",
-    "Senin İçin / For You": "Senin İçin",
-    "Tech & Industry": "Teknoloji ve Endüstri",
-    "Connections / Why It Matters": "Bağlantılar",
-    "Dünyada Neler Oldu? / World in Brief": "Dünyada Neler Oldu?",
-    "Worth Watching": "İzlemeye Değer",
-}
-
-
 class TelegramUser(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: int
@@ -366,14 +356,19 @@ class TelegramWebhookHandler:
             return
         briefing_id = str(briefing.get("id", ""))[:36]
         usable_items = [item for item in items if isinstance(item, dict)]
-        section_order = {section: index for index, section in enumerate(BRIEFING_SECTIONS)}
-        usable_items.sort(
-            key=lambda item: section_order.get(_briefing_section(item), len(section_order))
+        usable_items = order_briefing_items(
+            usable_items,
+            section=lambda item: _briefing_section(item),
+            published_at=lambda item: item.get("published_at"),
+            event_id=lambda item: str(item.get("event_id") or ""),
+            limit=DAILY_BRIEFING_ITEM_LIMIT,
         )
-        usable_items = usable_items[:5]
+        message_text, visible_items = _render_daily_briefing(
+            briefing.get("created_at"), usable_items, delivery_note
+        )
         feedback_event_ids = [
             str(item.get("event_id", ""))[:36]
-            for item in usable_items
+            for item in visible_items
             if item.get("event_id") and item.get("email_action") is None
         ]
         tokens = await self._create_feedback_tokens(
@@ -381,27 +376,25 @@ class TelegramWebhookHandler:
             briefing_id,
             feedback_event_ids,
         )
-        header = "Günlük Özet"
-        display_time = _briefing_local_time(briefing.get("created_at"))
-        if display_time:
-            header = f"{header} · {display_time}"
-        if delivery_note:
-            header = f"{header} · {delivery_note}"
-        await self._bot.send_message(actor.chat_id, TelegramMessage(header))
-        for item in usable_items:
+        keyboard_rows: list[list[dict[str, str]]] = []
+        for number, item in enumerate(visible_items, start=1):
             event_id = str(item.get("event_id", ""))[:36]
-            message = TelegramMessage(
-                _briefing_item_text(item),
-                feedback_keyboard(tokens[event_id]) if event_id in tokens else None,
-            )
-            chunks = split_plain_text(message.text)
-            await self._bot.send_messages(
-                actor.chat_id,
+            if event_id not in tokens or item.get("email_action") is not None:
+                continue
+            buttons = feedback_keyboard(tokens[event_id])["inline_keyboard"][0]
+            keyboard_rows.append(
                 [
-                    TelegramMessage(chunk, message.reply_markup if index == 0 else None)
-                    for index, chunk in enumerate(chunks)
-                ],
+                    {
+                        **button,
+                        "text": f"{number}. {button['text']}",
+                    }
+                    for button in buttons
+                ]
             )
+        reply_markup = {"inline_keyboard": keyboard_rows} if keyboard_rows else None
+        await self._bot.send_message(
+            actor.chat_id, TelegramMessage(message_text, reply_markup)
+        )
         if calibration_candidates:
             event_ids = [candidate["event_id"] for candidate in calibration_candidates]
             subjects = {
@@ -766,7 +759,7 @@ class TelegramWebhookHandler:
             for event_id in event_ids:
                 if not event_id:
                     continue
-                token = secrets.token_urlsafe(12).replace("-", "A").replace("_", "B")[:20]
+                token = secrets.token_urlsafe(15)
                 await session.execute(
                     text(
                         "INSERT INTO telegram_feedback_tokens "
@@ -904,30 +897,79 @@ def _briefing_local_time(value: object) -> str | None:
     return format_istanbul(created_at)
 
 
-def _briefing_item_text(item: dict[str, object]) -> str:
-    section = _briefing_section(item)
-    parts = [
-        _BRIEFING_SECTION_LABELS.get(section, section or "Günlük Özet"),
-        str(item.get("title") or "Kaydedilmiş olay").strip()[:320],
-    ]
-    summary = str(item.get("summary") or "").strip()
-    what_changed = str(item.get("what_changed") or "").strip()
-    body = summary or what_changed
-    if body:
-        parts.append(compact_sentences(body, limit=2, max_chars=360))
-    why_important = str(item.get("why_important") or "").strip()
-    if why_important:
-        parts.append(
-            "Neden önemli: "
-            + compact_sentences(why_important, limit=1, max_chars=200)
-        )
-    published_at = _briefing_local_time(item.get("published_at"))
-    if published_at:
-        parts.append(f"Yayın: {published_at}")
-    links = item.get("source_links")
-    if isinstance(links, list):
-        parts.extend(safe_links([str(link) for link in links])[:3])
-    return "\n".join(parts)
+def _render_daily_briefing(
+    created_at: object, items: list[dict[str, object]], delivery_note: str | None
+) -> tuple[str, list[dict[str, object]]]:
+    header = "Günlük Özet"
+    display_time = _briefing_local_time(created_at)
+    if display_time:
+        header = f"{header} · {display_time}"
+    if delivery_note:
+        header = f"{header} · {delivery_note[:180]}"
+
+    labels = {
+        "Action Required": "Takip",
+        "Senin İçin / For You": "Senin için",
+        "Tech & Industry": "Teknoloji",
+        "Connections / Why It Matters": "Bağlantılar",
+        "Dünyada Neler Oldu? / World in Brief": "Dünyada",
+        "Worth Watching": "İzlemeye değer",
+    }
+    lines = [header]
+    visible: list[dict[str, object]] = []
+    current_section = ""
+    for item in items[:DAILY_BRIEFING_ITEM_LIMIT]:
+        section = _briefing_section(item)
+        label = labels.get(section, "Öne çıkanlar")
+        body = _briefing_summary(item)
+        links = safe_links(item.get("source_links"))
+        link = links[0] if links else ""
+        number = len(visible) + 1
+        heading = [label] if label != current_section else []
+        source_line = f"  {link}" if link else ""
+        current_length = len("\n".join(lines + heading))
+        budget = 3500 - current_length - len(f"\n{number}. \n{source_line}")
+        if budget < 36:
+            break
+        body = _fit_briefing_sentence(body, min(420, budget))
+        block = heading + [f"{number}. {body}"]
+        if source_line:
+            block.append(source_line)
+        if len("\n".join(lines + block)) > 3500:
+            break
+        lines.extend(block)
+        current_section = label
+        visible.append(item)
+    return "\n".join(lines), visible
+
+
+def _briefing_summary(item: dict[str, object]) -> str:
+    body = str(
+        (item.get("what_changed") if item.get("original_text") else item.get("summary"))
+        or item.get("what_changed")
+        or ""
+    )
+    body = re.sub(r"(?i)\s*\(\s*source:\s*title\s*,\s*snippet\s*\)", "", body)
+    body = re.sub(r"(?i)\b(?:title|snippet)\s*:\s*", "", body)
+    return " ".join(body.split()) or "Kaynakta kısa bir açıklama yok; ayrıntı için bağlantıyı açın."
+
+
+def _fit_briefing_sentence(value: str, limit: int) -> str:
+    sentences = re.split(r"(?<=[.!?])\s+", value.strip())
+    kept: list[str] = []
+    for sentence in sentences:
+        candidate = " ".join([*kept, sentence])
+        if len(candidate) > limit:
+            if not kept:
+                prefix = sentence[: limit - 1]
+                clause = max(prefix.rfind(";"), prefix.rfind(" —"), prefix.rfind(" –"))
+                boundary = clause + 1 if clause >= limit // 2 else prefix.rfind(" ")
+                return prefix[:boundary].rstrip(" ,;:—–") + "…"
+            break
+        kept.append(sentence)
+    if kept:
+        return " ".join(kept)
+    return value[:limit]
 
 
 def _search_text(value: dict[str, object], label: str) -> str:

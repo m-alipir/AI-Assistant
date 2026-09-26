@@ -125,16 +125,37 @@ async def test_editor_hashes_bounded_current_briefing_and_rejects_empty_input() 
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(json.loads(request.content)["messages"][0]["content"])
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        calls.append(prompt)
+        event_id = "one" if '"event_id": "one"' in prompt else "two"
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '{"title":"Brief","summary":"Safe"}'}}]},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "items": [
+                                        {
+                                            "event_id": event_id,
+                                            "title": "Türkçe başlık",
+                                            "summary": "Türkçe kısa özet.",
+                                            "what_changed": "Türkçe değişiklik.",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
         )
 
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
         ModelSettings(
-            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=300)},
+            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=1_000)},
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),
@@ -149,6 +170,8 @@ async def test_editor_hashes_bounded_current_briefing_and_rejects_empty_input() 
                 importance=6,
                 interest=7,
                 global_importance=0,
+                summary_tr="English stored summary.",
+                what_changed_tr="English stored change.",
             )
         ]
     }
@@ -161,14 +184,21 @@ async def test_editor_hashes_bounded_current_briefing_and_rejects_empty_input() 
                 importance=6,
                 interest=7,
                 global_importance=0,
+                what_changed_tr="English stored change without a summary.",
             )
         ]
     }
 
-    assert (await edit_compact(first, router)).title == "Brief"
-    assert (await edit_compact(second, router)).title == "Brief"
+    first_edit = await edit_compact(first, router)
+    second_edit = await edit_compact(second, router)
+    assert first_edit.items[0].summary == "Türkçe kısa özet."
+    assert second_edit.items[0].event_id == "two"
     with pytest.raises(ValueError, match="empty briefing"):
         await edit_compact({"For You": []}, router)
 
     assert len(calls) == 2
-    assert all(len(prompt) <= 300 for prompt in calls)
+    assert all(len(prompt) <= 1_000 for prompt in calls)
+    assert "English stored summary." in calls[0]
+    assert "English stored change." in calls[0]
+    assert "English stored change without a summary." in calls[1]
+    assert all("natural Turkish" in prompt for prompt in calls)

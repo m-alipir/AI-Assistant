@@ -69,6 +69,7 @@ class YouTubeRun:
             "skipped_no_preferred_language_caption": self.skipped_no_preferred_language_caption,
             "metadata_fallbacks": self.metadata_fallbacks,
             "failed": self.failed,
+            "budget_exhausted": self.budget_exhausted,
             "post_llm_blocked": self.post_llm_blocked,
             "failure_categories": {
                 "youtube_feed_access_error": self.youtube_feed_access_errors,
@@ -80,7 +81,6 @@ class YouTubeRun:
                 "processing_error": self.processing_errors,
                 "source_health_persistence_error": self.source_health_persistence_errors,
                 "provider_busy": self.provider_busy,
-                "budget_exhausted": self.budget_exhausted,
             },
             "llm_calls": self.llm_calls,
         }
@@ -176,9 +176,7 @@ class YouTubeRuntimeJob:
                     run.errors.append(f"{item.source_name}: provider_busy")
                     return
                 except BudgetExceeded:
-                    run.failed += 1
                     run.budget_exhausted += 1
-                    run.errors.append(f"{item.source_name}: budget_exhausted")
                     return
                 except Exception:
                     run.failed += 1
@@ -199,9 +197,7 @@ class YouTubeRuntimeJob:
                     run.errors.append(f"{item.source_name}: provider_busy")
                     return
                 except BudgetExceeded:
-                    run.failed += 1
                     run.budget_exhausted += 1
-                    run.errors.append(f"{item.source_name}: budget_exhausted")
                     return
                 except Exception:
                     run.failed += 1
@@ -244,7 +240,7 @@ class YouTubeRuntimeJob:
                             global_importance=gate.global_importance,
                             video=True,
                             source_type="youtube",
-                            published_at=item.source_published_at,
+                            published_at=item.freshness_reference_at,
                             why_watch=extracted.what_changed or extracted.compact_summary,
                             summary_tr=extracted.compact_summary,
                             what_changed_tr=extracted.what_changed,
