@@ -2,6 +2,8 @@
 
 ## Current assignment — delivery diagnosis and Telegram controls
 
+- Production deployment complete for commit 912b563: new stash/pop verified, env unchanged, migration successful before app recreation, app/DB healthy and health HTTP 200. User can test `/daily` and `/gmail`; no live command/provider acceptance claimed. Deferred Google-login work awaits separate assignment.
+
 - Acceptance complete: disposable PostgreSQL upgrade/backfill/history, concurrency/slot identity and Gmail interval constraints passed. Previous 92 focused tests passed. No remaining local blocker; code not committed/pushed/deployed. Next production action must migrate to 0029 before new app startup, preserving server overrides and .env. Do not start deferred Google-login task automatically.
 
 - Implementation report received: 92 focused tests pass, additive migration 0029 added. Remaining acceptance: disposable local PostgreSQL migration/history/slot-idempotency verification by the same Fixer, no automatic reviewer. Production deployment remains pending; personal Google login still deferred.

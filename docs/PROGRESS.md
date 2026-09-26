@@ -1323,6 +1323,8 @@ proxy become acceptance work only if those architectures are adopted.
 
 ## Last work log
 
+- Deployed feature commit `912b563` with explicit user authorization: local commit/push passed; VDS new stash object verified, only that stash popped with index restored, prior stash reference preserved, protected `.env.production` comparison unchanged. Migration service completed 0029 before application recreation. App and DB healthy, all Compose services running, localhost `/health` HTTP 200. `/daily` and `/gmail` live user acceptance pending; no manual ingestion/provider/mailbox test triggered. Personal Google-login task remains deferred.
+
 - Migration 0029 accepted on an isolated disposable PostgreSQL/pgvector container: 0028→0029 upgrade passed; prior completed 14:00 Istanbul run/history preserved and exact UTC slot backfilled; repeated backfill and original-slot claim stayed deduplicated; same-day different slot accepted; concurrent same-slot claims yielded exactly one winner. Gmail default 60, persisted 90, valid endpoints 15/1440 and rejected 14/1441 verified on real DB. Test container cleaned up without host mounts/volumes. Feature locally accepted (92 prior focused tests plus DB acceptance); production unchanged. Deployment must apply Alembic 0029 before starting new app. Personal Google-login work remains deferred.
 
 - Migration acceptance blocked: local Docker Linux daemon unavailable and no local PostgreSQL runtime found. No DB test or migration executed; 0029 remains unverified on PostgreSQL. User asked to make Docker Desktop ready for an isolated disposable DB test. Deploy must run migration before new app startup because Gmail preference column and delivery-slot table are required; current server kept unchanged.
