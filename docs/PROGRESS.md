@@ -1323,6 +1323,10 @@ proxy become acceptance work only if those architectures are adopted.
 
 ## Last work log
 
+- Post-deployment0030 safe health checks passed: app and DB running/healthy, all Compose services running, localhost `/health` HTTP200; VDS code HEAD00920aa. No manual `/daily`, mail read or Google login triggered by coordinator.
+
+- User-authorized deployment resumed after user removed unrelated pasted code from production env. Compose validation passed, migration0030 completed and services recreated for code commit00920aa. Earlier verified stash/pop preserved tracked overrides; env contents were not changed by coordinator. Live Google OAuth/user Telegram acceptance still pending; named OAuth inputs must be configured before connection succeeds.
+
 - Telegram personal Gmail connection completed locally; worker delivered final REPORT after continuity correction. `/gmail` link uses short-lived actor-bound one-use durable intents, hashed token/state and encrypted actor identity, existing PKCE/Fernet, safe callback completion and no Admin fall-through on expired/replayed/unauthorized intents. 65 focused offline tests passed, Ruff/diff check passed, Graphify updated. Actual disposable PostgreSQL 0029→0030 upgrade preserved sentinel data; issue/claim/bind/completion/replay passed across separate processes; container cleaned up. No commit/push/VDS/live Google acceptance. Existing PKCE verifier is web-process-local: start/callback must use same worker; multi-worker scaling not accepted. Configure named OAuth/public-origin inputs without exposing values and migrate0030 before new app startup.
 
 - OAuth worker continuity failure identified: latest final incorrectly reverted to preparation-only readiness after a context-compaction marker; no REPORT delivered. Git status confirms existing local OAuth changes/new intent migration 0030, so implementation is partial/unverified rather than absent. Same Fixer re-assigned one authoritative active task to preserve changes, finish focused security/migration checks and deliver final report; no new agent, reviewer or production action.
