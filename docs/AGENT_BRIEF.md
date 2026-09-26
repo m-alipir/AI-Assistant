@@ -1,5 +1,17 @@
 # Active brief — compact Telegram summary repair
 
+## Active follow-up — GitHub pytest failure
+
+### Queued after CI final report — do not assign early
+
+- Screenshot reports `/daily` silent for 15 minutes; investigate acknowledgment, Telegram poller long-task blocking, shared busy/budget paths and fresh-result delivery. Return immediate safe progress acknowledgement and bounded actionable completion/failure; do not claim cause without evidence.
+- Exact desired summary: `Bugün şunlar oldu:` followed by numbered, single short Turkish event sentences separated by blank lines. No individual titles, section labels, source links, quotes or source-row/TITLE/SNIPPET residue. Preserve provenance internally and factual uncertainty; do not present old stored English material as a newly generated Turkish result.
+- `/gmail` currently reports polling disabled. Explain current protected panel connection path; queue simple personal Google connection after existing CI task, never overwrite or interrupt it.
+
+- Investigate and fix `ci.yml` pytest failure, latest failed runs 36268154425 and 36268047429. Last older run 36263815469 succeeded. Same Fixer; Google-login work deferred.
+- Read safe job/step metadata and filtered test-failure evidence, reproduce exact CI entrypoint with Python 3.12, make minimal root-cause fix. Preserve tests and guards; no skips/xfail to manufacture green.
+- Focused regression first; full pytest once for the actual CI gate. No VDS/provider/secret access or deployment. Return safe final evidence; coordinator owns docs and publication.
+
 ## Current assignment — delivery diagnosis and Telegram controls
 
 - Production deployment complete for commit 912b563: new stash/pop verified, env unchanged, migration successful before app recreation, app/DB healthy and health HTTP 200. User can test `/daily` and `/gmail`; no live command/provider acceptance claimed. Deferred Google-login work awaits separate assignment.

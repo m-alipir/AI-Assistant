@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import app.main as main
+from app.config.onboarding import GmailPollingPreference
 from app.config.settings import Settings
 from app.config.sources import SourceCatalog
 
@@ -36,6 +37,9 @@ def test_startup_reads_yaml_only_for_an_explicit_pending_bootstrap(
 
         async def scheduler_preference(self) -> None:
             return None
+
+        async def gmail_polling_preference(self) -> GmailPollingPreference:
+            return GmailPollingPreference()
 
     monkeypatch.setattr(main, "create_engine", lambda settings: _Engine())
     monkeypatch.setattr(main, "create_session_factory", lambda engine: object())
