@@ -295,6 +295,27 @@ def test_manual_run_reports_when_no_runtime_job_is_connected():
     assert "No ingestion job" in app.state.last_run_details["message"]
 
 
+def test_manual_run_returns_persisted_trace_metadata() -> None:
+    app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
+
+    async def run() -> dict[str, object]:
+        return {
+            "status": "completed",
+            "counts": {"youtube": {"processed": 1}},
+            "runtime_run_id": "run-id",
+            "entry_point": "admin_manual",
+            "diagnostics": {"briefing_persisted": True},
+        }
+
+    app.state.run_callback = run
+    with TestClient(app) as client:
+        result = client.post("/admin/run-now").json()
+
+    assert result["runtime_run_id"] == "run-id"
+    assert result["entry_point"] == "admin_manual"
+    assert result["diagnostics"]["briefing_persisted"] is True
+
+
 def test_source_endpoints_fail_deterministically_without_database_repository() -> None:
     app = create_app(readiness_check=lambda: __import__("asyncio").sleep(0, result=True))
     with TestClient(app) as client:

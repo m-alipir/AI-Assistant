@@ -450,6 +450,10 @@ async def _dashboard_context(request: Request) -> dict[str, Any]:
             getattr(request.app.state, "gmail_configured", False)
             and getattr(request.app.state, "gmail_encryption_ready", False)
         ),
+        "gmail_missing_setting_names": getattr(
+            request.app.state, "gmail_missing_setting_names", []
+        ),
+        "runtime_runs": await _runtime_runs(request),
         "active_sources": sum(item["enabled"] for item in sources),
         "models_configured": configured_models,
         "runtime_job_connected": runtime_job_connected,
@@ -527,8 +531,22 @@ async def _control_center_context(request: Request) -> dict[str, Any]:
             getattr(request.app.state, "gmail_configured", False)
             and getattr(request.app.state, "gmail_encryption_ready", False)
         ),
+        "gmail_missing_setting_names": getattr(
+            request.app.state, "gmail_missing_setting_names", []
+        ),
+        "runtime_runs": await _runtime_runs(request),
         "scheduler": scheduler.state if scheduler else None,
     }
+
+
+async def _runtime_runs(request: Request) -> list[dict[str, object]]:
+    records = getattr(request.app.state, "runtime_run_records", None)
+    if records is None:
+        return []
+    try:
+        return await records.latest(10)
+    except Exception:
+        return []
 
 
 async def _control_center_scheduler_context(request: Request) -> dict[str, object]:
@@ -762,6 +780,13 @@ async def run_now(request: Request) -> dict[str, object]:
         "status": request.app.state.last_run,
         "at": datetime.now(UTC).isoformat(),
         "counts": result.get("counts", {}) if isinstance(result, Mapping) else {},
+        "runtime_run_id": result.get("runtime_run_id")
+        if isinstance(result, Mapping)
+        else None,
+        "entry_point": result.get("entry_point") if isinstance(result, Mapping) else None,
+        "diagnostics": result.get("diagnostics", {})
+        if isinstance(result, Mapping)
+        else {},
         "message": result.get("message", "Run callback completed.")
         if isinstance(result, Mapping)
         else "No ingestion job is connected to this deployment."

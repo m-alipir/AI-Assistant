@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -55,6 +56,7 @@ from app.ingestion.source_health import database_source_health
 from app.jobs.gmail_runtime import GmailAccountRecord, GmailRun, GmailRuntimeJob
 from app.jobs.retention import RetentionJob, RetentionScheduler
 from app.jobs.rss_runtime import RssRuntimeJob, database_persistence
+from app.jobs.runtime_records import RuntimeRunRecords
 from app.jobs.scheduler import (
     DailyScheduler,
     GmailPollingScheduler,
@@ -94,7 +96,7 @@ from app.observability.logging import bind_request_id, configure_logging, reset_
 from app.security import ProcessRateLimiter, opaque_client_key
 from app.telegram.api import router as telegram_router
 from app.telegram.core import TelegramBotClient, TelegramDeliveryError, TelegramMessage
-from app.telegram.service import Actor, TelegramWebhookHandler
+from app.telegram.service import Actor, DailyRunResult, TelegramWebhookHandler
 from app.telegram.source_categories import (
     run_source_category_question_worker,
     send_source_category_question,
@@ -115,6 +117,69 @@ def _delivery_delay_note(target_at: datetime, delivered_at: datetime) -> str | N
     minutes, seconds = divmod(total_seconds, 60)
     delay = f"{minutes} dk {seconds} sn" if minutes else f"{seconds} sn"
     return f"Hedef {target_at.strftime('%H:%M')} idi; {delay} gecikme."
+
+
+def _daily_failure_details(result: Mapping[str, object]) -> tuple[str, str]:
+    counts = result.get("counts")
+    flows = [counts] if isinstance(counts, dict) else []
+    if isinstance(counts, dict):
+        flows.extend(
+            value
+            for value in (counts.get("youtube"), counts.get("gmail"))
+            if isinstance(value, dict)
+        )
+    categories = [
+        flow.get("failure_categories")
+        for flow in flows
+        if isinstance(flow, dict) and isinstance(flow.get("failure_categories"), dict)
+    ]
+    priority = (
+        ("briefing_persistence_error", "briefing_persist"),
+        ("briefing_render_error", "editor"),
+        ("youtube_feed_access_error", "youtube"),
+        ("yt_dlp_caption_access_error", "youtube"),
+        ("extractor_error", "sources"),
+        ("gatekeeper_error", "sources"),
+        ("event_persistence_error", "sources"),
+        ("briefing_item_error", "sources"),
+        ("source_fetch_error", "sources"),
+        ("source_cooldown", "sources"),
+        ("source_health_persistence_error", "sources"),
+        ("provider_busy", "sources"),
+    )
+    for reason, stage in priority:
+        if any(
+            isinstance(flow, dict)
+            and isinstance(flow.get(reason), int)
+            and not isinstance(flow.get(reason), bool)
+            and flow[reason] > 0
+            for flow in categories
+        ):
+            return stage, reason
+    return "runtime", "runtime_error"
+
+
+def _gmail_missing_setting_names(
+    settings: Settings,
+    *,
+    oauth_configured: bool,
+    encryption_ready: bool,
+) -> list[str]:
+    """Return missing Gmail setup names without returning any configured values."""
+    missing: list[str] = []
+    if not settings.gmail_enabled:
+        missing.append("GMAIL_ENABLED")
+    if not settings.gmail_client_id.strip():
+        missing.append("GMAIL_CLIENT_ID")
+    if not oauth_configured:
+        missing.append("GMAIL_CLIENT_SECRET or GMAIL_CLIENT_SECRET_FILE")
+    if not settings.gmail_oauth_redirect_uri.strip():
+        missing.append("GMAIL_OAUTH_REDIRECT_URI")
+    if not encryption_ready:
+        missing.append("APP_ENCRYPTION_KEY or APP_ENCRYPTION_KEY_FILE")
+    if not settings.admin_public_origin.strip():
+        missing.append("ADMIN_PUBLIC_ORIGIN")
+    return missing
 
 
 def create_app(
@@ -360,6 +425,11 @@ def create_app(
                 encryption_configuration_error = True
         app.state.gmail_encryption_ready = cipher is not None
         app.state.gmail_encryption_configuration_error = encryption_configuration_error
+        app.state.gmail_missing_setting_names = _gmail_missing_setting_names(
+            active_settings,
+            oauth_configured=app.state.gmail_oauth.configured,
+            encryption_ready=app.state.gmail_encryption_ready,
+        )
         telegram_gmail_intents = (
             TelegramGmailLinkIntents(sessions, cipher) if cipher is not None else None
         )
@@ -431,12 +501,23 @@ def create_app(
                 in set(active_settings.telegram_allowed_actor_pair_list)
             )
             if not configured:
+                allowed_actor = (actor.user_id, actor.chat_id) in set(
+                    active_settings.telegram_allowed_actor_pair_list
+                )
+                missing = _gmail_missing_setting_names(
+                    active_settings,
+                    oauth_configured=app.state.gmail_oauth.configured,
+                    encryption_ready=app.state.gmail_encryption_ready,
+                )
+                if allowed_actor and missing:
+                    names = ", ".join(missing)
+                    return (
+                        "Google bağlantısı henüz hazır değil. Yönetici şu ayar adlarını "
+                        f"kontrol etmeli: {names}. Değerleri Telegram'da paylaşmayın.",
+                        None,
+                    )
                 return (
-                    "Google bağlantısı için sunucu yöneticisi şu ayar adlarını kontrol etmeli: "
-                    "GMAIL_ENABLED, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET veya "
-                    "GMAIL_CLIENT_SECRET_FILE, GMAIL_OAUTH_REDIRECT_URI, APP_ENCRYPTION_KEY "
-                    "veya APP_ENCRYPTION_KEY_FILE, ADMIN_PUBLIC_ORIGIN. Değerleri Telegram'da "
-                    "paylaşmayın.",
+                    "Google bağlantısı şu anda başlatılamıyor. Daha sonra tekrar deneyin.",
                     None,
                 )
             try:
@@ -904,10 +985,11 @@ def create_app(
             results = await deliver_ordered(dispatchers, notifications)
             return [delivery.status for delivery in results] or ["no_notification"]
 
-        async def run_rss_now(
+        async def _execute_rss_now(
             delivery_target_at: datetime | None = None,
             *,
             deliver_notifications: bool = True,
+            runtime_run_id: str,
         ) -> dict[str, object]:
             """Build a briefing from persisted Gmail items, YouTube, and RSS."""
             previous_briefing_id = await latest_briefing_id()
@@ -959,6 +1041,7 @@ def create_app(
             # Gmail has its own configured poll interval; briefing runs only consume its outbox.
             gmail_run = GmailRun()
             youtube_call_start = len(router.calls)
+            youtube_started = time.perf_counter()
             youtube_run = await YouTubeRuntimeJob(
                 catalog,
                 ExtractionFlow(router),
@@ -975,9 +1058,12 @@ def create_app(
                 ),
                 source_repository=source_repository,
             ).run()
+            youtube_duration_ms = int((time.perf_counter() - youtube_started) * 1000)
             youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
             rss_call_start = len(router.calls)
+            rss_started = time.perf_counter()
             result = await job.run([*gmail_run.action_items, *youtube_run.briefing_items])
+            rss_duration_ms = int((time.perf_counter() - rss_started) * 1000)
             rss_usages = router.calls[rss_call_start:]
             briefing_editor_llm = usage_breakdown(
                 [usage for usage in rss_usages if usage.role == "editor"]
@@ -1015,6 +1101,41 @@ def create_app(
             rss_counts["llm_cache_hits"] = sum(
                 int(flow["cache_hits"]) for flow in rss_counts["llm_breakdown_by_flow"].values()
             )
+            result["diagnostics"] = {
+                **(
+                    result.get("diagnostics", {})
+                    if isinstance(result.get("diagnostics"), dict)
+                    else {}
+                ),
+                "stages": [
+                    {"stage": "youtube", "status": youtube_counts["status"],
+                     "duration_ms": youtube_duration_ms},
+                    {"stage": "rss", "status": result.get("status"),
+                     "duration_ms": rss_duration_ms},
+                    {
+                        "stage": "editor",
+                        "status": result.get("diagnostics", {}).get("editor_status", "unknown")
+                        if isinstance(result.get("diagnostics"), dict)
+                        else "unknown",
+                        "duration_ms": result.get("diagnostics", {}).get(
+                            "editor_duration_ms"
+                        )
+                        if isinstance(result.get("diagnostics"), dict)
+                        else None,
+                    },
+                    {
+                        "stage": "briefing_persist",
+                        "status": "completed"
+                        if result.get("diagnostics", {}).get("briefing_persisted")
+                        else "failed_or_not_attempted",
+                        "duration_ms": result.get("diagnostics", {}).get(
+                            "briefing_persist_duration_ms"
+                        )
+                        if isinstance(result.get("diagnostics"), dict)
+                        else None,
+                    },
+                ][:12],
+            }
             if (
                 result.get("status") == "completed"
                 and (
@@ -1027,6 +1148,22 @@ def create_app(
                 result["message"] += f" Gmail sync had {gmail_run.failed} safe failure(s)."
             if youtube_run.failed:
                 result["message"] += f" YouTube sync had {youtube_run.failed} safe failure(s)."
+            try:
+                await runtime_run_records.progress(
+                    runtime_run_id,
+                    json.dumps(
+                        {
+                            "counts": rss_counts,
+                            "diagnostics": result.get("diagnostics", {}),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "runtime_run_record_progress_failed",
+                    extra={"diagnostic_category": "runtime_run_record_storage"},
+                )
             created_briefing_id = await latest_briefing_id()
             if created_briefing_id == previous_briefing_id:
                 created_briefing_id = None
@@ -1039,14 +1176,104 @@ def create_app(
                 result["notifications"] = []
             return result
 
+        runtime_run_records = RuntimeRunRecords(sessions)
+        app.state.runtime_run_records = runtime_run_records
+
+        async def run_rss_now(
+            delivery_target_at: datetime | None = None,
+            *,
+            deliver_notifications: bool = True,
+            entry_point: str = "admin_manual",
+        ) -> dict[str, object]:
+            run_id = str(uuid.uuid4())
+            started_at = datetime.now(UTC)
+            try:
+                await runtime_run_records.start(run_id, entry_point, started_at)
+            except Exception:
+                logger.warning(
+                    "runtime_run_record_start_failed",
+                    extra={"diagnostic_category": "runtime_run_record_storage"},
+                )
+            try:
+                result = await _execute_rss_now(
+                    delivery_target_at,
+                    deliver_notifications=deliver_notifications,
+                    runtime_run_id=run_id,
+                )
+            except Exception:
+                completed_at = datetime.now(UTC)
+                try:
+                    await runtime_run_records.finish(
+                        run_id,
+                        "failed",
+                        completed_at,
+                        json.dumps(
+                            {
+                                "terminal_error": {
+                                    "stage": "runtime",
+                                    "reason": "runtime_error",
+                                },
+                                "duration_ms": int(
+                                    (completed_at - started_at).total_seconds() * 1000
+                                ),
+                            },
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "runtime_run_record_finish_failed",
+                        extra={"diagnostic_category": "runtime_run_record_storage"},
+                    )
+                return {
+                    "status": "failed",
+                    "counts": {},
+                    "runtime_run_id": run_id,
+                    "entry_point": entry_point,
+                    "diagnostics": {
+                        "terminal_error": {"stage": "runtime", "reason": "runtime_error"}
+                    },
+                }
+            completed_at = datetime.now(UTC)
+            result["runtime_run_id"] = run_id
+            result["entry_point"] = entry_point
+            details = {
+                "counts": result.get("counts", {}),
+                "diagnostics": result.get("diagnostics", {}),
+                "duration_ms": int((completed_at - started_at).total_seconds() * 1000),
+                "briefing_persisted": (
+                    result.get("diagnostics", {}).get("briefing_persisted")
+                    if isinstance(result.get("diagnostics"), dict)
+                    else bool(result.get("briefing_id"))
+                ),
+                "notifications": result.get("notifications", []),
+            }
+            try:
+                await runtime_run_records.finish(
+                    run_id,
+                    str(result.get("status", "failed"))[:24],
+                    completed_at,
+                    json.dumps(details, ensure_ascii=False, default=str),
+                )
+            except Exception:
+                logger.warning(
+                    "runtime_run_record_finish_failed",
+                    extra={"diagnostic_category": "runtime_run_record_storage"},
+                )
+            return result
+
         run_coordinator = RuntimeRunCoordinator()
 
         async def run_manual_now() -> dict[str, object]:
-            return await run_coordinator.run("manual", run_rss_now)
+            return await run_coordinator.run(
+                "manual", lambda: run_rss_now(entry_point="admin_manual")
+            )
 
         async def run_scheduled_now(delivery_target_at: datetime) -> dict[str, object]:
             return await run_coordinator.run(
-                "scheduled", lambda: run_rss_now(delivery_target_at)
+                "scheduled",
+                lambda: run_rss_now(
+                    delivery_target_at, entry_point="scheduled_daily"
+                ),
             )
 
         app.state.run_coordinator = run_coordinator
@@ -1465,20 +1692,53 @@ def create_app(
             )
 
         if telegram_bot is not None:
-            async def telegram_daily() -> tuple[str, dict[str, object] | None]:
+            async def telegram_daily() -> DailyRunResult:
                 result = await run_coordinator.run(
                     "telegram_daily",
-                    lambda: run_rss_now(deliver_notifications=False),
+                    lambda: run_rss_now(
+                        deliver_notifications=False, entry_point="telegram_daily"
+                    ),
                 )
                 if result.get("skip_reason") == "another_run_active":
-                    return "busy", None
+                    return DailyRunResult(status="busy", stage="runtime", reason="provider_busy")
+                run_id = result.get("runtime_run_id")
                 briefing_id = result.get("briefing_id")
                 if not isinstance(briefing_id, str) or not briefing_id:
-                    return "unavailable", None
+                    if result.get("status") in {"failed", "completed_with_errors"}:
+                        stage, reason = _daily_failure_details(result)
+                        return DailyRunResult(
+                            status="failed", run_id=run_id, stage=stage, reason=reason
+                        )
+                    return DailyRunResult(status="empty", run_id=run_id, stage="complete")
                 try:
-                    return "ok", await agent_briefing_detail(briefing_id)
+                    briefing = await agent_briefing_detail(briefing_id)
                 except LookupError:
-                    return "unavailable", None
+                    return DailyRunResult(
+                        status="failed",
+                        run_id=run_id,
+                        stage="briefing_readback",
+                        reason="briefing_readback_failed",
+                    )
+                warning = result.get("status") in {"failed", "completed_with_errors"}
+                stage, reason = _daily_failure_details(result) if warning else (None, None)
+                return DailyRunResult(
+                    status="warning" if warning else "ready",
+                    briefing=briefing,
+                    run_id=run_id,
+                    stage=stage,
+                    reason=reason,
+                )
+
+            async def record_telegram_daily_delivery(run_id: str, outcome: str) -> None:
+                if outcome not in {
+                    "delivered",
+                    "busy_notice_delivered",
+                    "empty_notice_delivered",
+                    "failure_notice_delivered",
+                    "delivery_failed",
+                }:
+                    return
+                await runtime_run_records.delivery(run_id, outcome)
 
             async def telegram_gmail_interval(interval: int | None) -> str:
                 repository = app.state.onboarding_repository
@@ -1521,6 +1781,7 @@ def create_app(
                 queue_source_category_question=queue_source_category_question,
                 source_category_question_delivered=source_category_question_delivered,
                 daily=telegram_daily,
+                daily_delivery=record_telegram_daily_delivery,
                 gmail_interval=telegram_gmail_interval,
                 gmail_connect=telegram_gmail_connect,
             )

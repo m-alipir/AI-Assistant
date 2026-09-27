@@ -34,6 +34,7 @@ class YouTubeRun:
     duplicates: int = 0
     relevant: int = 0
     processed: int = 0
+    events_committed: int = 0
     captions_available: int = 0
     preferred_language_captions: int = 0
     skipped_no_captions: int = 0
@@ -54,6 +55,7 @@ class YouTubeRun:
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
     briefing_items: list[BriefingItem] = field(default_factory=list)
+    source_outcomes: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def response(self) -> dict[str, object]:
         return {
@@ -63,6 +65,7 @@ class YouTubeRun:
             "duplicates": self.duplicates,
             "relevant": self.relevant,
             "processed": self.processed,
+            "events_committed": self.events_committed,
             "captions_available": self.captions_available,
             "preferred_language_captions": self.preferred_language_captions,
             "skipped_no_captions": self.skipped_no_captions,
@@ -83,6 +86,10 @@ class YouTubeRun:
                 "provider_busy": self.provider_busy,
             },
             "llm_calls": self.llm_calls,
+            "source_outcomes": [
+                {"source": name[:128], **counts}
+                for name, counts in list(self.source_outcomes.items())[:32]
+            ],
         }
 
 
@@ -127,6 +134,21 @@ class YouTubeRuntimeJob:
         async def process(
             source: YouTubeSourceConfig, item: SourceItem, *, is_retry: bool = False
         ) -> None:
+            source_counts = run.source_outcomes.setdefault(
+                source.name,
+                {"discovered": 0, "items_seen": 0, "relevant": 0, "events_committed": 0,
+                 "processed": 0, "failed": 0, "captions_available": 0,
+                 "caption_access_errors": 0, "extractor_errors": 0,
+                 "event_persistence_errors": 0},
+            )
+            source_counts["items_seen"] += 1
+            before = {
+                key: getattr(run, key)
+                for key in (
+                    "relevant", "events_committed", "processed", "failed", "captions_available"
+                    , "caption_access_errors", "extractor_errors", "event_persistence_errors"
+                )
+            }
             calls_before = len(self._flow._router.calls)
             try:
                 if not is_retry and await self._known_item(item.content_hash):
@@ -218,6 +240,7 @@ class YouTubeRuntimeJob:
                     pass
                 try:
                     event_id = await self._persist_event(item, gate, extracted)
+                    run.events_committed += 1
                 except Exception:
                     run.failed += 1
                     run.event_persistence_errors += 1
@@ -258,6 +281,8 @@ class YouTubeRuntimeJob:
                 run.errors.append(f"{item.source_name}: processing_error")
             finally:
                 run.llm_calls += len(self._flow._router.calls) - calls_before
+                for key, value in before.items():
+                    source_counts[key] += getattr(run, key) - value
 
         if retry_item:
             source, item = retry_item
@@ -267,17 +292,28 @@ class YouTubeRuntimeJob:
         for source in self._catalog.youtube:
             if not source.enabled:
                 continue
+            source_counts = run.source_outcomes.setdefault(
+                source.name,
+                {"discovered": 0, "items_seen": 0, "relevant": 0, "events_committed": 0,
+                 "processed": 0, "failed": 0, "captions_available": 0,
+                 "caption_access_errors": 0, "extractor_errors": 0,
+                 "event_persistence_errors": 0},
+            )
             try:
                 items = await self._discovery.collect(source, fetched_at=self._clock())
+                source_counts["discovered"] += len(items)
                 run.fetched += len(items)
                 deterministic = await pipeline.process(
                     items, lambda item, current_source=source: process(current_source, item)
                 )
                 run.stale += len(deterministic.stale)
                 run.duplicates += len(deterministic.duplicates)
+                source_counts["stale"] = len(deterministic.stale)
+                source_counts["duplicates"] = len(deterministic.duplicates)
             except Exception:
                 run.failed += 1
                 run.youtube_feed_access_errors += 1
+                source_counts["failed"] += 1
                 run.errors.append(f"{source.name}: youtube_feed_access_error")
                 if self._source_repository is not None and source.managed_source_id:
                     try:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -66,6 +67,14 @@ class RunCounts:
     budget_exhausted: int = 0
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
+    editor_input_count: int = 0
+    editor_input_ids: list[str] = field(default_factory=list)
+    editor_output_valid: bool | None = None
+    editor_output_ids: list[str] = field(default_factory=list)
+    editor_status: str = "not_started"
+    briefing_persisted: bool | None = None
+    editor_duration_ms: int | None = None
+    briefing_persist_duration_ms: int | None = None
 
     def response(self) -> dict[str, object]:
         return {
@@ -97,6 +106,16 @@ class RunCounts:
                 "llm_calls": self.llm_calls,
             },
             "message": "; ".join(self.errors) if self.errors else "RSS run completed.",
+            "diagnostics": {
+                "editor_status": self.editor_status,
+                "editor_input_count": self.editor_input_count,
+                "editor_input_event_ids": self.editor_input_ids[:5],
+                "editor_output_valid": self.editor_output_valid,
+                "editor_output_event_ids": self.editor_output_ids[:5],
+                "briefing_persisted": self.briefing_persisted,
+                "editor_duration_ms": self.editor_duration_ms,
+                "briefing_persist_duration_ms": self.briefing_persist_duration_ms,
+            },
         }
 
 
@@ -374,8 +393,12 @@ class RssRuntimeJob:
                 editor_call_start = len(router.calls)
                 sections = build_sections(news_items)
                 selected = visible_briefing_items(sections)
+                counts.editor_input_count = len(selected)
+                counts.editor_input_ids = [item.event_id for item in selected[:5]]
+                editor_started = time.perf_counter()
                 try:
                     if selected:
+                        counts.editor_status = "running"
                         edited = await edit_compact(sections, router)
                         edited_by_id = {item.event_id: item for item in edited.items}
                         expected_ids = {item.event_id for item in selected}
@@ -384,39 +407,59 @@ class RssRuntimeJob:
                             or set(edited_by_id) != expected_ids
                         ):
                             raise ValueError("editor item ids do not match the visible briefing")
+                        counts.editor_output_valid = True
+                        counts.editor_output_ids = [item.event_id for item in edited.items[:5]]
+                        counts.editor_status = "completed"
                         changes = [(item, edited_by_id[item.event_id]) for item in selected]
                         for item, value in changes:
                             item.title = value.title
                             item.summary_tr = value.summary
                             item.what_changed_tr = value.what_changed
                 except BudgetExceeded:
+                    counts.editor_status = "budget_exhausted"
+                    counts.editor_output_valid = False
                     counts.budget_exhausted += len(selected)
                     logger.info(
                         "briefing_editor_skipped",
                         extra={"diagnostic_category": "budget_exhausted", "items": len(selected)},
                     )
                 except ProviderBusy:
+                    counts.editor_status = "provider_busy"
+                    counts.editor_output_valid = False
                     logger.info(
                         "briefing_editor_skipped",
                         extra={"diagnostic_category": "provider_busy"},
                     )
                 except Exception:
+                    counts.editor_status = "failed"
+                    counts.editor_output_valid = False
                     logger.warning(
                         "briefing_editor_unavailable",
                         extra={"diagnostic_category": "briefing_editor"},
                     )
                 finally:
+                    counts.editor_duration_ms = int(
+                        (time.perf_counter() - editor_started) * 1000
+                    )
                     counts.llm_calls += len(router.calls) - editor_call_start
+            persist_started = time.perf_counter()
             try:
                 await self._persist_briefing(briefing_items)
+                counts.briefing_persisted = True
             except BriefingRenderError:
+                counts.briefing_persisted = False
                 counts.failed += 1
                 counts.briefing_render_errors += 1
                 counts.errors.append("briefing_render_error")
             except Exception:
+                counts.briefing_persisted = False
                 counts.failed += 1
                 counts.briefing_persistence_errors += 1
                 counts.errors.append("briefing_persistence_error")
+            finally:
+                counts.briefing_persist_duration_ms = int(
+                    (time.perf_counter() - persist_started) * 1000
+                )
         return counts.response()
 
 

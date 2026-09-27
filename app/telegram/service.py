@@ -93,9 +93,19 @@ SourceCategoryQuestionDeliveredCallback = Callable[[str, int], Awaitable[bool]]
 DisableSourceCallback = Callable[[str], Awaitable[str]]
 InterestsCallback = Callable[[], Awaitable[str]]
 SetInterestCallback = Callable[[str, bool], Awaitable[str]]
-DailyCallback = Callable[[], Awaitable[tuple[str, dict[str, object] | None]]]
+DailyCallback = Callable[[], Awaitable["DailyRunResult"]]
 GmailPollingCallback = Callable[[int | None], Awaitable[str]]
 GmailConnectCallback = Callable[["Actor"], Awaitable[tuple[str, str | None]]]
+DailyDeliveryCallback = Callable[[str, str], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class DailyRunResult:
+    status: str
+    briefing: dict[str, object] | None = None
+    run_id: str | None = None
+    stage: str | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +149,7 @@ class TelegramWebhookHandler:
         queue_source_category_question: QueueSourceCategoryQuestionCallback | None = None,
         source_category_question_delivered: SourceCategoryQuestionDeliveredCallback | None = None,
         daily: DailyCallback | None = None,
+        daily_delivery: DailyDeliveryCallback | None = None,
         gmail_interval: GmailPollingCallback | None = None,
         gmail_connect: GmailConnectCallback | None = None,
     ) -> None:
@@ -159,6 +170,7 @@ class TelegramWebhookHandler:
         self._queue_source_category_question = queue_source_category_question
         self._source_category_question_delivered = source_category_question_delivered
         self._daily = daily
+        self._daily_delivery = daily_delivery
         self._gmail_interval = gmail_interval
         self._gmail_connect = gmail_connect
         self._per_actor = ProcessRateLimiter(settings.telegram_rate_limit_per_minute)
@@ -392,31 +404,89 @@ class TelegramWebhookHandler:
         )
 
     async def _run_daily(self, actor: Actor) -> None:
+        result: DailyRunResult | None = None
         try:
             if self._daily is None:
                 return
-            status, briefing = await self._daily()
-            if status == "ok" and briefing is not None:
-                await self._send_briefing(actor, briefing)
-            elif status == "busy":
+            result = await self._daily()
+            if result.status in {"ready", "warning"} and result.briefing is not None:
+                await self._send_briefing(actor, result.briefing)
+                await self._record_daily_delivery(result, "delivered")
+                if result.status == "warning":
+                    await self._daily_failure(actor, result.stage, result.reason)
+            elif result.status == "busy":
                 await self._bot.send_message(
                     actor.chat_id,
                     TelegramMessage("Başka bir işlem sürüyor. Biraz sonra tekrar deneyin."),
                 )
+                await self._record_daily_delivery(result, "busy_notice_delivered")
+            elif result.status == "empty":
+                await self._bot.send_message(
+                    actor.chat_id,
+                    TelegramMessage(
+                        "Bugün öne çıkan yeni bir gelişme yok; yeni bir özet kaydedilmedi."
+                    ),
+                )
+                await self._record_daily_delivery(result, "empty_notice_delivered")
             else:
-                await self._daily_unavailable(actor)
+                await self._daily_failure(actor, result.stage, result.reason)
+                await self._record_daily_delivery(result, "failure_notice_delivered")
         except Exception:
+            if result is not None:
+                await self._record_daily_delivery(result, "delivery_failed")
             logger.warning(
                 "telegram_command_failed",
                 extra={"diagnostic_category": "telegram_command_unavailable"},
             )
-            await self._daily_unavailable(actor)
+            await self._daily_failure(actor, "telegram", "runtime_error")
 
-    async def _daily_unavailable(self, actor: Actor) -> None:
+    async def _record_daily_delivery(self, result: DailyRunResult, outcome: str) -> None:
+        if result.run_id and self._daily_delivery is not None:
+            try:
+                await self._daily_delivery(result.run_id, outcome)
+            except Exception:
+                logger.warning(
+                    "telegram_daily_delivery_record_failed",
+                    extra={"diagnostic_category": "runtime_run_record_storage"},
+                )
+
+    async def _daily_failure(
+        self, actor: Actor, stage: str | None, reason: str | None
+    ) -> None:
+        stages = {
+            "catalog": "Kaynaklar",
+            "youtube": "YouTube",
+            "rss": "RSS",
+            "editor": "Özet",
+            "briefing_persist": "Kayıt",
+            "briefing_readback": "Özet",
+            "telegram": "Telegram",
+            "runtime": "Çalıştırma",
+        }
+        reasons = {
+            "youtube_feed_access_error": "YouTube kaynak erişimi",
+            "yt_dlp_caption_access_error": "YouTube altyazı erişimi",
+            "gatekeeper_error": "ön değerlendirme",
+            "extractor_error": "bilgi çıkarımı",
+            "event_persistence_error": "gelişmeyi kaydetme",
+            "briefing_item_error": "özet girdisi hazırlama",
+            "briefing_render_error": "özet oluşturma",
+            "briefing_persistence_error": "özeti kaydetme",
+            "briefing_readback_failed": "kaydedilen özeti okuma",
+            "source_fetch_error": "kaynak erişimi",
+            "provider_busy": "model hizmeti meşgul",
+            "budget_exhausted": "günlük işlem sınırı",
+            "runtime_error": "beklenmeyen çalıştırma hatası",
+        }
+        safe_stage = stages.get(stage or "", "Çalıştırma")
+        safe_reason = reasons.get(reason or "", "işlem tamamlanamadı")
         try:
             await self._bot.send_message(
                 actor.chat_id,
-                TelegramMessage("Günlük özet tamamlanamadı. Daha sonra tekrar deneyin."),
+                TelegramMessage(
+                    f"Günlük özet tamamlanamadı ({safe_stage} / {safe_reason}). "
+                    "Ayrıntılar yönetim panelinde."
+                ),
             )
         except TelegramDeliveryError:
             logger.warning(

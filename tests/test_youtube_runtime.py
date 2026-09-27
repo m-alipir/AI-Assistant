@@ -170,6 +170,7 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
         "duplicates": 0,
         "relevant": 1,
         "processed": 1,
+        "events_committed": 1,
         "captions_available": 1,
         "preferred_language_captions": 0,
         "skipped_no_captions": 0,
@@ -190,6 +191,23 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
             "provider_busy": 0,
         },
         "llm_calls": 2,
+        "source_outcomes": [
+            {
+                "source": "Fixture Channel",
+                "discovered": 1,
+                "items_seen": 1,
+                "relevant": 1,
+                "processed": 1,
+                "events_committed": 1,
+                "failed": 0,
+                "captions_available": 1,
+                "caption_access_errors": 0,
+                "extractor_errors": 0,
+                "event_persistence_errors": 0,
+                "stale": 0,
+                "duplicates": 0,
+            }
+        ],
     }
     item = result.briefing_items[0]
     assert item.video is True
@@ -384,18 +402,44 @@ async def test_youtube_runtime_classifies_caption_access_failure_safely() -> Non
     async def unknown(content_hash: str) -> bool:
         return False
 
+    source = YouTubeSourceConfig(
+        name="Fixture Channel",
+        channel_id="UCfixture",
+        stream=SourceStream.TECH,
+        enabled=True,
+        managed_source_id="managed-youtube",
+    )
+    repository = FakeSourceRepository()
     result = await YouTubeRuntimeJob(
-        catalog(),
+        SourceCatalog(youtube=[source]),
         FakeFlow(),
         persist,
         unknown,
         discovery=YouTubeDiscovery(FixtureFetcher()),
         subtitles=BrokenSubtitles(),
         clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+        source_repository=repository,
     ).run()
     assert result.failed == 1
     assert result.caption_access_errors == 1
     assert result.errors == ["Fixture Channel: yt_dlp_caption_access_error"]
+    assert repository.successes == [("managed-youtube", "youtube_atom")]
+    assert result.events_committed == 0
+    assert result.response()["source_outcomes"][0] == {
+        "source": "Fixture Channel",
+        "discovered": 1,
+        "items_seen": 1,
+        "relevant": 0,
+        "events_committed": 0,
+        "processed": 0,
+        "failed": 1,
+        "captions_available": 0,
+        "caption_access_errors": 1,
+        "extractor_errors": 0,
+        "event_persistence_errors": 0,
+        "stale": 0,
+        "duplicates": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -491,6 +535,7 @@ async def test_event_persistence_failure_blocks_another_costly_attempt() -> None
     ).run()
 
     assert first.event_persistence_errors == 1
+    assert first.events_committed == 0
     assert first.llm_calls == 2
     assert second.post_llm_blocked == 1
     assert second.llm_calls == 0

@@ -28,6 +28,7 @@ from app.telegram.core import (
 from app.telegram.poller import TelegramPoller
 from app.telegram.service import (
     Actor,
+    DailyRunResult,
     TelegramUpdate,
     TelegramWebhookHandler,
     _render_daily_briefing,
@@ -682,14 +683,14 @@ async def test_daily_command_sends_only_a_new_briefing_and_dedupes_duplicate_upd
     release = asyncio.Event()
     started = asyncio.Event()
 
-    async def daily() -> tuple[str, dict[str, object] | None]:
+    async def daily() -> DailyRunResult:
         nonlocal calls
         calls += 1
         started.set()
         await release.wait()
-        return (
-            "ok",
-            {
+        return DailyRunResult(
+            status="ready",
+            briefing={
                 "id": "",
                 "items": [
                     {
@@ -729,8 +730,8 @@ async def test_daily_command_sends_only_a_new_briefing_and_dedupes_duplicate_upd
 
 @pytest.mark.asyncio
 async def test_daily_command_reports_busy_without_queueing_a_second_run() -> None:
-    async def daily() -> tuple[str, dict[str, object] | None]:
-        return "busy", None
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(status="busy")
 
     async def claim(*_: object) -> bool:
         return True
@@ -744,6 +745,115 @@ async def test_daily_command_reports_busy_without_queueing_a_second_run() -> Non
         "Günlük özet hazırlanıyor.",
         "Başka bir işlem sürüyor. Biraz sonra tekrar deneyin.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_daily_empty_run_does_not_report_a_failure_or_replay_old_briefing() -> None:
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(status="empty", run_id="run-id", stage="complete")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(206, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    assert [call["text"] for call in sent if call["method"] == "sendMessage"] == [
+        "Günlük özet hazırlanıyor.",
+        "Bugün öne çıkan yeni bir gelişme yok; yeni bir özet kaydedilmedi.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_daily_records_delivery_only_after_message_succeeds() -> None:
+    outcomes: list[tuple[str, str]] = []
+
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(
+            status="ready",
+            run_id="run-id",
+            briefing={"id": "briefing-id", "items": []},
+        )
+
+    async def record(run_id: str, outcome: str) -> None:
+        outcomes.append((run_id, outcome))
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, _, _ = _handler(
+        ask=_unexpected_ask, claim=claim, daily=daily, daily_delivery=record
+    )
+    async def send_briefing(*_: object) -> None:
+        await handler._bot.send_message(1, TelegramMessage("Günlük özet"))
+
+    handler._send_briefing = send_briefing  # type: ignore[method-assign]
+    await handler.process_update(TelegramUpdate.model_validate(_payload(208, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    assert outcomes == [("run-id", "delivered")]
+
+
+@pytest.mark.asyncio
+async def test_daily_send_failure_is_recorded_without_changing_run_outcome() -> None:
+    outcomes: list[tuple[str, str]] = []
+
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(
+            status="ready",
+            run_id="run-id",
+            briefing={"id": "briefing-id", "items": []},
+        )
+
+    async def record(run_id: str, outcome: str) -> None:
+        outcomes.append((run_id, outcome))
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(
+        ask=_unexpected_ask, claim=claim, daily=daily, daily_delivery=record
+    )
+
+    async def fail_send(*_: object) -> None:
+        raise TelegramDeliveryError("telegram_transport_error")
+
+    handler._send_briefing = fail_send  # type: ignore[method-assign]
+    await handler.process_update(TelegramUpdate.model_validate(_payload(209, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    assert outcomes == [("run-id", "delivery_failed")]
+    assert "Günlük özet tamamlanamadı" in str(sent[-1]["text"])
+
+
+@pytest.mark.asyncio
+async def test_daily_failure_reports_only_safe_stage_and_reason() -> None:
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(
+            status="failed",
+            run_id="run-id",
+            stage="youtube",
+            reason="youtube_feed_access_error",
+        )
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(207, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    terminal = str(sent[-1]["text"])
+    assert terminal == (
+        "Günlük özet tamamlanamadı (YouTube / YouTube kaynak erişimi). "
+        "Ayrıntılar yönetim panelinde."
+    )
+    assert "run-id" not in terminal
 
 
 @pytest.mark.asyncio
@@ -1040,7 +1150,8 @@ def _handler(
     *,
     ask: Callable[..., Awaitable[dict[str, object]]],
     claim: Callable[..., Awaitable[bool]],
-    daily: Callable[[], Awaitable[tuple[str, dict[str, object] | None]]] | None = None,
+    daily: Callable[[], Awaitable[DailyRunResult]] | None = None,
+    daily_delivery: Callable[[str, str], Awaitable[None]] | None = None,
     gmail_interval: Callable[[int | None], Awaitable[str]] | None = None,
     gmail_connect: Callable[[Actor], Awaitable[tuple[str, str | None]]] | None = None,
 ) -> tuple[TelegramWebhookHandler, list[dict[str, object]], list[tuple[int, str]]]:
@@ -1069,6 +1180,7 @@ def _handler(
         ask=ask,  # type: ignore[arg-type]
         status=status,
         daily=daily,
+        daily_delivery=daily_delivery,
         gmail_interval=gmail_interval,
         gmail_connect=gmail_connect,
     )

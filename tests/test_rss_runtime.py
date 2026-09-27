@@ -367,6 +367,11 @@ async def test_rss_editor_changes_only_the_ordered_visible_five() -> None:
     )
     expected_ids = [f"news-{index}" for index in range(5, 0, -1)]
     assert [item["event_id"] for item in selected] == expected_ids
+    assert result["diagnostics"]["editor_input_count"] == 5
+    assert result["diagnostics"]["editor_input_event_ids"] == expected_ids
+    assert result["diagnostics"]["editor_output_valid"] is True
+    assert result["diagnostics"]["editor_output_event_ids"] == expected_ids
+    assert result["diagnostics"]["briefing_persisted"] is True
     assert len(persisted) == 1
     assert {
         item.event_id: item.published_at
@@ -618,6 +623,7 @@ async def test_runtime_exposes_safe_briefing_render_category() -> None:
 
     assert result["counts"]["failure_categories"]["briefing_render_error"] == 1
     assert result["message"] == "briefing_render_error"
+    assert result["diagnostics"]["briefing_persisted"] is False
 
 
 @pytest.mark.asyncio

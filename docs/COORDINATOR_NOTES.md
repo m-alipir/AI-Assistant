@@ -1,5 +1,7 @@
 # Koordinasyon notları
 
+- Test tekrarı sınırını koşullu yaz: başarılı gate gereksiz tekrarlanmaz; tam paket başarısızsa düzeltmeden sonra yeniden çalıştırılır. `Bir kez` talimatı fixer tarafından düzeltme sonrası doğrulamayı da engeller diye yorumlandı; acceptance için full green gerektiğini açıkça belirt.
+
 Kısa operasyon belleği; görev durumu PROGRESS.md, mevcut kapsam AGENT_BRIEF.md içinde tutulur.
 
 - Küçük ve bağlantılı işleri tek görevde tut; yalnız bağımsız büyük işleri paralelleştir. En fazla üç mevcut ajanı yeniden kullan.

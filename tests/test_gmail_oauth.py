@@ -10,7 +10,7 @@ from app.config.settings import Settings
 from app.email.core import TokenCipher
 from app.email.oauth import GmailOAuth, OAuthFlowError, classify_token_endpoint_error
 from app.email.telegram_link import TelegramGmailLinkIntents
-from app.main import create_app
+from app.main import _gmail_missing_setting_names, create_app
 
 
 class _IntentResult:
@@ -31,6 +31,7 @@ class _IntentResult:
 class _IntentSessions:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, object]] = {}
+
 
     def begin(self) -> "_IntentSessions":
         return self
@@ -137,6 +138,42 @@ class _IntentSessions:
                 row["actor_ciphertext"] = None
             return _IntentResult()
         raise AssertionError("unexpected intent SQL")
+
+
+def test_gmail_readiness_lists_only_missing_setting_names() -> None:
+    settings = Settings(
+        _env_file=None,
+        gmail_enabled=False,
+        gmail_client_id="",
+        gmail_client_secret="",
+        gmail_oauth_redirect_uri="",
+        app_encryption_key="",
+        admin_public_origin="",
+    )
+
+    assert _gmail_missing_setting_names(
+        settings, oauth_configured=False, encryption_ready=False
+    ) == [
+        "GMAIL_ENABLED",
+        "GMAIL_CLIENT_ID",
+        "GMAIL_CLIENT_SECRET or GMAIL_CLIENT_SECRET_FILE",
+        "GMAIL_OAUTH_REDIRECT_URI",
+        "APP_ENCRYPTION_KEY or APP_ENCRYPTION_KEY_FILE",
+        "ADMIN_PUBLIC_ORIGIN",
+    ]
+
+    ready = Settings(
+        _env_file=None,
+        gmail_enabled=True,
+        gmail_client_id="client-id",
+        gmail_client_secret="in-memory-test-secret",
+        gmail_oauth_redirect_uri="https://example.test/admin/gmail/callback",
+        app_encryption_key=Fernet.generate_key().decode("ascii"),
+        admin_public_origin="https://example.test",
+    )
+    assert _gmail_missing_setting_names(
+        ready, oauth_configured=True, encryption_ready=True
+    ) == []
 
 
 def test_oauth_authorization_url_is_readonly_and_stateful() -> None:

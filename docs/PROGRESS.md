@@ -3,7 +3,7 @@
 **Project state:** IN PROGRESS
 **Current milestone:** M22.2 remaining Telegram/budget/timing and CI repairs authorized; summary review active;
 M22.3 operator acceptance; M22.4 planned (M21 RSSHub observation deferred)
-**Last updated:** 2026-09-26
+**Last updated:** 2026-09-27
 **Completion estimate:** withheld until operator acceptance; implemented and planned work are listed
 below
 
@@ -722,6 +722,15 @@ and separate deferred M9 scheduler acceptance. Remote PostgreSQL TLS and an inte
 proxy become acceptance work only if those architectures are adopted.
 
 ## Tests
+
+- 2026-09-27: User-authorized project skill maintenance: Skills CLI 1.7.0 lists exactly one new
+  project skill for Codex (`supabase-postgres-best-practices`). All 36 installed Markdown files
+  match the inspected Supabase revision byte-for-byte; YAML metadata, pinned lock revision,
+  referenced files, documentation links, and `git diff --check` passed. No application code,
+  runtime configuration, DB, VDS, or provider was changed. Application/milestone tests were not
+  rerun for this documentation/skill-only task; existing M22 acceptance remains unchanged.
+  Read-only reviewer confirmed the main runtime/SQLAlchemy/Alembic flow and consumed installed
+  upsert/transaction references; accepted repository fit with no application edits or test runs.
 - 2026-09-26: Separate reviewer task completed read-only investigation: 23 selected offline tests
   and Ruff passed. Confirmed separate-card rendering and unused final-editor helper; DB-backed
   feedback tokens disprove the process-local-storage hypothesis. No production or remote CI log
@@ -1322,6 +1331,34 @@ proxy become acceptance work only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+
+- Approved September27 scheduled-history counters read: run12:45→13:00:01 Istanbul completed_with_errors; RSS processed8/failed5 (gatekeeper4, source-fetch1), 79 budget skips; YouTube processed1/failed15 (caption-access14, gatekeeper1), zero YouTube budget skips; LLM calls50/cache hits6. This establishes failing stages, not underlying caption/provider reason or missing-news count. Evidence returned to same Fixer for final bounded interpretation; no live replay, budget changes or production mutation. New0031 diagnostics still await deployment approval; manual00:25 failure remains separate/unproven.
+
+- Scheduled-warning read-only investigation complete: RSS5/YouTube15 warning totals combine multiple failure units (source/channel discovery, per-item processing and some briefing-level failures), not a count of missing news. Existing source health proves discovery only. Fixer prepared bounded September27 scheduled-history query returning timestamps/status and allowlisted integer counters, no raw message/content. Root requested exact read permission; output may remain partial because historical summary caps categories at eight. No historical replay/provider call or new code change.
+
+- Diagnostics acceptance green after concrete test fix: clean dotenv-disabled Python3.12 full pytest378 passed/6 integration skips/0 failed; whole-repo Ruff, focused Gmail28, disposable PostgreSQL migration0030→0031/sentinel/active retention/merged updates/rollback checks, diff/Graphify passed. New diagnostics ready locally; no publication/deployment; historical manual-daily root cause remains unproven. User-queued scheduled13:00 RSS5/YouTube15 warning investigation now assigned separately read-only to same Fixer after final report.
+
+- Final diagnostics CI gate initially failed: clean Python3.12 pytest 375 passed/6 skipped/3 Gmail fake-session failures caused by displaced helper methods. Fixer corrected methods; Gmail file28 passed and whole Ruff passed, but no post-fix full result yet. Same Fixer explicitly authorized required full rerun after this concrete correction; acceptance/deployment remains pending until green. Active-row preservation, merged progress/delivery, completed-row retention and real rollback evidence reported on disposable DB; historical manual failure still unknown.
+
+- Fixer reports local Gmail readiness and bounded runtime diagnostics implemented (migration0031, max50 records): correlated entry point/stage durations, YouTube counts, actual editor input/output IDs capped5, persistence and Telegram delivery; protected Admin safe view and terminal stage/reason. Focused checks passed (daily8, Gmail2, RSS6, YouTube13, Admin4), changed-path Ruff/diff/Graphify passed; disposable PostgreSQL0030→0031 preserved sentinel and cross-process run read/update. Historical manual-daily failure remains unproven. Same Fixer assigned final full CI Python3.12 and trace/retention/concurrency correctness gate because shared startup/schema changed; not yet committed/deployed or accepted as a daily root-cause fix.
+
+- Corrected approved read-only VDS aggregate passed: zero Gmail accounts/intents; twelve enabled YouTube sources report healthy attempts/success at 12:45–12:47 Istanbul on September27; latest briefing saved12:55:16. These health records establish source discovery success only, not transcript acquisition, extraction, committed video events or editor selection. Current release has no durable manual-daily stage trace; 00:25→00:27 failure cause remains unproven. Evidence sent to current Fixer; no production data/config changes.
+
+- User approved exact allowlisted VDS diagnostic. Gmail env/file-presence output: disabled, client ID absent, client secret absent, encryption-key input absent; redirect/public origin present. This establishes missing readiness inputs, not credential values; do not replace an existing encryption key without checking supported safe presence paths. DB aggregate query failed because `gmail_accounts.enabled` does not exist; no YouTube/database outcome obtained. Same Fixer requested schema-verified corrected query with identical output allowlist; production remains unchanged.
+
+- User accepts latest 13:00 scheduled Telegram summary format as MVP; shorter prose is optional polish, not active redesign. Screenshot also shows partial-error warning `RSS: 5 öğe; YouTube: 15 öğe`. Queued safe category/impact diagnosis only after current Fixer task final; no follow-up message sent to running worker. Counts alone do not establish source-channel failure. Residual TITLE/SNIPPET tags noted for later polish; live full success not inferred from summary delivery.
+
+- 2026-09-27: Completed the user-requested repository-led skills review. Used existing Graphify
+  and find-skills plus a read-only reviewer; searched Vercel Skills only after project documentation
+  analysis. Installed only Supabase's official PostgreSQL reference for Codex in `.agents/skills/`,
+  pinned to reviewed revision `551274ed2fe97c8fea1325f7ceb05803a542f8df` in `skills-lock.json`.
+  Added `docs/SKILLS.md` and an `AGENTS.md` workflow pointer with task triggers, exclusions,
+  source audit, and verification. Skipped overlapping/ill-fitting Alembic, Promptfoo, and vector
+  tuning candidates. Preserved the existing active Gmail/daily brief and unrelated local documents;
+  this tooling task does not accept or deploy any M22 feature. Remaining skill gaps: bounded Turkish
+  briefing evaluation and pgvector-specific recall/filter/dimension migration guidance.
+
+- Authorized M22.2 prerequisite repair/diagnostics: `/gmail` configuration-unavailable rather than login button and `/daily` generic failure after acknowledgment. One reused Fixer assigned actual Gmail readiness, daily root cause and supplied YouTube outcome investigation plus bounded correlated source→fetch→DB commit→editor input/selection→delivery evidence using existing Admin/run facilities. Production outcomes unknown until root-approved allowlisted diagnostics; no raw content/secrets/live ingestion authorized. Acceptance: truthful stage/reason/counts and committed/selected/delivered distinctions, safe bounded protected drill-down, fake negative paths and any necessary additive DB migration check. Active brief replaced without archives. Status: IN PROGRESS; not accepted or deployed.
 
 - Post-deployment0030 safe health checks passed: app and DB running/healthy, all Compose services running, localhost `/health` HTTP200; VDS code HEAD00920aa. No manual `/daily`, mail read or Google login triggered by coordinator.
 
