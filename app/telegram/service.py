@@ -29,6 +29,7 @@ from app.config.source_repository import (
 )
 from app.interests.feedback import record_briefing_feedback
 from app.knowledge.search import SearchFilters
+from app.normalize.source_items import safe_source_name
 from app.security import ProcessRateLimiter
 from app.telegram.core import (
     TelegramBotClient,
@@ -455,6 +456,7 @@ class TelegramWebhookHandler:
     ) -> None:
         stages = {
             "catalog": "Kaynaklar",
+            "briefing": "Özet hazırlığı",
             "youtube": "YouTube",
             "rss": "RSS",
             "editor": "Özet",
@@ -476,6 +478,11 @@ class TelegramWebhookHandler:
             "source_fetch_error": "kaynak erişimi",
             "provider_busy": "model hizmeti meşgul",
             "budget_exhausted": "günlük işlem sınırı",
+            "budget_exhausted_no_available_content": (
+                "günlük işlem sınırına takılan kayıtlar var; "
+                "özete girecek kullanılabilir yeni kayıt oluşturulamadı"
+            ),
+            "no_available_content": "özete girecek kullanılabilir yeni kayıt oluşturulamadı",
             "runtime_error": "beklenmeyen çalıştırma hatası",
         }
         safe_stage = stages.get(stage or "", "Çalıştırma")
@@ -1085,13 +1092,15 @@ def _render_daily_briefing(
         body = _briefing_summary(item)
         if not body:
             continue
+        source_name = _briefing_source_name(item)
+        suffix = f" ({source_name})" if source_name else ""
         number = len(visible) + 1
         current_length = len("\n\n".join(lines))
-        budget = 3500 - current_length - len(f"\n\n{number}. ")
+        budget = 3500 - current_length - len(f"\n\n{number}. ") - len(suffix)
         if budget < 36:
             break
-        body = _fit_briefing_sentence(body, min(420, budget))
-        line = f"{number}. {body}"
+        body = _fit_briefing_sentence(body, min(420 - len(suffix), budget))
+        line = f"{number}. {body}{suffix}"
         if len("\n\n".join([*lines, line])) > 3500:
             break
         lines.append(line)
@@ -1099,6 +1108,22 @@ def _render_daily_briefing(
     if not visible:
         return "Bugün öne çıkan yeni bir gelişme yok.", visible
     return "\n\n".join(lines), visible
+
+
+def _briefing_source_name(item: dict[str, object]) -> str | None:
+    """Render only a stored source name; never infer one from a source URL."""
+    values = item.get("source_names")
+    names = values if isinstance(values, list) else [item.get("source_name")]
+    safe_names = []
+    for value in names[:3]:
+        if not isinstance(value, str):
+            continue
+        name = safe_source_name(value, max_length=48)
+        if name and name not in safe_names:
+            safe_names.append(name)
+    if not safe_names and item.get("source_type") == "gmail":
+        safe_names = ["Gmail"]
+    return " · ".join(safe_names) or None
 
 
 def _briefing_summary(item: dict[str, object]) -> str:

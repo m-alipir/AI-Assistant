@@ -37,7 +37,7 @@ async def test_search_sql_supports_current_metadata_and_legacy_rows() -> None:
     try:
         async with engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "20260923_0028"
+            assert revision == "20260927_0032"
             await connection.execute(
                 text(
                     "INSERT INTO events (id, canonical_title, occurred_at, embedding_dimensions) "
@@ -179,7 +179,7 @@ async def test_telegram_migration_creates_replay_tables_and_channel_key() -> Non
                     )
                 )
             ).all()
-        assert revision == "20260923_0028"
+        assert revision == "20260927_0032"
         assert tables == {
             "telegram_updates",
             "telegram_feedback_tokens",
@@ -191,7 +191,9 @@ async def test_telegram_migration_creates_replay_tables_and_channel_key() -> Non
 
 
 @pytest.mark.asyncio
-async def test_event_persistence_clusters_sources_and_keeps_runtime_vectors() -> None:
+async def test_event_persistence_clusters_sources_and_keeps_runtime_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify M19 persistence against pgvector without a provider or user data."""
     assert DATABASE_URL is not None
     engine = create_async_engine(DATABASE_URL)
@@ -209,7 +211,7 @@ async def test_event_persistence_clusters_sources_and_keeps_runtime_vectors() ->
     )
     extracted._embedding_model_id, extracted._embedding_dimensions = "fixture-embed", 2
     extracted._event_embedding, extracted._claim_embeddings = [0.1, 0.2], [[0.2, 0.1]]
-    persist_event, *_ = database_persistence(sessions)
+    persist_event, persist_briefing, *_ = database_persistence(sessions)
 
     def item(name: str, digest: str) -> SourceItem:
         return SourceItem(
@@ -223,26 +225,186 @@ async def test_event_persistence_clusters_sources_and_keeps_runtime_vectors() ->
             discovered_at=now,
             fetched_at=now,
             timestamp_confidence=TimestampConfidence.SOURCE,
+            source_freshness_hours=48,
             content_hash=digest,
         )
 
     event_id = await persist_event(item("Fixture A", f"a-{suffix}"), gate, extracted)
     same_event_id = await persist_event(item("Fixture B", f"b-{suffix}"), gate, extracted)
     assert same_event_id == event_id
+    await persist_briefing([])
+    async with engine.connect() as connection:
+        briefing_id = await connection.scalar(
+            text("SELECT briefing_id FROM briefing_items WHERE event_id = :id LIMIT 1"),
+            {"id": event_id},
+        )
+
+    import app.config.settings as settings_module
+
+    safe_settings = settings_module.Settings.model_construct(database_url=DATABASE_URL)
+    monkeypatch.setattr(settings_module, "get_settings", lambda: safe_settings)
+    from app.main import create_app
+
+    application = create_app(settings=safe_settings)
     try:
+        detail = await application.state.agent_api_latest_briefing()
+        item_projection = next(
+            item for item in detail["items"] if item["event_id"] == event_id
+        )
+        from app.telegram.service import _render_daily_briefing
+
+        rendered, _ = _render_daily_briefing(None, [item_projection], None)
         async with engine.connect() as connection:
             row = (await connection.execute(text(
                 "SELECT embedding_model_id, embedding_dimensions, "
-                "(SELECT count(*) FROM event_sources WHERE event_id = :id) AS sources "
+                "(SELECT count(*) FROM event_sources WHERE event_id = :id) AS sources, "
+                "(SELECT count(*) FROM event_sources WHERE event_id = :id "
+                "AND source_name IS NOT NULL AND freshness_hours = 48) AS provenance "
                 "FROM events WHERE id = :id"), {"id": event_id})).mappings().one()
         assert row["embedding_model_id"] == "fixture-embed"
         assert row["embedding_dimensions"] == 2
         assert row["sources"] == 2
+        assert row["provenance"] == 2
+        assert item_projection["source_names"] == ["Fixture A", "Fixture B"]
+        assert rendered.endswith("(Fixture A · Fixture B)")
     finally:
+        await application.state.engine.dispose()
         async with engine.begin() as connection:
+            if briefing_id is not None:
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefing_item_content WHERE briefing_id = :briefing_id "
+                        "AND event_id = :event_id"
+                    ),
+                    {"briefing_id": briefing_id, "event_id": event_id},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefing_items WHERE briefing_id = :briefing_id "
+                        "AND event_id = :event_id"
+                    ),
+                    {"briefing_id": briefing_id, "event_id": event_id},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefings WHERE id = :id AND NOT EXISTS "
+                        "(SELECT 1 FROM briefing_items WHERE briefing_id = briefings.id)"
+                    ),
+                    {"id": briefing_id},
+                )
             for table in ("briefing_outbox", "event_search_metadata", "event_sources", "claims"):
                 await connection.execute(
                     text(f"DELETE FROM {table} WHERE event_id = :id"), {"id": event_id}
                 )
             await connection.execute(text("DELETE FROM events WHERE id = :id"), {"id": event_id})
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pending_briefing_filters_snapshotted_stale_rows_and_keeps_legacy_nulls() -> None:
+    """Apply saved event freshness during retries without excluding legacy NULL policy."""
+    assert DATABASE_URL is not None
+    engine = create_async_engine(DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix, now = uuid.uuid4().hex, datetime.now(UTC)
+    gate = GatekeeperResult(
+        relevant=True, global_importance=5, personal_relevance=5, importance=6,
+        needs_full_extraction=False, category_paths=[], entities=[], topics=[],
+    )
+    extracted = ExtractorResult(
+        compact_summary="Gelişme kısa ve Türkçe biçimde özetlendi.",
+        what_changed="Yeni gelişme doğrulandı.", claims=[], entities=[], topics=[],
+        uncertainty_markers=[],
+    )
+    persist_event, persist_briefing, *_rest, has_pending, _correlate = database_persistence(
+        sessions
+    )
+
+    def item(
+        name: str, digest: str, published_at: datetime, freshness_hours: int | None
+    ) -> SourceItem:
+        return SourceItem(
+            source_name=name,
+            source_kind=SourceKind.RSS,
+            stream=SourceStream.TECH,
+            canonical_url=f"https://example.test/{digest}",
+            title=f"{digest} adlı özgün gelişme",
+            snippet="Fixture only",
+            source_published_at=published_at,
+            discovered_at=published_at,
+            fetched_at=now,
+            timestamp_confidence=TimestampConfidence.SOURCE,
+            source_freshness_hours=freshness_hours,
+            content_hash=digest,
+        )
+
+    pending_before = await has_pending()
+    stale_id = await persist_event(
+        item("Fixture stale", f"stale-{suffix}", now - timedelta(days=2), 1), gate, extracted
+    )
+    assert await has_pending() is pending_before
+
+    legacy_id = await persist_event(
+        item("Fixture legacy", f"legacy-{suffix}", now - timedelta(days=2), None), gate, extracted
+    )
+    assert await has_pending() is True
+    briefing_id: str | None = None
+    try:
+        await persist_briefing([])
+        async with engine.connect() as connection:
+            briefing_id = await connection.scalar(
+                text("SELECT briefing_id FROM briefing_items WHERE event_id = :id LIMIT 1"),
+                {"id": legacy_id},
+            )
+            pending_ids = set((await connection.scalars(
+                text("SELECT event_id FROM briefing_outbox WHERE event_id IN (:stale, :legacy)"),
+                {"stale": stale_id, "legacy": legacy_id},
+            )).all())
+            saved_ids = set((await connection.scalars(
+                text("SELECT event_id FROM briefing_items WHERE event_id IN (:stale, :legacy)"),
+                {"stale": stale_id, "legacy": legacy_id},
+            )).all())
+        assert pending_ids == {stale_id}
+        assert saved_ids == {legacy_id}
+    finally:
+        async with engine.begin() as connection:
+            if briefing_id is not None:
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefing_item_content WHERE briefing_id = :briefing_id "
+                        "AND event_id IN (:stale, :legacy)"
+                    ),
+                    {"briefing_id": briefing_id, "stale": stale_id, "legacy": legacy_id},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefing_items WHERE briefing_id = :briefing_id "
+                        "AND event_id IN (:stale, :legacy)"
+                    ),
+                    {"briefing_id": briefing_id, "stale": stale_id, "legacy": legacy_id},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM briefings WHERE id = :id AND NOT EXISTS "
+                        "(SELECT 1 FROM briefing_items WHERE briefing_id = briefings.id)"
+                    ),
+                    {"id": briefing_id},
+                )
+            await connection.execute(
+                text("DELETE FROM briefing_item_content WHERE event_id IN (:stale, :legacy)"),
+                {"stale": stale_id, "legacy": legacy_id},
+            )
+            await connection.execute(
+                text("DELETE FROM briefing_items WHERE event_id IN (:stale, :legacy)"),
+                {"stale": stale_id, "legacy": legacy_id},
+            )
+            for table in ("briefing_outbox", "event_search_metadata", "event_sources", "claims"):
+                await connection.execute(
+                    text(f"DELETE FROM {table} WHERE event_id IN (:stale, :legacy)"),
+                    {"stale": stale_id, "legacy": legacy_id},
+                )
+            await connection.execute(
+                text("DELETE FROM events WHERE id IN (:stale, :legacy)"),
+                {"stale": stale_id, "legacy": legacy_id},
+            )
         await engine.dispose()

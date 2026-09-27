@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable, Iterable
 
 from app.dedup.cache import InMemoryDedupCache
-from app.freshness.gate import assess_freshness
+from app.freshness.gate import assess_freshness, freshness_window_hours
 from app.ingestion.schemas import FreshnessPolicy, FreshnessStatus, IngestionRun, SourceItem
 
 CandidateProcessor = Callable[[SourceItem], Awaitable[None]]
@@ -25,7 +25,14 @@ class DeterministicIngestionPipeline:
         run = IngestionRun()
         for item in items:
             status = assess_freshness(item, self._freshness_policy)
-            assessed = item.model_copy(update={"freshness_status": status})
+            assessed = item.model_copy(
+                update={
+                    "freshness_status": status,
+                    "source_freshness_hours": freshness_window_hours(
+                        item, self._freshness_policy
+                    ),
+                }
+            )
             if status is FreshnessStatus.STALE:
                 run.stale.append(assessed)
                 continue

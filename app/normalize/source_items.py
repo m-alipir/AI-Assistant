@@ -11,6 +11,16 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 
 
+def safe_source_name(value: str | None, *, max_length: int = 200) -> str | None:
+    """Return a bounded plain-text source label without URLs or markup delimiters."""
+    if not value:
+        return None
+    name = " ".join(value.split())
+    name = re.sub(r"[\x00-\x1f\x7f()\[\]<>]", "", name)
+    name = re.sub(r"(?i)https?://\S+", "", name).strip()
+    return name[:max_length] or None
+
+
 def normalize_url(value: str | None) -> str | None:
     """Remove fragments and common tracking parameters while preserving article identity."""
     if not value:

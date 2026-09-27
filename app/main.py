@@ -75,6 +75,7 @@ from app.knowledge.search import (
     fetch_sql_event,
 )
 from app.llm.core import (
+    BudgetExceeded,
     BudgetTracker,
     ExtractionFlow,
     InMemoryResultCache,
@@ -121,6 +122,33 @@ def _delivery_delay_note(target_at: datetime, delivered_at: datetime) -> str | N
 
 def _daily_failure_details(result: Mapping[str, object]) -> tuple[str, str]:
     counts = result.get("counts")
+    diagnostics = result.get("diagnostics")
+    youtube = counts.get("youtube") if isinstance(counts, dict) else None
+    if (
+        isinstance(counts, dict)
+        and isinstance(youtube, dict)
+        and isinstance(diagnostics, dict)
+        and type(counts.get("processed")) is int
+        and counts["processed"] == 0
+        and type(youtube.get("processed")) is int
+        and youtube["processed"] == 0
+        and type(diagnostics.get("editor_input_count")) is int
+        and diagnostics["editor_input_count"] == 0
+        and diagnostics.get("editor_status") == "not_started"
+        and diagnostics.get("briefing_persisted") is None
+    ):
+        budget_skips = sum(
+            value
+            for value in (counts.get("budget_exhausted"), youtube.get("budget_exhausted"))
+            if type(value) is int and value > 0
+        )
+        reason = (
+            "budget_exhausted_no_available_content"
+            if budget_skips
+            else "no_available_content"
+        )
+        return "briefing", reason
+
     flows = [counts] if isinstance(counts, dict) else []
     if isinstance(counts, dict):
         flows.extend(
@@ -468,6 +496,8 @@ def create_app(
         ) = database_source_health(sessions)
         provider_coordinator = ProviderCallCoordinator()
         app.state.provider_coordinator = provider_coordinator
+        # ponytail: local reservations; use a durable lease if this becomes multi-worker.
+        app.state.llm_budget_tracker = BudgetTracker()
         notification_dispatchers = []
         if active_settings.ntfy_enabled:
             ntfy_notifier = NtfyNotifier(
@@ -710,7 +740,7 @@ def create_app(
                 ),
                 model_settings,
                 InMemoryResultCache(),
-                BudgetTracker(),
+                app.state.llm_budget_tracker,
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
@@ -1000,7 +1030,7 @@ def create_app(
                 ),
                 model_settings,
                 InMemoryResultCache(),
-                BudgetTracker(),
+                app.state.llm_budget_tracker,
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
@@ -1040,30 +1070,34 @@ def create_app(
             )
             # Gmail has its own configured poll interval; briefing runs only consume its outbox.
             gmail_run = GmailRun()
-            youtube_call_start = len(router.calls)
-            youtube_started = time.perf_counter()
-            youtube_run = await YouTubeRuntimeJob(
-                catalog,
-                ExtractionFlow(router),
-                persist_event,
-                known_item,
-                mark_post_llm_failure,
-                is_post_llm_failed,
-                refresh_blocked_item,
-                discovery=YouTubeDiscovery(
-                    HttpFeedFetcher(
-                        allow_private_hosts=active_settings.allow_private_source_urls,
-                        allow_insecure_http=active_settings.allow_insecure_source_urls,
-                    )
-                ),
-                source_repository=source_repository,
-            ).run()
-            youtube_duration_ms = int((time.perf_counter() - youtube_started) * 1000)
-            youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
-            rss_call_start = len(router.calls)
-            rss_started = time.perf_counter()
-            result = await job.run([*gmail_run.action_items, *youtube_run.briefing_items])
-            rss_duration_ms = int((time.perf_counter() - rss_started) * 1000)
+            await router.reserve_role("editor")
+            try:
+                youtube_call_start = len(router.calls)
+                youtube_started = time.perf_counter()
+                youtube_run = await YouTubeRuntimeJob(
+                    catalog,
+                    ExtractionFlow(router),
+                    persist_event,
+                    known_item,
+                    mark_post_llm_failure,
+                    is_post_llm_failed,
+                    refresh_blocked_item,
+                    discovery=YouTubeDiscovery(
+                        HttpFeedFetcher(
+                            allow_private_hosts=active_settings.allow_private_source_urls,
+                            allow_insecure_http=active_settings.allow_insecure_source_urls,
+                        )
+                    ),
+                    source_repository=source_repository,
+                ).run()
+                youtube_duration_ms = int((time.perf_counter() - youtube_started) * 1000)
+                youtube_llm = usage_breakdown(router.calls[youtube_call_start:])
+                rss_call_start = len(router.calls)
+                rss_started = time.perf_counter()
+                result = await job.run([*gmail_run.action_items, *youtube_run.briefing_items])
+                rss_duration_ms = int((time.perf_counter() - rss_started) * 1000)
+            finally:
+                router.release_role("editor")
             rss_usages = router.calls[rss_call_start:]
             briefing_editor_llm = usage_breakdown(
                 [usage for usage in rss_usages if usage.role == "editor"]
@@ -1200,8 +1234,22 @@ def create_app(
                     deliver_notifications=deliver_notifications,
                     runtime_run_id=run_id,
                 )
-            except Exception:
+            except Exception as error:
                 completed_at = datetime.now(UTC)
+                budget_failure = isinstance(error, BudgetExceeded)
+                dimension = (
+                    error.dimension
+                    if budget_failure
+                    and error.dimension in {"usd", "calls", "role", "unknown_cost", "soft"}
+                    else "unknown"
+                )
+                stage = "editor" if budget_failure else "runtime"
+                reason = "budget_exhausted" if budget_failure else "runtime_error"
+                counts = (
+                    {"budget_exhausted": 1, "budget_dimensions": {dimension: 1}}
+                    if budget_failure
+                    else {}
+                )
                 try:
                     await runtime_run_records.finish(
                         run_id,
@@ -1210,9 +1258,10 @@ def create_app(
                         json.dumps(
                             {
                                 "terminal_error": {
-                                    "stage": "runtime",
-                                    "reason": "runtime_error",
+                                    "stage": stage,
+                                    "reason": reason,
                                 },
+                                "counts": counts,
                                 "duration_ms": int(
                                     (completed_at - started_at).total_seconds() * 1000
                                 ),
@@ -1226,11 +1275,16 @@ def create_app(
                     )
                 return {
                     "status": "failed",
-                    "counts": {},
+                    "counts": counts,
                     "runtime_run_id": run_id,
                     "entry_point": entry_point,
                     "diagnostics": {
-                        "terminal_error": {"stage": "runtime", "reason": "runtime_error"}
+                        "terminal_error": {"stage": stage, "reason": reason},
+                        **(
+                            {"budget_dimension": dimension}
+                            if budget_failure
+                            else {}
+                        ),
                     },
                 }
             completed_at = datetime.now(UTC)
@@ -1303,7 +1357,7 @@ def create_app(
                     ),
                     model_settings,
                     InMemoryResultCache(),
-                    BudgetTracker(),
+                    app.state.llm_budget_tracker,
                     SqlAlchemyLlmRepository(sessions),
                     provider_coordinator=provider_coordinator,
                 )
@@ -1362,7 +1416,10 @@ def create_app(
                                 "ARRAY(SELECT es.canonical_url FROM event_sources es "
                                 "WHERE es.event_id = bi.event_id "
                                 "AND es.canonical_url IS NOT NULL "
-                                "ORDER BY es.canonical_url LIMIT 3) AS source_links "
+                                "ORDER BY es.canonical_url LIMIT 3) AS source_links, "
+                                "ARRAY(SELECT DISTINCT es.source_name FROM event_sources es "
+                                "WHERE es.event_id = bi.event_id AND es.source_name IS NOT NULL "
+                                "ORDER BY es.source_name LIMIT 3) AS source_names "
                                 "FROM briefing_items bi "
                                 "LEFT JOIN briefing_item_content bc "
                                 "ON bc.briefing_id = bi.briefing_id "
@@ -1442,6 +1499,7 @@ def create_app(
                         ),
                         published_at=row["occurred_at"],
                         source_links=safe_links(row["source_links"] or []),
+                        source_names=[str(value) for value in row["source_names"] or []][:3],
                         verified_facts=facts,
                         stored_inferences=[
                             str(value)[:400] for value in (row["inferences"] or []) if value
@@ -1839,7 +1897,7 @@ def create_app(
                 ),
                 model_settings,
                 InMemoryResultCache(),
-                BudgetTracker(),
+                app.state.llm_budget_tracker,
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )
@@ -1912,7 +1970,7 @@ def create_app(
                 ),
                 model_settings,
                 InMemoryResultCache(),
-                BudgetTracker(),
+                app.state.llm_budget_tracker,
                 SqlAlchemyLlmRepository(sessions),
                 provider_coordinator=provider_coordinator,
             )

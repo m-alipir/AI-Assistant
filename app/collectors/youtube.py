@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import socket
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -104,6 +105,14 @@ class SubtitleFetcher(Protocol):
         """Return available manually authored and automatic VTT caption tracks."""
 
 
+class SubtitleFetchError(ProviderError):
+    """A caption failure reduced to a safe, bounded diagnostic category."""
+
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__(f"subtitle retrieval failed: {category}")
+
+
 class YtDlpSubtitleFetcher:
     """yt-dlp wrapper that downloads selected VTT captions but never media or audio."""
 
@@ -130,7 +139,7 @@ class YtDlpSubtitleFetcher:
                 timeout=self._timeout_seconds + 5,
             )
         except TimeoutError as error:
-            raise ProviderError("subtitle retrieval exceeded its configured timeout") from error
+            raise SubtitleFetchError("timeout") from error
 
     def _fetch_subtitles_sync(
         self, video_url: str, languages: tuple[str, ...]
@@ -160,15 +169,15 @@ class YtDlpSubtitleFetcher:
                 with yt_dlp.YoutubeDL(options) as downloader:
                     info: Mapping[str, Any] = downloader.extract_info(safe_video_url, download=True)
             except Exception as error:  # yt-dlp has a broad exception hierarchy
-                raise ProviderError("yt-dlp subtitle retrieval failed") from error
+                raise SubtitleFetchError(_subtitle_error_category(error)) from error
             return _requested_subtitle_tracks(info, Path(directory), self._max_subtitle_bytes)
 
 
 def select_preferred_track(
     tracks: list[SubtitleTrack], preferred_language: str | None = None
 ) -> SubtitleTrack | None:
-    """Prefer configured language, then Turkish/English, before another available track."""
-    language_order = [preferred_language, "tr", "en"] if preferred_language else ["tr", "en"]
+    """Prefer manual captions, never crossing a configured language boundary."""
+    language_order = [preferred_language] if preferred_language else ["tr", "en"]
     for language in language_order:
         if not language:
             continue
@@ -179,6 +188,8 @@ def select_preferred_track(
         selected = next((track for track in matches if track.is_automatic), None)
         if selected is not None:
             return selected
+    if preferred_language:
+        return None
     return next((track for track in tracks if not track.is_automatic), None) or next(
         (track for track in tracks if track.is_automatic), None
     )
@@ -195,19 +206,40 @@ def _matches_language(track_language: str, preferred_language: str) -> bool:
 def _subtitle_languages_for(
     preferred_language: str | None, legacy_languages: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """Keep legacy requests unchanged, but request only the configured language family."""
+    """Preserve any-language defaults and request only a configured language family."""
     if preferred_language is None:
         return legacy_languages
     variants = {
         "tr": ("tr", "tr-TR", "tr-CY"),
         "en": ("en", "en-US", "en-GB", "en-AU", "en-CA", "en-IN", "en-NZ"),
     }
-    requested = list(variants[preferred_language])
-    for fallback in ("tr", "en"):
-        for language in variants[fallback]:
-            if language not in requested:
-                requested.append(language)
-    return tuple(requested)
+    return variants[preferred_language]
+
+
+def _subtitle_error_category(error: BaseException) -> str:
+    """Classify known yt-dlp failures without retaining their provider-supplied text."""
+    current: BaseException | None = error
+    messages: list[str] = []
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, socket.timeout)):
+            return "timeout"
+        messages.append(str(current).casefold()[:500])
+        current = current.__cause__ or current.__context__
+    message = " ".join(messages)
+    if re.search(r"\b429\b|too many requests|rate.?limit", message):
+        return "rate_limited"
+    if re.search(
+        r"\b(?:401|403)\b|forbidden|private video|sign in to confirm|members.only",
+        message,
+    ):
+        return "access_denied"
+    if re.search(r"timed?\s*out|timeout|deadline exceeded", message):
+        return "timeout"
+    if error.__class__.__name__ == "DownloadError":
+        return "download_error"
+    return "unknown"
 
 
 def parse_webvtt(vtt: str) -> list[TranscriptSegment]:

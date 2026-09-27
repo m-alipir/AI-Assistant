@@ -1,9 +1,33 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.2 remaining Telegram/budget/timing and CI repairs authorized; summary review active;
+**Current milestone:** M22.2 approved reliability repairs passed local acceptance; live gates remain;
 M22.3 operator acceptance; M22.4 planned (M21 RSSHub observation deferred)
 **Last updated:** 2026-09-27
+**Final local acceptance (Fixer REPORT):** Latest code: 398 collected, 398 passed,
+0 failed/errors/skipped, using migrated disposable PostgreSQL and blocked external
+network. Ruff/diff checks passed; Graphify refreshed. Final fixture correction in
+tests/test_search_postgres_integration.py. Earlier 389-test baseline is superseded.
+No CI/VDS/provider/Gmail live success or deployment claimed. Migration 0032 is local only.
+**Coordination correction:** Fixer reverted to its obsolete preparation prompt after
+context compaction. Latest turn has no implementation/test/report evidence; approved
+repairs remain incomplete. Current execution restored at the top of AGENT_BRIEF.md.
+**Latest delivery:** Corrected assignment produced an implementation REPORT: 139 focused
+offline tests passed, Ruff/diff checks passed, Graphify refreshed (agent evidence).
+Disposable DB Alembic upgrade failed before integration tests; repair assigned.
+Source-name/freshness persistence remains unresolved; no migration authorized.
+No CI/VDS/live-provider acceptance or deployment is claimed.
+**Follow-up evidence:** Disposable PostgreSQL reached head 20260927_0031 through
+31 migrations; 18 integration tests passed. Driver/readiness harness and four stale
+head assertions corrected. Prior 389-test suite is a historical baseline only.
+Coordinator now authorizes a minimal local additive nullable provenance-name/freshness
+migration after worker confirmed persistence loses these SourceItem fields. Preserve
+legacy rows/behavior; no VDS schema action authorized. Final acceptance still pending.
+**Provenance delivery:** Fixer reports 20260927_0032 implemented with nullable source
+labels/policy, shared persistence and pending-selection freshness checks; legacy NULL
+rows retained. Upgrade/downgrade/re-upgrade passed on disposable DB, 17 PostgreSQL and
+17 focused offline tests passed; Ruff/diff/Graphify passed. Final full offline suite on
+latest code assigned because shared ingestion/briefing paths changed. CI/VDS/live gates open.
 **Completion estimate:** withheld until operator acceptance; implemented and planned work are listed
 below
 
@@ -591,6 +615,24 @@ content appears in Git, logs, callback responses, or notification history.
 
 **Scope note:** M21 RSSHub work is not a prerequisite and was not continued.
 
+### 2026-09-27 reliability and cost plan
+- [~] User approved implementation with existing yt-dlp settings/invocation diagnosis first,
+  and short provenance-derived source names at item ends (no URLs). Reused Fixer owns related
+  code/tests; root owns docs/acceptance. No visual fallback or unapproved paid/live/account work.
+- [x] Safe latest manual trace reviewed: no editor candidates after RSS budget skips and
+  YouTube caption-access failures. Exact budget dimension/caption subtype remains unproven.
+- [~] Local no-candidate/budget outcome correction: Fixer reports 43 Telegram tests and scoped
+  Ruff/diff/Graphify passed. Not committed/deployed; full/live acceptance remains open.
+- [~] Research snapshot reuse, protected editor/Gmail USD and call budgets, fewer semantic
+  calls, Jev decision-only suitability, caption-access repair and managed OAuth.
+  Plan and acceptance gates: AGENT_BRIEF.md. Research and read-only optimizer review finished;
+  implementation and measured benefit remain unverified. Optimizer confirmed compact_summary,
+  exact-key cache and briefing_item_content exist; reuse before adding storage. Provider lock
+  is not a reservation; specify USD/call claims/release and unknown-cost handling.
+- [x] Approve revised local repair plan; retain existing yt-dlp and compact Telegram MVP.
+- [ ] Separate exact paid evaluation/Gmail broker adoption decision remains open. Preserve
+  source-backed facts; measure quality, coverage, cost and latency before model/provider changes.
+
 ---
 
 ## M22.3 — Source management UI and automatic categorization
@@ -722,6 +764,20 @@ and separate deferred M9 scheduler acceptance. Remote PostgreSQL TLS and an inte
 proxy become acceptance work only if those architectures are adopted.
 
 ## Tests
+
+- 2026-09-27: Targeted Reviewer research completed with project docs, Graphify and narrow local
+  source evidence; no files/credentials/config/tests or DB/VDS/provider/mail operations.
+  Caption failure collapse and subtitle language-policy mismatch confirmed; outbox freshness
+  check not visible in inspected path. Actual production cause and Actions status remain open.
+
+- 2026-09-27: Optimizer plan review completed read-only with Graphify and narrow source evidence.
+  No tests, provider/account/DB/CI/VDS calls or worker file changes. Documentation whitespace
+  checks passed; no performance gain, content-quality or live-login acceptance claimed.
+
+- 2026-09-27: Latest Fixer final reports 43 offline Telegram tests passed, scoped Ruff,
+  git diff --check and Graphify update passed for no-candidate/budget outcome handling.
+  Changed app/main.py, app/telegram/service.py and tests/test_telegram.py. No full suite,
+  CI, VDS deployment, YouTube/provider or Gmail live acceptance in this task.
 
 - 2026-09-27: User-authorized project skill maintenance: Skills CLI 1.7.0 lists exactly one new
   project skill for Codex (`supabase-postgres-best-practices`). All 36 installed Markdown files
@@ -1331,6 +1387,48 @@ proxy become acceptance work only if those architectures are adopted.
   and PostgreSQL reported revision `20260906_0004`, `events.status`, and `event_relations`.
 
 ## Last work log
+
+- 2026-09-27: User approved implementation: yt-dlp settings/invocation first, preserve current
+  collector; brief items show verified short source names in parentheses and no links. Updated
+  product/active brief and assigned one reused Fixer for related diagnostics/caption/budget/
+  daily/rendering changes and offline checks. Paid/VDS/account/broker boundaries remain gated.
+
+- 2026-09-27: Received read-only final and wrote a concrete ordered plan in AGENT_BRIEF.md:
+  safe caption/budget evidence, existing caption-path repair, fresh stored-content reuse and
+  USD/call reservation, repeatable manual /daily and accepted Turkish output, separate Gmail
+  readonly/client/topology decision, then offline/CI/deployment gates after approval.
+  Official Composio pricing confirms managed-app Free 20K calls/month, quota stop; actual
+  Gmail readonly grant unverified. No visual fallback or paid evaluation. Actions evidence
+  was unavailable; no CI success claimed. Root changed planning docs only.
+
+- 2026-09-27: User requested a researched plan before implementation. Reused Reviewer assigned
+  a narrow read-only trace of caption failure classification, /daily budget/reuse contracts,
+  and Gmail readiness/intent/callback boundaries. Existing optimizer research reused; no
+  visual fallback, paid test, source/mail request, production inspection or repair authorized.
+
+- 2026-09-27: User correction applied: removed visual/video-model fallback from the active
+  plan. Caption-access errors do not prove captions are absent; investigate the existing
+  retrieval path first. New paid API/service/test or cost-increasing work requires advance
+  cost/max-spend disclosure and exact authorization. No paid test or video analysis started.
+
+- 2026-09-27: Incorporated optimizer final: corrected the earlier missing compact-summary
+  field assumption; reuse existing event/cache/briefing content before migration. Budget
+  reservations need USD plus call claims, release and fallback/retry accounting; existing
+  concurrency guard does not supply them. OpenRouter video_url + compatible Gemini AI Studio
+  is the first bounded video fallback candidate, with client/schema/provider validation.
+  Managed Gmail remains a separate readonly/privacy decision. Plan awaits approval; no new
+  architecture, provider inference or deployment performed.
+
+- 2026-09-27: Research/plan only: official Jev docs confirm typed Decisions API, not a prose
+  editor; model changes alone cannot repair exhausted budget or inaccessible captions.
+  Draft prioritizes validated stored-event reuse, protected editor budget, narrow failure
+  reasons and measured optional providers. Managed Gmail OAuth is a separate privacy/scope
+  decision; no working live login claimed. Reused worker assigned optimizer plan review;
+  new architecture, paid calls and deployment are not authorized by this plan.
+
+- Approved fresh manual trace read: September27 14:36:14→14:37:15 Istanbul (~61s), completed_with_errors, editor not started/input0; RSS processed0, sourcefetch failure1, budget skips74; YouTube committed0/processed0, captionaccess failures15, budget skips2. No persisted terminal runtime exception; failure notice delivered. Demonstrated issue is generic failure on no candidate output, not proven runtime crash. Same Fixer assigned truthful reason-specific notice regression and bounded current-freshness persisted-candidate reuse investigation without budget increase/paid replay; material product-path change needs proposal.
+
+- User reports fresh `/daily` failure after0031 diagnostics deployment and requests fix investigation. Same Fixer assigned newest persisted manual-stage safe query and concrete local root-cause repair; root obtains allowlisted output permission. User will personally configure Google OAuth/server secrets, no account or credential handling by agents; exact current callback route clarification requested. No live replay or production mutation authorized.
 
 - Post-0031 safe production checks: app/DB running healthy, all Compose services running, localhost healthHTTP200, deployed codeHEADeb23775. Fresh run trace/content ingestion not tested by health gate.
 

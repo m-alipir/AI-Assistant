@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.collectors.youtube import SubtitleTrack, YouTubeDiscovery
+from app.collectors.youtube import SubtitleFetchError, SubtitleTrack, YouTubeDiscovery
 from app.config.sources import SourceCatalog, YouTubeSourceConfig
 from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
 from app.jobs.youtube_runtime import YouTubeRuntimeJob
@@ -175,13 +175,39 @@ async def test_youtube_runtime_fresh_captioned_video_becomes_worth_watching() ->
         "preferred_language_captions": 0,
         "skipped_no_captions": 0,
         "skipped_no_preferred_language_caption": 0,
+        "caption_diagnostics": {
+            "caption_missing": 0,
+            "preferred_language_missing": 0,
+            "access_denied": 0,
+            "rate_limited": 0,
+            "timeout": 0,
+            "download_error": 0,
+            "empty_or_parse_failure": 0,
+            "unknown": 0,
+        },
         "metadata_fallbacks": 0,
         "failed": 0,
         "budget_exhausted": 0,
+        "budget_dimensions": {
+            "usd": 0,
+            "calls": 0,
+            "role": 0,
+            "unknown_cost": 0,
+            "soft": 0,
+            "unknown": 0,
+        },
         "post_llm_blocked": 0,
         "failure_categories": {
             "youtube_feed_access_error": 0,
             "yt_dlp_caption_access_error": 0,
+            "yt_dlp_caption_access_denied": 0,
+            "yt_dlp_caption_rate_limited": 0,
+            "yt_dlp_caption_timeout": 0,
+            "yt_dlp_caption_download_error": 0,
+            "yt_dlp_caption_unknown": 0,
+            "captions_missing": 0,
+            "preferred_language_caption_missing": 0,
+            "caption_empty_or_parse_failure": 0,
             "gatekeeper_error": 0,
             "extractor_error": 0,
             "event_persistence_error": 0,
@@ -305,6 +331,7 @@ async def test_youtube_budget_exhaustion_is_a_skip_not_a_processing_failure(stag
 
     assert result.response()["status"] == "completed"
     assert result.response()["budget_exhausted"] == 1
+    assert result.response()["budget_dimensions"]["unknown"] == 1
     assert result.failed == 0
     assert result.errors == []
 
@@ -353,18 +380,19 @@ async def test_youtube_runtime_no_captions_is_safe_skip() -> None:
         clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
     ).run()
     assert result.skipped_no_captions == 1
+    assert result.caption_diagnostics["caption_missing"] == 1
     assert result.failed == 0
     assert result.llm_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_youtube_runtime_uses_alternate_caption_language_before_llm() -> None:
+async def test_youtube_runtime_skips_unrelated_caption_language_before_llm() -> None:
     subtitles = FakeSubtitles(
         [SubtitleTrack("en-US", False, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi")]
     )
 
     async def persist(item, gate, extracted) -> str:
-        return "alternate-language-event"
+        raise AssertionError("unrelated-language caption must not be persisted")
 
     async def unknown(content_hash: str) -> bool:
         return False
@@ -379,13 +407,49 @@ async def test_youtube_runtime_uses_alternate_caption_language_before_llm() -> N
         subtitles=subtitles,
         clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
     ).run()
-    assert result.skipped_no_preferred_language_caption == 0
-    assert result.captions_available == 1
-    assert result.processed == 1
+    assert result.skipped_no_preferred_language_caption == 1
+    assert result.captions_available == 0
+    assert result.processed == 0
     assert result.failed == 0
-    assert result.llm_calls == 2
+    assert result.llm_calls == 0
+    assert result.caption_diagnostics["preferred_language_missing"] == 1
     assert subtitles.urls == ["https://www.youtube.com/watch?v=abc123"]
     assert subtitles.requested_languages == ["tr"]
+
+
+@pytest.mark.asyncio
+async def test_configured_language_missing_skips_long_description_fallback() -> None:
+    payload = (Path(__file__).parent / "fixtures" / "youtube.xml").read_bytes()
+    description = (
+        b"A long description that must not become a substitute for requested captions. " * 3
+    )
+    payload = payload.replace(b"<author>", b"<summary>" + description + b"</summary><author>")
+
+    class DescribedFetcher:
+        async def fetch(self, url: str) -> bytes:
+            return payload
+
+    async def persist(item, gate, extracted) -> str:
+        raise AssertionError("missing configured captions must skip")
+
+    result = await YouTubeRuntimeJob(
+        catalog("tr"),
+        FakeFlow(),
+        persist,
+        lambda _: _not_known(),
+        discovery=YouTubeDiscovery(DescribedFetcher()),
+        subtitles=FakeSubtitles([]),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+    ).run()
+
+    assert result.skipped_no_preferred_language_caption == 1
+    assert result.metadata_fallbacks == 0
+    assert result.llm_calls == 0
+    assert result.caption_diagnostics["preferred_language_missing"] == 1
+
+
+async def _not_known() -> bool:
+    return False
 
 
 @pytest.mark.asyncio
@@ -394,7 +458,7 @@ async def test_youtube_runtime_classifies_caption_access_failure_safely() -> Non
         async def fetch_subtitles(
             self, video_url: str, preferred_language: str | None = None
         ) -> list[SubtitleTrack]:
-            raise RuntimeError("provider payload must not be exposed")
+            raise SubtitleFetchError("rate_limited")
 
     async def persist(item, gate, extracted) -> str:
         raise AssertionError("caption failure must not persist")
@@ -440,6 +504,29 @@ async def test_youtube_runtime_classifies_caption_access_failure_safely() -> Non
         "stale": 0,
         "duplicates": 0,
     }
+    assert result.response()["caption_diagnostics"]["rate_limited"] == 1
+    assert result.response()["failure_categories"]["yt_dlp_caption_rate_limited"] == 1
+
+
+@pytest.mark.asyncio
+async def test_youtube_runtime_counts_empty_caption_parse_without_llm_fallback() -> None:
+    async def persist(item, gate, extracted) -> str:
+        raise AssertionError("empty caption parse must skip")
+
+    result = await YouTubeRuntimeJob(
+        catalog("tr"),
+        FakeFlow(),
+        persist,
+        lambda _: _not_known(),
+        discovery=YouTubeDiscovery(FixtureFetcher()),
+        subtitles=FakeSubtitles([SubtitleTrack("tr", False, "not a WebVTT document")]),
+        clock=lambda: datetime(2026, 9, 6, 12, tzinfo=UTC),
+    ).run()
+
+    assert result.caption_diagnostics["empty_or_parse_failure"] == 1
+    assert result.skipped_no_preferred_language_caption == 0
+    assert result.metadata_fallbacks == 0
+    assert result.llm_calls == 0
 
 
 @pytest.mark.asyncio

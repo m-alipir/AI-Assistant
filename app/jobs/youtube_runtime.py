@@ -8,6 +8,7 @@ from app.briefing.core import BriefingItem
 from app.collectors.rss import HttpFeedFetcher
 from app.collectors.youtube import (
     SubtitleFetcher,
+    SubtitleFetchError,
     YouTubeDiscovery,
     YtDlpSubtitleFetcher,
     parse_webvtt,
@@ -44,6 +45,18 @@ class YouTubeRun:
     post_llm_blocked: int = 0
     youtube_feed_access_errors: int = 0
     caption_access_errors: int = 0
+    caption_diagnostics: dict[str, int] = field(
+        default_factory=lambda: {
+            "caption_missing": 0,
+            "preferred_language_missing": 0,
+            "access_denied": 0,
+            "rate_limited": 0,
+            "timeout": 0,
+            "download_error": 0,
+            "empty_or_parse_failure": 0,
+            "unknown": 0,
+        }
+    )
     gatekeeper_errors: int = 0
     extractor_errors: int = 0
     event_persistence_errors: int = 0
@@ -52,6 +65,16 @@ class YouTubeRun:
     source_health_persistence_errors: int = 0
     provider_busy: int = 0
     budget_exhausted: int = 0
+    budget_dimensions: dict[str, int] = field(
+        default_factory=lambda: {
+            "usd": 0,
+            "calls": 0,
+            "role": 0,
+            "unknown_cost": 0,
+            "soft": 0,
+            "unknown": 0,
+        }
+    )
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
     briefing_items: list[BriefingItem] = field(default_factory=list)
@@ -70,13 +93,28 @@ class YouTubeRun:
             "preferred_language_captions": self.preferred_language_captions,
             "skipped_no_captions": self.skipped_no_captions,
             "skipped_no_preferred_language_caption": self.skipped_no_preferred_language_caption,
+            "caption_diagnostics": dict(self.caption_diagnostics),
             "metadata_fallbacks": self.metadata_fallbacks,
             "failed": self.failed,
             "budget_exhausted": self.budget_exhausted,
+            "budget_dimensions": dict(self.budget_dimensions),
             "post_llm_blocked": self.post_llm_blocked,
             "failure_categories": {
                 "youtube_feed_access_error": self.youtube_feed_access_errors,
                 "yt_dlp_caption_access_error": self.caption_access_errors,
+                **{
+                    f"yt_dlp_caption_{category}": self.caption_diagnostics[category]
+                    for category in (
+                        "access_denied", "rate_limited", "timeout", "download_error", "unknown"
+                    )
+                },
+                "captions_missing": self.caption_diagnostics["caption_missing"],
+                "preferred_language_caption_missing": self.caption_diagnostics[
+                    "preferred_language_missing"
+                ],
+                "caption_empty_or_parse_failure": self.caption_diagnostics[
+                    "empty_or_parse_failure"
+                ],
                 "gatekeeper_error": self.gatekeeper_errors,
                 "extractor_error": self.extractor_errors,
                 "event_persistence_error": self.event_persistence_errors,
@@ -137,8 +175,8 @@ class YouTubeRuntimeJob:
             source_counts = run.source_outcomes.setdefault(
                 source.name,
                 {"discovered": 0, "items_seen": 0, "relevant": 0, "events_committed": 0,
-                 "processed": 0, "failed": 0, "captions_available": 0,
-                 "caption_access_errors": 0, "extractor_errors": 0,
+                "processed": 0, "failed": 0, "captions_available": 0,
+                "caption_access_errors": 0, "extractor_errors": 0,
                  "event_persistence_errors": 0},
             )
             source_counts["items_seen"] += 1
@@ -167,10 +205,17 @@ class YouTubeRuntimeJob:
                     tracks = await self._subtitles.fetch_subtitles(
                         item.canonical_url, preferred_language=source.language
                     )
-                except Exception:
+                except Exception as error:
                     run.failed += 1
                     run.caption_access_errors += 1
                     run.errors.append(f"{item.source_name}: yt_dlp_caption_access_error")
+                    category = (
+                        error.category
+                        if isinstance(error, SubtitleFetchError)
+                        and error.category in run.caption_diagnostics
+                        else "unknown"
+                    )
+                    run.caption_diagnostics[category] += 1
                     return
                 transcript = ""
                 provenance = "description_only"
@@ -183,12 +228,22 @@ class YouTubeRuntimeJob:
                         run.captions_available += 1
                         if source.language and _language_matches(track.language, source.language):
                             run.preferred_language_captions += 1
+                    else:
+                        run.caption_diagnostics["empty_or_parse_failure"] += 1
                 if not transcript:
+                    if source.language:
+                        if track is None:
+                            run.skipped_no_preferred_language_caption += 1
+                            run.caption_diagnostics["preferred_language_missing"] += 1
+                        return
+                    if not tracks:
+                        run.caption_diagnostics["caption_missing"] += 1
                     if item.snippet and len(item.snippet.strip()) >= 80:
                         transcript = item.snippet.strip()
                         run.metadata_fallbacks += 1
                     else:
-                        run.skipped_no_captions += 1
+                        if not tracks:
+                            run.skipped_no_captions += 1
                         return
                 try:
                     gate = await self._flow.gate(item.title, item.snippet or "", item.content_hash)
@@ -197,8 +252,14 @@ class YouTubeRuntimeJob:
                     run.provider_busy += 1
                     run.errors.append(f"{item.source_name}: provider_busy")
                     return
-                except BudgetExceeded:
+                except BudgetExceeded as error:
                     run.budget_exhausted += 1
+                    dimension = (
+                        error.dimension
+                        if error.dimension in run.budget_dimensions
+                        else "unknown"
+                    )
+                    run.budget_dimensions[dimension] += 1
                     return
                 except Exception:
                     run.failed += 1
@@ -218,8 +279,14 @@ class YouTubeRuntimeJob:
                     run.provider_busy += 1
                     run.errors.append(f"{item.source_name}: provider_busy")
                     return
-                except BudgetExceeded:
+                except BudgetExceeded as error:
                     run.budget_exhausted += 1
+                    dimension = (
+                        error.dimension
+                        if error.dimension in run.budget_dimensions
+                        else "unknown"
+                    )
+                    run.budget_dimensions[dimension] += 1
                     return
                 except Exception:
                     run.failed += 1

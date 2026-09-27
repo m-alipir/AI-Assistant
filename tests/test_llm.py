@@ -35,9 +35,13 @@ def settings() -> ModelSettings:
     return ModelSettings(
         roles={
             "gatekeeper": RoleConfig(
-                model="fake/primary", fallbacks=["fake/fallback"], max_output_tokens=10
+                model="fake/primary", fallbacks=["fake/fallback"], max_output_tokens=10,
+                input_usd_per_million=1, output_usd_per_million=1,
             ),
-            "extractor": RoleConfig(model="fake/extractor", max_output_tokens=10),
+            "extractor": RoleConfig(
+                model="fake/extractor", max_output_tokens=10,
+                input_usd_per_million=1, output_usd_per_million=1,
+            ),
         },
         budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1, reserve_email_action_usd=0.1),
     )
@@ -113,7 +117,9 @@ async def test_embedding_role_uses_dedicated_endpoint_and_reuses_validated_cache
             },
         )
 
-    embedding = RoleConfig(model="fake/embed", dimensions=2, max_output_tokens=1)
+    embedding = RoleConfig(
+        model="fake/embed", dimensions=2, max_output_tokens=1, input_usd_per_million=1
+    )
     model_settings = ModelSettings(
         roles={"embedding": embedding},
         budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
@@ -148,6 +154,89 @@ def test_budget_reserves_capacity_for_email_actions() -> None:
     with pytest.raises(BudgetExceeded):
         tracker.allow("gatekeeper", 0.1, policy, config)
     tracker.allow("gatekeeper", 0.1, policy, config, email_action=True)
+
+
+def test_budget_tracker_holds_reserved_role_cost_and_calls() -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    policy = BudgetPolicy(
+        daily_soft_usd=0.5,
+        daily_hard_usd=1,
+        reserve_email_action_usd=0.2,
+        daily_max_provider_calls=4,
+    )
+    config = RoleConfig(model="fake/editor", input_usd_per_million=1)
+    tracker = BudgetTracker(day=now.date())
+    tracker.reserve("editor", 0.4, 2, policy, config, now)
+
+    tracker.allow("extractor", 0.3, policy, config, now=now)
+    tracker.record("extractor", 0.3, policy, config, now)
+    with pytest.raises(BudgetExceeded) as exhausted_usd:
+        tracker.allow("extractor", 0.2, policy, config, now=now)
+    assert exhausted_usd.value.dimension == "usd"
+    tracker.record("extractor", 0.1, policy, config, now)
+    with pytest.raises(BudgetExceeded) as exhausted_calls:
+        tracker.allow("extractor", 0, policy, config, now=now)
+    assert exhausted_calls.value.dimension == "calls"
+    tracker.allow("editor", 0.1, policy, config, now=now)
+    tracker.record("editor", 0.1, policy, config, now)
+    assert tracker.reserved_calls["editor"] == 1
+    tracker.release("editor")
+    assert tracker.reserved_calls == {}
+    assert tracker.reserved_usd == {}
+
+
+def test_budget_tracker_keeps_one_email_action_fallback_allowance() -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    policy = BudgetPolicy(daily_soft_usd=1, daily_hard_usd=2, daily_max_provider_calls=2)
+    config = RoleConfig(model="fake/model", input_usd_per_million=1)
+    tracker = BudgetTracker(day=now.date(), email_action_reserved_calls=1)
+
+    tracker.allow("extractor", 0, policy, config, now=now)
+    tracker.record("extractor", 0, policy, config, now)
+    with pytest.raises(BudgetExceeded) as call_limit:
+        tracker.allow("extractor", 0, policy, config, now=now)
+    assert call_limit.value.dimension == "calls"
+    tracker.allow("gatekeeper", 0, policy, config, email_action=True, now=now)
+
+
+@pytest.mark.asyncio
+async def test_router_reserves_fallback_calls_and_rejects_unknown_cost() -> None:
+    tracker = BudgetTracker()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    priced = Router(
+        OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
+        priced_settings(),
+        InMemoryResultCache(),
+        tracker,
+    )
+    await priced.reserve_role("gatekeeper")
+    assert tracker.reserved_calls["gatekeeper"] == 2
+    priced.release_role("gatekeeper")
+
+    unpriced_settings = settings()
+    unpriced_settings.roles["gatekeeper"] = RoleConfig(model="fake/unpriced")
+    calls = 0
+
+    def unexpected(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    router = Router(
+        OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(unexpected)),
+        unpriced_settings,
+        InMemoryResultCache(),
+        BudgetTracker(),
+    )
+    with pytest.raises(BudgetExceeded, match="cost is not configured") as unknown_cost:
+        await router.structured(
+            "gatekeeper", "prompt", "hash", GatekeeperResult, "test-v1", "v1"
+        )
+    assert unknown_cost.value.dimension == "unknown_cost"
+    assert calls == 0
 
 
 @pytest.mark.asyncio
@@ -662,7 +751,7 @@ async def test_sqlalchemy_repository_aggregates_metadata_only_daily_spend() -> N
 
 
 @pytest.mark.asyncio
-async def test_unknown_cost_configuration_still_has_a_durable_provider_call_ceiling() -> None:
+async def test_unknown_cost_configuration_blocks_provider_work() -> None:
     payload = {
         "relevant": True,
         "global_importance": 1,
@@ -692,12 +781,10 @@ async def test_unknown_cost_configuration_still_has_a_durable_provider_call_ceil
         BudgetTracker(),
     )
 
-    assert (await ExtractionFlow(router).gate("one", "snippet", "first")).relevant
-    with pytest.raises(BudgetExceeded, match="provider-call"):
-        await ExtractionFlow(router).gate("two", "snippet", "second")
-
-    assert requests == 1
-    assert router.calls[0].cost_status == "unavailable"
+    with pytest.raises(BudgetExceeded, match="cost is not configured"):
+        await ExtractionFlow(router).gate("one", "snippet", "first")
+    assert requests == 0
+    assert router.calls == []
 
 
 @pytest.mark.asyncio
@@ -724,7 +811,11 @@ async def test_shared_provider_coordinator_rejects_concurrent_uncached_work() ->
 
     coordinator = ProviderCallCoordinator()
     model_settings = ModelSettings(
-        roles={"gatekeeper": RoleConfig(model="fake/model")},
+        roles={
+            "gatekeeper": RoleConfig(
+                model="fake/model", input_usd_per_million=1, output_usd_per_million=1
+            )
+        },
         budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
     )
     first = Router(
@@ -773,7 +864,12 @@ async def test_role_configured_prompt_ceiling_limits_gatekeeper_metadata() -> No
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
         ModelSettings(
-            roles={"gatekeeper": RoleConfig(model="fake/model", max_input_chars=256)},
+            roles={
+                "gatekeeper": RoleConfig(
+                    model="fake/model", max_input_chars=256,
+                    input_usd_per_million=1, output_usd_per_million=1,
+                )
+            },
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),

@@ -7,7 +7,13 @@ from app.collectors.rss import FeedFetcher, RssCollector
 from app.config.sources import RssSourceConfig, load_source_catalog
 from app.dedup.cache import InMemoryDedupCache
 from app.ingestion.pipeline import DeterministicIngestionPipeline
-from app.ingestion.schemas import SourceItem, SourceKind, SourceStream, TimestampConfidence
+from app.ingestion.schemas import (
+    FreshnessPolicy,
+    SourceItem,
+    SourceKind,
+    SourceStream,
+    TimestampConfidence,
+)
 from app.normalize.source_items import content_fingerprint
 from app.providers.contracts import ProviderError
 
@@ -20,6 +26,35 @@ class FixtureFeedFetcher(FeedFetcher):
     async def fetch(self, url: str) -> bytes:
         self.urls.append(url)
         return self.payload
+
+
+@pytest.mark.asyncio
+async def test_pipeline_attaches_effective_freshness_policy_to_accepted_items() -> None:
+    fetched_at = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    item = SourceItem(
+        source_name="Fixture RSS",
+        source_kind=SourceKind.RSS,
+        stream=SourceStream.TECH,
+        title="Fresh update",
+        snippet="A compact source excerpt.",
+        source_published_at=fetched_at,
+        discovered_at=fetched_at,
+        fetched_at=fetched_at,
+        timestamp_confidence=TimestampConfidence.SOURCE,
+        content_hash="effective-policy-snapshot",
+    )
+    seen: list[SourceItem] = []
+
+    async def capture(candidate: SourceItem) -> None:
+        seen.append(candidate)
+
+    pipeline = DeterministicIngestionPipeline(
+        FreshnessPolicy(news_freshness_hours=18), InMemoryDedupCache()
+    )
+    run = await pipeline.process([item], capture)
+
+    assert run.accepted[0].source_freshness_hours == 18
+    assert seen[0].source_freshness_hours == 18
 
 
 @pytest.mark.asyncio

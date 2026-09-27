@@ -54,6 +54,7 @@ class AgentBriefingItem(BaseModel):
     why_important: str | None = None
     published_at: datetime | None = None
     source_links: list[str] = Field(default_factory=list)
+    source_names: list[str] = Field(default_factory=list, max_length=3)
     verified_facts: list[str] = Field(default_factory=list)
     stored_inferences: list[str] = Field(default_factory=list)
     email_action: AgentEmailAction | None = None

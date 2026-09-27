@@ -165,6 +165,7 @@ async def test_rss_budget_exhaustion_is_a_skip_not_a_processing_failure(stage: s
     assert result["status"] == "completed"
     assert counts["failed"] == 0
     assert counts["budget_exhausted"] == 1
+    assert counts["budget_dimensions"]["unknown"] == 1
     assert "budget_exhausted" not in result["message"]
 
 
@@ -245,6 +246,14 @@ async def test_rss_runtime_filters_before_llm_then_persists_event_and_briefing()
         "processed": 1,
         "failed": 0,
         "budget_exhausted": 0,
+        "budget_dimensions": {
+            "usd": 0,
+            "calls": 0,
+            "role": 0,
+            "unknown_cost": 0,
+            "soft": 0,
+            "unknown": 0,
+        },
         "failure_categories": {
             "briefing_render_error": 0,
             "briefing_persistence_error": 0,
@@ -310,7 +319,12 @@ async def test_rss_editor_changes_only_the_ordered_visible_five() -> None:
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(editor_transport)),
         ModelSettings(
-            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=4_000)},
+            roles={
+                "editor": RoleConfig(
+                    model="fake/editor", max_input_chars=4_000,
+                    input_usd_per_million=1, output_usd_per_million=1,
+                )
+            },
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),
@@ -432,7 +446,12 @@ async def test_briefing_editor_budget_skip_is_reported_in_run_counts(monkeypatch
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(lambda _: None)),
         ModelSettings(
-            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=4_000)},
+            roles={
+                "editor": RoleConfig(
+                    model="fake/editor", max_input_chars=4_000,
+                    input_usd_per_million=1, output_usd_per_million=1,
+                )
+            },
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),
@@ -792,7 +811,7 @@ async def test_durable_outbox_is_locked_and_deleted_only_with_briefing_persisten
     await persist_briefing([])
 
     statements = "\n".join(sessions.session.statements)
-    assert "FOR UPDATE SKIP LOCKED" in statements
+    assert "FOR UPDATE OF bo SKIP LOCKED" in statements
     assert "INSERT INTO briefings" in statements
     assert "DELETE FROM briefing_outbox" in statements
 

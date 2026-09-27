@@ -17,6 +17,7 @@ from app.config.source_repository import (
     SourceAlreadyExists,
     SourceNotFound,
 )
+from app.main import _daily_failure_details
 from app.notifications.core import Notification
 from app.telegram.api import router
 from app.telegram.core import (
@@ -561,6 +562,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                 {
                     "event_id": "world-event",
                     "section": "World in Brief",
+                    "source_name": "Waymo",
                     "title": "Waymo expands its robotaxi fleet",
                     "summary": "Waymo robotaksi hizmetini yeni şehirlere genişletiyor.",
                     "what_changed": "Waymo robotaksi hizmetini yeni şehirlere genişletti.",
@@ -570,6 +572,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                 {
                     "event_id": "tech-event",
                     "section": "Tech & Industry",
+                    "source_name": "Google Photos",
                     "title": "Google Photos adds AI collages",
                     "summary": (
                         "Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta "
@@ -589,6 +592,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                 {
                     "event_id": "you-event",
                     "section": "For You",
+                    "source_name": "NVIDIA",
                     "title": "NVIDIA expands its developer tools",
                     "summary": "NVIDIA expands its developer tools",
                     "what_changed": "NVIDIA geliştiriciler için yeni araçlar sundu.",
@@ -598,6 +602,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                 {
                     "event_id": "watch-event",
                     "section": "Worth Watching",
+                    "source_name": "Fixture Channel",
                     "title": "A useful robotics interview",
                     "summary": "Görüşme robotik alanındaki son çalışmaları açıklıyor.",
                     "source_links": ["https://example.test/video"],
@@ -605,6 +610,7 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
                 {
                     "event_id": "action-event",
                     "section": "Action Required",
+                    "source_type": "gmail",
                     "title": "Reply to the recruiter",
                     "summary": "İşe alım uzmanı cuma gününe kadar yanıt istedi.",
                     "email_action": {"classification": "recruiter"},
@@ -618,15 +624,19 @@ async def test_briefing_delivery_is_concise_turkish_ordered_and_keeps_item_feedb
     assert len(messages) == 3  # one digest plus the separate first-14-day question
     digest = str(messages[0]["text"])
     assert digest.startswith(
-        "Bugün şunlar oldu:\n\n1. İşe alım uzmanı cuma gününe kadar yanıt istedi."
+        "Bugün şunlar oldu:\n\n1. İşe alım uzmanı cuma gününe kadar yanıt istedi. (Gmail)"
     )
-    assert "\n\n2. NVIDIA geliştiriciler için yeni araçlar sundu." in digest
+    assert "\n\n2. NVIDIA geliştiriciler için yeni araçlar sundu. (NVIDIA)" in digest
     assert (
-        "\n\n3. Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta kullanıma açtı."
+        "\n\n3. Google Fotoğraflar, yapay zekâ kolajlarını Android ve iOS'ta kullanıma açtı. "
+        "(Google Photos)"
         in digest
     )
-    assert "\n\n4. Waymo robotaksi hizmetini yeni şehirlere genişletiyor." in digest
-    assert "\n\n5. Görüşme robotik alanındaki son çalışmaları açıklıyor." in digest
+    assert "\n\n4. Waymo robotaksi hizmetini yeni şehirlere genişletiyor. (Waymo)" in digest
+    assert (
+        "\n\n5. Görüşme robotik alanındaki son çalışmaları açıklıyor. (Fixture Channel)"
+        in digest
+    )
     assert "Günlük Özet" not in digest and "\nTeknoloji\n" not in digest
     assert "TITLE" not in digest and "SNIPPET" not in digest
     assert "Google Photos adds AI collages" not in digest
@@ -652,6 +662,7 @@ def test_daily_briefing_hides_source_links_but_keeps_provenance_under_3500_chara
     items = [
         {
             "section": "Tech & Industry",
+            "source_name": "TRT Haber",
             "summary": "Önemli gelişme kısa ve anlaşılır biçimde duyuruldu. " * 8,
             "source_links": [f"https://example.test/{index}?x={'a' * 1800}"],
         }
@@ -664,6 +675,39 @@ def test_daily_briefing_hides_source_links_but_keeps_provenance_under_3500_chara
     assert len(visible) == len(items)
     assert all(item["source_links"] for item in visible)
     assert "https://example.test/" not in text
+    assert text.count("(TRT Haber)") == len(items)
+
+
+def test_daily_briefing_bounds_and_sanitizes_stored_source_name() -> None:
+    text, visible = _render_daily_briefing(
+        None,
+        [{
+            "summary": "Gelişme kısa ve Türkçe anlatıldı.",
+            "source_name": "TRT\nHaber <https://example.test>",
+        }],
+        None,
+    )
+
+    assert text.endswith("(TRT Haber)")
+    assert "TRT\nHaber" not in text
+    assert text.count("\n\n") == 1
+    assert "TITLE" not in text
+    assert visible
+
+
+def test_daily_briefing_renders_only_bounded_stored_source_names() -> None:
+    text, _ = _render_daily_briefing(
+        None,
+        [{
+            "summary": "Yeni gelişme kısa ve anlaşılır biçimde aktarıldı.",
+            "source_names": ["TRT Haber", "AA", "https://example.test/source"],
+            "source_links": ["https://example.test/article"],
+        }],
+        None,
+    )
+
+    assert text.endswith("(TRT Haber · AA)")
+    assert "https://" not in text
 
 
 def test_daily_briefing_does_not_present_legacy_english_as_turkish() -> None:
@@ -854,6 +898,62 @@ async def test_daily_failure_reports_only_safe_stage_and_reason() -> None:
         "Ayrıntılar yönetim panelinde."
     )
     assert "run-id" not in terminal
+
+
+@pytest.mark.asyncio
+async def test_daily_failure_reports_budget_and_no_available_briefing_candidates() -> None:
+    runtime_result = {
+        "status": "completed_with_errors",
+        "counts": {
+            "processed": 0,
+            "failed": 1,
+            "budget_exhausted": 74,
+            "failure_categories": {"source_fetch_error": 1},
+            "youtube": {
+                "processed": 0,
+                "failed": 15,
+                "events_committed": 0,
+                "budget_exhausted": 2,
+                "failure_categories": {"yt_dlp_caption_access_error": 15},
+            },
+        },
+        "diagnostics": {
+            "editor_status": "not_started",
+            "editor_input_count": 0,
+            "briefing_persisted": None,
+        },
+    }
+    stage, reason = _daily_failure_details(runtime_result)
+    assert (stage, reason) == ("briefing", "budget_exhausted_no_available_content")
+
+    runtime_result["counts"]["budget_exhausted"] = 0
+    runtime_result["counts"]["youtube"]["budget_exhausted"] = 0
+    assert _daily_failure_details(runtime_result) == ("briefing", "no_available_content")
+
+    runtime_result["diagnostics"]["briefing_persisted"] = False
+    runtime_result["counts"]["failure_categories"] = {"briefing_persistence_error": 1}
+    assert _daily_failure_details(runtime_result) == (
+        "briefing_persist",
+        "briefing_persistence_error",
+    )
+
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(status="failed", stage=stage, reason=reason)
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(210, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    terminal = str(sent[-1]["text"])
+    assert terminal == (
+        "Günlük özet tamamlanamadı (Özet hazırlığı / günlük işlem sınırına takılan kayıtlar var; "
+        "özete girecek kullanılabilir yeni kayıt oluşturulamadı). Ayrıntılar yönetim panelinde."
+    )
+    assert "try later" not in terminal.lower()
 
 
 @pytest.mark.asyncio

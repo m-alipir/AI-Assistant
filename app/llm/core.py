@@ -59,6 +59,10 @@ class LlmError(RuntimeError):
 class BudgetExceeded(LlmError):
     """Raised before an optional request would exceed the configured hard limit."""
 
+    def __init__(self, message: str = "budget exceeded", dimension: str = "unknown") -> None:
+        self.dimension = dimension
+        super().__init__(message)
+
 
 class ProviderBusy(LlmError):
     """Raised when another in-process request owns the provider work slot."""
@@ -118,6 +122,16 @@ class BudgetPolicy(BaseModel):
     daily_hard_usd: float = Field(ge=0)
     reserve_email_action_usd: float = Field(default=0, ge=0)
     daily_max_provider_calls: int = Field(default=50, ge=1, le=10_000)
+
+
+def _configured_cost(config: RoleConfig, output_tokens: int = 0) -> float | None:
+    """Estimate a bounded call only when at least one provider rate is configured."""
+    if not (config.input_usd_per_million or config.output_usd_per_million):
+        return None
+    return (
+        config.estimated_input_tokens * config.input_usd_per_million
+        + output_tokens * config.output_usd_per_million
+    ) / 1_000_000
 
 
 class OpenRouterConfig(BaseModel):
@@ -364,6 +378,9 @@ class BudgetTracker:
     role_spend: dict[str, float] = field(default_factory=dict)
     provider_calls: int = 0
     role_provider_calls: dict[str, int] = field(default_factory=dict)
+    reserved_usd: dict[str, float] = field(default_factory=dict)
+    reserved_calls: dict[str, int] = field(default_factory=dict)
+    email_action_reserved_calls: int = 0
     day: date = field(default_factory=lambda: datetime.now(UTC).date())
 
     def _rollover(self, now: datetime) -> None:
@@ -371,6 +388,7 @@ class BudgetTracker:
             self.day = now.astimezone(UTC).date()
             self.spent_usd, self.role_spend = 0, {}
             self.provider_calls, self.role_provider_calls = 0, {}
+            self.reserved_usd, self.reserved_calls = {}, {}
 
     def hydrate(
         self,
@@ -413,15 +431,51 @@ class BudgetTracker:
             if email_action
             else policy.daily_hard_usd - policy.reserve_email_action_usd
         )
-        if self.provider_calls >= policy.daily_max_provider_calls:
-            raise BudgetExceeded("daily LLM provider-call limit would be exceeded")
-        if self.spent_usd + estimated_cost > limit:
-            raise BudgetExceeded("daily LLM hard budget would be exceeded")
+        held_calls = sum(self.reserved_calls.values()) - self.reserved_calls.get(role, 0)
+        if not email_action:
+            held_calls += self.email_action_reserved_calls
+        if self.provider_calls + held_calls >= policy.daily_max_provider_calls:
+            raise BudgetExceeded("daily LLM provider-call limit would be exceeded", "calls")
+        held_usd = sum(self.reserved_usd.values()) - self.reserved_usd.get(role, 0)
+        if self.spent_usd + held_usd + estimated_cost > limit:
+            raise BudgetExceeded("daily LLM hard budget would be exceeded", "usd")
         if (
             config.daily_hard_usd is not None
             and self.role_spend.get(role, 0) + estimated_cost > config.daily_hard_usd
         ):
-            raise BudgetExceeded("role LLM hard budget would be exceeded")
+            raise BudgetExceeded("role LLM hard budget would be exceeded", "role")
+
+    def reserve(
+        self,
+        role: str,
+        estimated_usd: float,
+        provider_calls: int,
+        policy: BudgetPolicy,
+        config: RoleConfig,
+        now: datetime,
+    ) -> None:
+        """Hold a downstream role's worst-case spend and call capacity."""
+        self._rollover(now)
+        if role in self.reserved_usd or role in self.reserved_calls:
+            raise BudgetExceeded("role budget is already reserved", "role")
+        held_usd = sum(self.reserved_usd.values())
+        held_calls = sum(self.reserved_calls.values()) + self.email_action_reserved_calls
+        limit = policy.daily_hard_usd - policy.reserve_email_action_usd
+        if self.spent_usd + held_usd + estimated_usd > limit:
+            raise BudgetExceeded("daily LLM budget cannot reserve the requested role", "usd")
+        if self.provider_calls + held_calls + provider_calls > policy.daily_max_provider_calls:
+            raise BudgetExceeded("daily LLM calls cannot reserve the requested role", "calls")
+        if (
+            config.daily_hard_usd is not None
+            and self.role_spend.get(role, 0) + estimated_usd > config.daily_hard_usd
+        ):
+            raise BudgetExceeded("role LLM budget cannot reserve the requested role", "role")
+        self.reserved_usd[role] = estimated_usd
+        self.reserved_calls[role] = provider_calls
+
+    def release(self, role: str) -> None:
+        self.reserved_usd.pop(role, None)
+        self.reserved_calls.pop(role, None)
 
     def record(
         self,
@@ -439,6 +493,15 @@ class BudgetTracker:
         if provider_call:
             self.provider_calls += 1
             self.role_provider_calls[role] = self.role_provider_calls.get(role, 0) + 1
+            if role in self.reserved_calls:
+                self.reserved_calls[role] = max(0, self.reserved_calls[role] - 1)
+                if not self.reserved_calls[role]:
+                    self.reserved_calls.pop(role)
+        if role in self.reserved_usd:
+            held_cost = max(cost, _configured_cost(config, config.max_output_tokens) or 0)
+            self.reserved_usd[role] = max(0, self.reserved_usd[role] - held_cost)
+            if not self.reserved_usd[role]:
+                self.reserved_usd.pop(role)
         return self.spent_usd >= policy.daily_soft_usd or (
             config.daily_soft_usd is not None and self.role_spend[role] >= config.daily_soft_usd
         )
@@ -461,12 +524,39 @@ class Router:
         self._repository = repository
         self._clock = clock or (lambda: datetime.now(UTC))
         self._provider_coordinator = provider_coordinator
+        gatekeeper = settings.roles.get("gatekeeper")
+        if gatekeeper is not None:
+            budget.email_action_reserved_calls = max(
+                budget.email_action_reserved_calls, len(gatekeeper.candidates)
+            )
         self.calls: list[Usage] = []
         self.soft_limit_reached = False
         self.soft_limit_roles: set[str] = set()
 
     def _now(self) -> datetime:
         return self._clock().astimezone(UTC)
+
+    async def reserve_role(self, role: str) -> None:
+        """Reserve every configured fallback attempt before upstream work starts."""
+        config = self._settings.roles[role]
+        estimated = _configured_cost(config, config.max_output_tokens)
+        if estimated is None:
+            raise BudgetExceeded(
+                "provider cost is not configured for the reserved role", "unknown_cost"
+            )
+        now = self._now()
+        await self._sync_budget(now)
+        self._budget.reserve(
+            role,
+            estimated * len(config.candidates),
+            len(config.candidates),
+            self._settings.budgets,
+            config,
+            now,
+        )
+
+    def release_role(self, role: str) -> None:
+        self._budget.release(role)
 
     async def _sync_budget(self, now: datetime) -> None:
         if self._repository is None:
@@ -554,11 +644,14 @@ class Router:
                     logger.info(
                         "Skipping optional LLM work after soft budget limit for role %s", role
                     )
-                    raise BudgetExceeded("optional LLM work skipped after soft budget limit")
-                estimated = (
-                    config.max_output_tokens * config.output_usd_per_million
-                    + config.estimated_input_tokens * config.input_usd_per_million
-                ) / 1_000_000
+                    raise BudgetExceeded(
+                        "optional LLM work skipped after soft budget limit", "soft"
+                    )
+                estimated = _configured_cost(config, config.max_output_tokens)
+                if estimated is None:
+                    raise BudgetExceeded(
+                        "provider cost is not configured for this role", "unknown_cost"
+                    )
                 self._budget.allow(
                     role, estimated, self._settings.budgets, config, email_action, now
                 )
@@ -599,7 +692,15 @@ class Router:
                     continue
                 except LlmError as error:
                     await self._record_attempt(
-                        role, Usage(model_id=model_id), "provider_failed", config, now
+                        role,
+                        Usage(
+                            model_id=model_id,
+                            estimated_cost_usd=estimated,
+                            cost_status="configured_estimate",
+                        ),
+                        "provider_failed",
+                        config,
+                        now,
                     )
                     last_error = error
                     continue
@@ -644,7 +745,9 @@ class Router:
             for model_id in config.candidates:
                 now = self._now()
                 await self._sync_budget(now)
-                estimated = config.estimated_input_tokens * config.input_usd_per_million / 1_000_000
+                estimated = _configured_cost(config)
+                if estimated is None:
+                    raise BudgetExceeded("embedding cost is not configured", "unknown_cost")
                 self._budget.allow(role, estimated, self._settings.budgets, config, now=now)
                 try:
                     response = await self._client.embed(model_id, inputs, config, input_type)
@@ -674,7 +777,15 @@ class Router:
                     )
                 except (LlmError, ValueError) as error:
                     await self._record_attempt(
-                        role, Usage(model_id=model_id), "provider_failed", config, now
+                        role,
+                        Usage(
+                            model_id=model_id,
+                            estimated_cost_usd=estimated,
+                            cost_status="configured_estimate",
+                        ),
+                        "provider_failed",
+                        config,
+                        now,
                     )
                     last_error = error
                     continue

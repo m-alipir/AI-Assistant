@@ -139,7 +139,12 @@ async def test_bounded_reasoner_context_returns_inferences_separate_from_verifie
         ]
 
     settings = ModelSettings(
-        roles={"reasoner": RoleConfig(model="fake/reasoner", max_output_tokens=100)},
+        roles={
+            "reasoner": RoleConfig(
+                model="fake/reasoner", max_output_tokens=100,
+                input_usd_per_million=1, output_usd_per_million=1,
+            )
+        },
         budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
     )
     router = Router(
@@ -198,7 +203,12 @@ async def test_reasoner_context_respects_role_limit_with_large_retained_fields()
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
         ModelSettings(
-            roles={"reasoner": RoleConfig(model="fake/reasoner", max_input_chars=700)},
+            roles={
+                "reasoner": RoleConfig(
+                    model="fake/reasoner", max_input_chars=700,
+                    input_usd_per_million=1, output_usd_per_million=1,
+                )
+            },
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),

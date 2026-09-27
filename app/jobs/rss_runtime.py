@@ -38,8 +38,16 @@ from app.ingestion.source_health import (
 )
 from app.knowledge.clustering import ClusterCandidate, find_cluster
 from app.llm.core import BudgetExceeded, ExtractionFlow, ProviderBusy, Router
+from app.normalize.source_items import safe_source_name
 
 logger = logging.getLogger(__name__)
+
+_PENDING_BRIEFING_FRESHNESS_SQL = (
+    "NOT EXISTS (SELECT 1 FROM event_sources es WHERE es.event_id = bo.event_id) "
+    "OR EXISTS (SELECT 1 FROM event_sources es WHERE es.event_id = bo.event_id AND ("
+    "es.freshness_hours IS NULL OR COALESCE(bo.published_at, e.occurred_at) >= "
+    "CURRENT_TIMESTAMP - make_interval(hours => es.freshness_hours)))"
+)
 
 
 @dataclass
@@ -65,6 +73,16 @@ class RunCounts:
     source_health_persistence_errors: int = 0
     provider_busy: int = 0
     budget_exhausted: int = 0
+    budget_dimensions: dict[str, int] = field(
+        default_factory=lambda: {
+            "usd": 0,
+            "calls": 0,
+            "role": 0,
+            "unknown_cost": 0,
+            "soft": 0,
+            "unknown": 0,
+        }
+    )
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
     editor_input_count: int = 0
@@ -89,6 +107,7 @@ class RunCounts:
                 "processed": self.processed,
                 "failed": self.failed,
                 "budget_exhausted": self.budget_exhausted,
+                "budget_dimensions": dict(self.budget_dimensions),
                 "failure_categories": {
                     "briefing_render_error": self.briefing_render_errors,
                     "briefing_persistence_error": self.briefing_persistence_errors,
@@ -218,8 +237,14 @@ class RssRuntimeJob:
                     counts.provider_busy += 1
                     counts.errors.append(f"{item.source_name}: provider_busy")
                     return
-                except BudgetExceeded:
+                except BudgetExceeded as error:
                     counts.budget_exhausted += 1
+                    dimension = (
+                        error.dimension
+                        if error.dimension in counts.budget_dimensions
+                        else "unknown"
+                    )
+                    counts.budget_dimensions[dimension] += 1
                     return
                 except Exception:
                     counts.failed += 1
@@ -245,8 +270,14 @@ class RssRuntimeJob:
                     counts.provider_busy += 1
                     counts.errors.append(f"{item.source_name}: provider_busy")
                     return
-                except BudgetExceeded:
+                except BudgetExceeded as error:
                     counts.budget_exhausted += 1
+                    dimension = (
+                        error.dimension
+                        if error.dimension in counts.budget_dimensions
+                        else "unknown"
+                    )
+                    counts.budget_dimensions[dimension] += 1
                     return
                 except Exception:
                     counts.failed += 1
@@ -415,10 +446,16 @@ class RssRuntimeJob:
                             item.title = value.title
                             item.summary_tr = value.summary
                             item.what_changed_tr = value.what_changed
-                except BudgetExceeded:
+                except BudgetExceeded as error:
                     counts.editor_status = "budget_exhausted"
                     counts.editor_output_valid = False
                     counts.budget_exhausted += len(selected)
+                    dimension = (
+                        error.dimension
+                        if error.dimension in counts.budget_dimensions
+                        else "unknown"
+                    )
+                    counts.budget_dimensions[dimension] += 1
                     logger.info(
                         "briefing_editor_skipped",
                         extra={"diagnostic_category": "budget_exhausted", "items": len(selected)},
@@ -653,10 +690,15 @@ def database_persistence(
             await session.execute(
                 text(
                     "INSERT INTO event_sources "
-                    "(event_id, source_item_id, relation, canonical_url, source_kind) "
-                    "VALUES (:event_id, :source_item_id, :relation, :canonical_url, :source_kind) "
+                    "(event_id, source_item_id, relation, canonical_url, source_kind, "
+                    "source_name, freshness_hours) "
+                    "VALUES (:event_id, :source_item_id, :relation, :canonical_url, :source_kind, "
+                    ":source_name, :freshness_hours) "
                     "ON CONFLICT (event_id, source_item_id) DO UPDATE SET "
-                    "canonical_url = EXCLUDED.canonical_url, source_kind = EXCLUDED.source_kind"
+                    "canonical_url = EXCLUDED.canonical_url, source_kind = EXCLUDED.source_kind, "
+                    "source_name = COALESCE(event_sources.source_name, EXCLUDED.source_name), "
+                    "freshness_hours = COALESCE(event_sources.freshness_hours, "
+                    "EXCLUDED.freshness_hours)"
                 ),
                 {
                     "event_id": event_id,
@@ -664,6 +706,8 @@ def database_persistence(
                     "relation": "corroborating" if match else "primary",
                     "canonical_url": item.canonical_url,
                     "source_kind": item.source_kind.value,
+                    "source_name": safe_source_name(item.source_name),
+                    "freshness_hours": item.source_freshness_hours,
                 },
             )
             await session.execute(
@@ -901,11 +945,15 @@ def database_persistence(
                     (
                         await session.execute(
                             text(
-                                "SELECT event_id, title, source_urls_json, importance, interest, "
-                                "global_importance, actionable, video, source_type, published_at, "
-                                "why_watch, summary_tr, what_changed_tr, why_important_tr "
-                                "FROM briefing_outbox ORDER BY created_at ASC "
-                                "FOR UPDATE SKIP LOCKED LIMIT 100"
+                                "SELECT bo.event_id, bo.title, bo.source_urls_json, "
+                                "bo.importance, bo.interest, bo.global_importance, "
+                                "bo.actionable, bo.video, bo.source_type, bo.published_at, "
+                                "bo.why_watch, bo.summary_tr, bo.what_changed_tr, "
+                                "bo.why_important_tr FROM briefing_outbox bo "
+                                "LEFT JOIN events e ON e.id = bo.event_id "
+                                f"WHERE {_PENDING_BRIEFING_FRESHNESS_SQL} "
+                                "ORDER BY bo.created_at ASC "
+                                "FOR UPDATE OF bo SKIP LOCKED LIMIT 100"
                             )
                         )
                     )
@@ -1015,7 +1063,15 @@ def database_persistence(
 
     async def has_pending_briefing() -> bool:
         async with sessions() as session:
-            return bool(await session.scalar(text("SELECT 1 FROM briefing_outbox LIMIT 1")))
+            return bool(
+                await session.scalar(
+                    text(
+                        "SELECT 1 FROM briefing_outbox bo "
+                        "LEFT JOIN events e ON e.id = bo.event_id "
+                        f"WHERE {_PENDING_BRIEFING_FRESHNESS_SQL} LIMIT 1"
+                    )
+                )
+            )
 
     async def refresh_blocked_item(item: SourceItem, language: str | None) -> None:
         async with sessions.begin() as session:

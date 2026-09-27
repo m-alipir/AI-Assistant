@@ -23,7 +23,7 @@ async def test_scheduler_preference_persists_in_postgres() -> None:
     try:
         async with engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260923_0028"
+        assert revision == "20260927_0032"
 
         assert await repository.scheduler_preference() is None
         await repository.save_scheduler_preference(

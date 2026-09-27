@@ -155,7 +155,12 @@ async def test_editor_hashes_bounded_current_briefing_and_rejects_empty_input() 
     router = Router(
         OpenRouterClient("test-key", "https://example.test", httpx.MockTransport(handler)),
         ModelSettings(
-            roles={"editor": RoleConfig(model="fake/editor", max_input_chars=1_000)},
+            roles={
+                "editor": RoleConfig(
+                    model="fake/editor", max_input_chars=1_000,
+                    input_usd_per_million=1, output_usd_per_million=1,
+                )
+            },
             budgets=BudgetPolicy(daily_soft_usd=1, daily_hard_usd=1),
         ),
         InMemoryResultCache(),

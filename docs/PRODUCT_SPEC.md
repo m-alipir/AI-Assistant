@@ -37,6 +37,14 @@ source link, and explain why it matters only when useful. Do not repeat a headli
 publication time, and historical connections when they help interpretation; label model inference
 clearly. Keep the section order above and make action items easy to spot.
 
+Telegram delivery uses the user's accepted compact MVP: one Turkish message beginning
+`Bugün şunlar oldu:`, numbered developments separated by blank lines. Visible source links,
+section/headline repetition and technical evidence markers are omitted. Each item ends with
+a short source name in parentheses, for example (TRT Haber), derived from stored provenance;
+never guess a publisher from the model text. Provenance and
+global-news separation remain in structured storage and detail views. Prefer short, factual
+sentences; the accepted layout does not establish content accuracy or successful ingestion.
+
 The daily delivery time is a target for sending the fresh briefing, not the start of processing.
 Prepare shortly beforehand; if processing finishes late, send the new briefing with a clear delay
 note. Never present an older briefing as today's. During the first 14 delivered briefing days,
