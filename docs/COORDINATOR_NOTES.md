@@ -1,5 +1,10 @@
 # Koordinasyon notları
 
+- Deploy komut dersi: git stash pop hash değil stash reflog referansı bekler; oluşturulan
+  stash'i doğrulayıp stash@{0} ile pop et. SSH stdin üzerinden bash çalıştırırken Docker
+  exec/run stdin'i tüketebilir; noninteractive komutlara </dev/null ver. Ham çıktı özel
+  dosyada kalsın; yalnız aşama sonuçları gösterilsin. Env byte karşılaştırmasıyla korunmayı doğrula.
+
 - Net tek yürütme emri sonrası fixer uygulama, migration ve son 398/398 offline test
   finalini REPORT ile teslim etti. Kanıt alındığında görevi kapat; atıl follow-up/ACK
   gönderip yeni tur açma. Yerel kabulü CI/VDS/canlı Gmail kabulünden ayrı kaydet.

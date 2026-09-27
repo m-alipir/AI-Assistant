@@ -4,6 +4,11 @@
 **Current milestone:** M22.2 approved reliability repairs passed local acceptance; live gates remain;
 M22.3 operator acceptance; M22.4 planned (M21 RSSHub observation deferred)
 **Last updated:** 2026-09-27
+**Deployment 2026-09-27:** Implementation f64969f pushed locally and deployed on VDS
+with stash/pull/pop. Protected env byte comparison unchanged; private DB backup saved.
+Build/migrate/start passed; schema head 20260927_0032 confirmed; app/db healthy,
+telegram-poller running and localhost health passed. No paid/live ingestion triggered.
+GitHub CI, live /daily, YouTube provider and Gmail sign-in acceptance remain open.
 **Final local acceptance (Fixer REPORT):** Latest code: 398 collected, 398 passed,
 0 failed/errors/skipped, using migrated disposable PostgreSQL and blocked external
 network. Ruff/diff checks passed; Graphify refreshed. Final fixture correction in

@@ -383,3 +383,15 @@ prevents calibration from continuing after day fourteen without adding an LLM ca
 workflow.
 
 Append future decisions here with date, status, rationale, and consequences. Do not rewrite accepted decisions silently.
+
+## D032 — Preserve source labels and freshness policy with event provenance
+**Date:** 2026-09-27
+**Status:** Accepted
+
+Migration 20260927_0032 adds nullable source_name and freshness_hours to event_sources.
+The shared ingestion persistence path preserves validated SourceItem provenance;
+pending selection uses the saved freshness policy. Legacy NULL rows remain supported.
+Telegram renders bounded stored source names in parentheses without source URLs.
+This avoids guessing labels and reprocessing stale pending items. A downgrade preserves
+event-source relationships but removes the new column values. Latest offline acceptance:
+398 tests passed with disposable PostgreSQL; provider and live Telegram acceptance separate.
