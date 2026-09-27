@@ -1332,6 +1332,10 @@ proxy become acceptance work only if those architectures are adopted.
 
 ## Last work log
 
+- Post-0031 safe production checks: app/DB running healthy, all Compose services running, localhost healthHTTP200, deployed codeHEADeb23775. Fresh run trace/content ingestion not tested by health gate.
+
+- User-authorized diagnostics deployment: local code commit eb23775 pushed; VDS tracked overrides backed up, new stash verified/popped with prior stash preserved, env byte comparison unchanged. Compose validated, migration0031 completed before app recreation and rebuild passed. No manual/provider/YouTube/Gmail run triggered; next fresh run needed for stage-level production acceptance. Unrelated local AGENTS/skills files were left uncommitted.
+
 - Approved September27 scheduled-history counters read: run12:45→13:00:01 Istanbul completed_with_errors; RSS processed8/failed5 (gatekeeper4, source-fetch1), 79 budget skips; YouTube processed1/failed15 (caption-access14, gatekeeper1), zero YouTube budget skips; LLM calls50/cache hits6. This establishes failing stages, not underlying caption/provider reason or missing-news count. Evidence returned to same Fixer for final bounded interpretation; no live replay, budget changes or production mutation. New0031 diagnostics still await deployment approval; manual00:25 failure remains separate/unproven.
 
 - Scheduled-warning read-only investigation complete: RSS5/YouTube15 warning totals combine multiple failure units (source/channel discovery, per-item processing and some briefing-level failures), not a count of missing news. Existing source health proves discovery only. Fixer prepared bounded September27 scheduled-history query returning timestamps/status and allowlisted integer counters, no raw message/content. Root requested exact read permission; output may remain partial because historical summary caps categories at eight. No historical replay/provider call or new code change.
