@@ -1,9 +1,31 @@
 # Project Progress — Source of Truth
 
 **Project state:** IN PROGRESS
-**Current milestone:** M22.2 approved reliability repairs passed local acceptance; live gates remain;
+**Current milestone:** M22.2 live /daily and Gmail recovery planning; previous local
+reliability repairs passed offline tests but live acceptance failed;
 M22.3 operator acceptance; M22.4 planned (M21 RSSHub observation deferred)
 **Last updated:** 2026-09-27
+**2026-09-29 live report:** Telegram `/daily` immediately acknowledges then reports
+`Çalıştırma / beklenmeyen çalıştırma hatası`; `/gmail` reports connection not ready
+with missing Gmail/OAuth/encryption setting names. Planning and independent plan
+review are active; no new code fix or live success claimed. Scope restricted to these
+two flows until both work. Current brief replaces the completed 2026-09-27 brief.
+**2026-09-29 diagnosis and local repair:** Same-run VDS safe record at 18:03 shows
+telegram_daily failed in editor with budget_exhausted, dimension unknown_cost. VDS
+editor role `qwen/qwen3.8-flash` has missing/zero input and output price metadata;
+public OpenRouter model page currently lists $0.15/M input and $0.47/M output.
+Fixer repaired terminal_error precedence and safe Turkish budget/source mapping.
+Final offline acceptance: 403 passed, 2 warnings, disposable PostgreSQL migrated to
+0032 with external Python network blocked. Gmail readiness is correct but inactive:
+enabled=false; client ID/secret and stable encryption key absent on VDS. No Gmail
+code defect shown. User approved one bounded live /daily test: <=50 provider calls
+and <=$0.25 without exceeding existing daily caps. VDS deploy/price activation and
+real Gmail sign-in/sync still pending.
+**Plan review:** Fixer read-only plan received; Reviewer verdict `changes required`.
+Coordinator approved the revised narrow sequence in AGENT_BRIEF.md: match safe same-run
+record, repair confirmed terminal_error/stage mapping, verify Gmail readiness and OAuth
+topology, then offline and bounded live acceptance. Current code repair active; live cause
+and Gmail account connection remain unverified.
 **Deployment 2026-09-27:** Implementation f64969f pushed locally and deployed on VDS
 with stash/pull/pop. Protected env byte comparison unchanged; private DB backup saved.
 Build/migrate/start passed; schema head 20260927_0032 confirmed; app/db healthy,

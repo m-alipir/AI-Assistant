@@ -457,6 +457,7 @@ class TelegramWebhookHandler:
         stages = {
             "catalog": "Kaynaklar",
             "briefing": "Özet hazırlığı",
+            "sources": "Kaynaklar",
             "youtube": "YouTube",
             "rss": "RSS",
             "editor": "Özet",
@@ -478,6 +479,12 @@ class TelegramWebhookHandler:
             "source_fetch_error": "kaynak erişimi",
             "provider_busy": "model hizmeti meşgul",
             "budget_exhausted": "günlük işlem sınırı",
+            "budget_exhausted_usd": "günlük harcama sınırı",
+            "budget_exhausted_calls": "günlük model çağrı sınırı",
+            "budget_exhausted_role": "model görevi bütçe sınırı",
+            "budget_exhausted_unknown_cost": "model maliyeti tanımlanmamış",
+            "budget_exhausted_soft": "günlük bütçe uyarı sınırı",
+            "budget_exhausted_unknown": "günlük işlem sınırı",
             "budget_exhausted_no_available_content": (
                 "günlük işlem sınırına takılan kayıtlar var; "
                 "özete girecek kullanılabilir yeni kayıt oluşturulamadı"

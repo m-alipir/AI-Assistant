@@ -900,6 +900,146 @@ async def test_daily_failure_reports_only_safe_stage_and_reason() -> None:
     assert "run-id" not in terminal
 
 
+def test_daily_failure_details_uses_safe_terminal_error_and_keeps_budget_dimension() -> None:
+    budget_failure = {
+        "status": "failed",
+        "counts": {"budget_exhausted": 1, "budget_dimensions": {"usd": 1}},
+        "diagnostics": {
+            "terminal_error": {"stage": "editor", "reason": "budget_exhausted"},
+            "budget_dimension": "usd",
+            "exception": "must-not-be-shown",
+        },
+    }
+    runtime_failure = {
+        "status": "failed",
+        "diagnostics": {
+            "terminal_error": {"stage": "runtime", "reason": "runtime_error"},
+            "exception": "must-not-be-shown",
+        },
+    }
+    source_failure = {
+        "status": "failed",
+        "diagnostics": {
+            "terminal_error": {"stage": "sources", "reason": "source_fetch_error"},
+        },
+    }
+    unknown_budget_dimension = {
+        "status": "failed",
+        "diagnostics": {
+            "terminal_error": {"stage": "editor", "reason": "budget_exhausted"},
+            "budget_dimension": "unknown",
+        },
+    }
+    untrusted_failure = {
+        "status": "failed",
+        "diagnostics": {
+            "terminal_error": {"stage": "sources", "reason": "secret-token-value"},
+        },
+    }
+
+    assert _daily_failure_details(budget_failure) == ("editor", "budget_exhausted_usd")
+    assert _daily_failure_details(runtime_failure) == ("runtime", "runtime_error")
+    assert _daily_failure_details(source_failure) == ("sources", "source_fetch_error")
+    assert _daily_failure_details(unknown_budget_dimension) == (
+        "editor",
+        "budget_exhausted_unknown",
+    )
+    assert _daily_failure_details(untrusted_failure) == ("runtime", "runtime_error")
+
+
+@pytest.mark.asyncio
+async def test_daily_failure_outer_catch_keeps_exception_details_out_of_telegram(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def daily() -> DailyRunResult:
+        raise RuntimeError("private-provider-payload")
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(211, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    terminal = str(sent[-1]["text"])
+    assert terminal == (
+        "Günlük özet tamamlanamadı (Telegram / beklenmeyen çalıştırma hatası). "
+        "Ayrıntılar yönetim panelinde."
+    )
+    assert "private-provider-payload" not in terminal
+    assert "private-provider-payload" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("runtime_result", "expected", "must_not_contain"),
+    [
+        (
+            {
+                "status": "failed",
+                "counts": {
+                    "budget_exhausted": 1,
+                    "budget_dimensions": {"usd": 1},
+                    "failure_categories": {"source_fetch_error": 1},
+                },
+                "diagnostics": {
+                    "terminal_error": {"stage": "editor", "reason": "budget_exhausted"},
+                    "budget_dimension": "usd",
+                },
+            },
+            "(Özet / günlük harcama sınırı)",
+            "yeni bir özet kaydedilmedi",
+        ),
+        (
+            {
+                "status": "failed",
+                "counts": {
+                    "budget_exhausted": 1,
+                    "budget_dimensions": {"unknown_cost": 1},
+                    "failure_categories": {"source_fetch_error": 1},
+                },
+                "diagnostics": {
+                    "terminal_error": {"stage": "editor", "reason": "budget_exhausted"},
+                },
+            },
+            "(Özet / model maliyeti tanımlanmamış)",
+            "harcama sınırı",
+        ),
+        (
+            {
+                "status": "failed",
+                "diagnostics": {
+                    "terminal_error": {"stage": "sources", "reason": "source_fetch_error"},
+                },
+            },
+            "(Kaynaklar / kaynak erişimi)",
+            "yeni bir özet kaydedilmedi",
+        ),
+    ],
+    ids=("budget-usd", "budget-unknown-cost", "source-error"),
+)
+@pytest.mark.asyncio
+async def test_daily_terminal_errors_remain_actionable_failures(
+    runtime_result: dict[str, object], expected: str, must_not_contain: str
+) -> None:
+    stage, reason = _daily_failure_details(runtime_result)
+
+    async def daily() -> DailyRunResult:
+        return DailyRunResult(status="failed", stage=stage, reason=reason)
+
+    async def claim(*_: object) -> bool:
+        return True
+
+    handler, sent, _ = _handler(ask=_unexpected_ask, claim=claim, daily=daily)
+    await handler.process_update(TelegramUpdate.model_validate(_payload(212, text="/daily")))
+    assert handler._daily_task is not None
+    await handler._daily_task
+
+    terminal = str(sent[-1]["text"])
+    assert f"Günlük özet tamamlanamadı {expected}" in terminal
+    assert must_not_contain not in terminal
+
+
 @pytest.mark.asyncio
 async def test_daily_failure_reports_budget_and_no_available_briefing_candidates() -> None:
     runtime_result = {

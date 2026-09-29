@@ -149,18 +149,6 @@ def _daily_failure_details(result: Mapping[str, object]) -> tuple[str, str]:
         )
         return "briefing", reason
 
-    flows = [counts] if isinstance(counts, dict) else []
-    if isinstance(counts, dict):
-        flows.extend(
-            value
-            for value in (counts.get("youtube"), counts.get("gmail"))
-            if isinstance(value, dict)
-        )
-    categories = [
-        flow.get("failure_categories")
-        for flow in flows
-        if isinstance(flow, dict) and isinstance(flow.get("failure_categories"), dict)
-    ]
     priority = (
         ("briefing_persistence_error", "briefing_persist"),
         ("briefing_render_error", "editor"),
@@ -175,6 +163,58 @@ def _daily_failure_details(result: Mapping[str, object]) -> tuple[str, str]:
         ("source_health_persistence_error", "sources"),
         ("provider_busy", "sources"),
     )
+    terminal_error = diagnostics.get("terminal_error") if isinstance(diagnostics, dict) else None
+    if isinstance(terminal_error, dict):
+        stage = terminal_error.get("stage")
+        reason = terminal_error.get("reason")
+        safe_terminal_errors = {
+            *priority,
+            ("budget_exhausted", "editor"),
+            ("runtime_error", "runtime"),
+        }
+        budget_dimensions = {
+            "calls",
+            "role",
+            "soft",
+            "unknown",
+            "unknown_cost",
+            "usd",
+        }
+        if (
+            isinstance(stage, str)
+            and isinstance(reason, str)
+            and (reason, stage) in safe_terminal_errors
+        ):
+            dimension = diagnostics.get("budget_dimension")
+            if reason == "budget_exhausted":
+                if not isinstance(dimension, str) or dimension not in budget_dimensions:
+                    dimensions = (
+                        counts.get("budget_dimensions") if isinstance(counts, dict) else None
+                    )
+                    observed = [
+                        key
+                        for key in budget_dimensions
+                        if isinstance(dimensions, dict)
+                        and type(dimensions.get(key)) is int
+                        and dimensions[key] > 0
+                    ]
+                    dimension = observed[0] if len(observed) == 1 else None
+                if isinstance(dimension, str) and dimension in budget_dimensions:
+                    reason = f"budget_exhausted_{dimension}"
+            return stage, reason
+
+    flows = [counts] if isinstance(counts, dict) else []
+    if isinstance(counts, dict):
+        flows.extend(
+            value
+            for value in (counts.get("youtube"), counts.get("gmail"))
+            if isinstance(value, dict)
+        )
+    categories = [
+        flow.get("failure_categories")
+        for flow in flows
+        if isinstance(flow, dict) and isinstance(flow.get("failure_categories"), dict)
+    ]
     for reason, stage in priority:
         if any(
             isinstance(flow, dict)
